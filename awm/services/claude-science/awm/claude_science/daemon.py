@@ -86,6 +86,11 @@ IDLE_S = float(os.environ.get("CLAUDE_SCIENCE_IDLE_S", "7200"))
 #: `status` long before that finishes, so this covers the bind, not the setup.
 START_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_START_TIMEOUT_S", "90"))
 
+#: How long to keep asking a running daemon for a sign-in nonce. The daemon
+#: answers `status` within seconds of launch but cannot mint until its boot
+#: finishes, which took two minutes on altair's slow disk.
+MINT_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_MINT_TIMEOUT_S", "180"))
+
 #: Sentinel names inside the data dir that mean "first-run provisioning has
 #: happened". Checked rather than reproduced: the daemon owns this work.
 _PROVISION_MARKERS = ("conda", "seed-assets")
@@ -94,6 +99,35 @@ _PROVISION_MARKERS = ("conda", "seed-assets")
 #: available. See :func:`user_manager_env` for why it is not simply spawned.
 TRANSIENT_UNIT = os.environ.get("CLAUDE_SCIENCE_TRANSIENT_UNIT",
                                 "claude-science-daemon")
+
+
+#: The daemon's memory of which grants its credential scan judges, keyed by
+#: inode. A record outlives its grant, so a folder once granted rw stays judged
+#: until its record is dropped while the daemon is down.
+GRANT_SCANS = DATA_DIR / "sandbox-grant-scans.json"
+
+
+def prune_grant_scans(path: Path, keep: set[str]) -> list[str]:
+    """Drop the scan records whose grant is not in ``keep``; return their paths.
+
+    Only while the daemon is down: a running one would write its copy back.
+    """
+    try:
+        doc = json.loads(path.read_text())
+    except FileNotFoundError:
+        return []
+    records = doc.get("records") or {}
+    kept = {k: r for k, r in records.items() if r.get("grant") in keep}
+    if len(kept) == len(records):
+        return []
+    doc["records"] = kept
+    tmp = path.with_name(path.name + ".tmp")
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+              "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        json.dump(doc, f)
+    os.replace(tmp, path)
+    return [r.get("path") for k, r in records.items() if k not in kept]
 
 
 def installed() -> bool:
@@ -450,6 +484,7 @@ class Supervisor:
         with self._lifecycle:
             if not status_json().get("running"):
                 return self.snapshot()
+            keep = self._rw_grants()
             proc = _run(["stop"], timeout=120.0)
             if proc.returncode != 0:
                 log.warning("claude-science stop returned %d: %s", proc.returncode,
@@ -457,7 +492,30 @@ class Supervisor:
             self.adopted = None
             self.started_at = None
             self.last_activity = None
-            return self.snapshot()
+            snap = self.snapshot()
+            if keep is not None and not snap["running"]:
+                try:
+                    dropped = prune_grant_scans(GRANT_SCANS, keep)
+                except (OSError, ValueError) as exc:
+                    log.warning("claude-science: grant scans not pruned: %s", exc)
+                else:
+                    if dropped:
+                        log.info("claude-science: dropped stale grant scans %s",
+                                 dropped)
+            return snap
+
+    def _rw_grants(self) -> set[str] | None:
+        """The live rw grants' paths, or None when the daemon cannot say."""
+        from awm.claude_science import api  # api imports this module
+        try:
+            with api.connect(self.login_url()) as owner:
+                grants = api.list_grants(owner)
+        except Exception as exc:  # noqa: BLE001 — pruning is best effort
+            log.warning("claude-science: could not list grants (%s); "
+                        "not pruning grant scans", exc)
+            return None
+        return {p for g in grants if g.get("mode") == "rw"
+                for p in (g.get("hostPath"), g.get("id")) if p}
 
     def restart(self) -> dict[str, Any]:
         with self._lifecycle:
@@ -537,16 +595,21 @@ class Supervisor:
 
         Loopback-shaped (``http://127.0.0.1:<port>/?nonce=…``) because that is
         what the daemon prints; it is useful over SSH as-is, and the front's
-        sign-in route uses the nonce rather than the URL.
+        sign-in route uses the nonce rather than the URL. A daemon still booting
+        cannot mint yet, so this retries until ``MINT_TIMEOUT_S``.
         """
-        proc = _run(["url"], timeout=30.0)
-        out = (proc.stdout or "").strip()
-        if not out:
-            raise RuntimeError(
-                f"claude-science url printed nothing: "
-                f"{(proc.stderr or '').strip()[:200]}"
-            )
-        return out.splitlines()[-1].strip()
+        deadline = time.monotonic() + MINT_TIMEOUT_S
+        while True:
+            proc = _run(["url"], timeout=30.0)
+            out = (proc.stdout or "").strip()
+            if out:
+                return out.splitlines()[-1].strip()
+            if time.monotonic() >= deadline or not status_json().get("running"):
+                raise RuntimeError(
+                    f"claude-science url printed nothing: "
+                    f"{(proc.stderr or '').strip()[:200]}"
+                )
+            time.sleep(3.0)
 
     def update_check(self) -> dict[str, Any]:
         proc = _run(["update", "--check"], timeout=120.0)

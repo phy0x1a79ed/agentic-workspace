@@ -226,3 +226,13 @@ def list_grants(owner: Owner) -> list[dict[str, Any]]:
 def add_grant(owner: Owner, *, path: str, mode: str) -> dict[str, Any]:
     return owner.post("/api/preferences/host-grants",
                       json={"path": path, "mode": mode})
+
+
+def set_grant_mode(owner: Owner, *, path: str, mode: str) -> dict[str, Any]:
+    return owner.request("PATCH", "/api/preferences/host-grants",
+                         json={"path": path, "mode": mode})
+
+
+def remove_grant(owner: Owner, *, path: str) -> dict[str, Any]:
+    return owner.request("DELETE", "/api/preferences/host-grants",
+                         json={"path": path})

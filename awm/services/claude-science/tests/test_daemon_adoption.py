@@ -9,6 +9,7 @@ silently, so it is worth a test rather than a comment.
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 
@@ -130,6 +131,60 @@ def test_reconcile_does_not_stop_when_it_cannot_ask_what_is_running(sup, monkeyp
 
     assert sup.reconcile(busy=broken)["action"] == "skipped"
     assert stopped == []
+
+
+# ---------------------------------------------------------------------------
+# Stale grant scans: pruned on every stop, never while the daemon runs
+# ---------------------------------------------------------------------------
+
+def _scans(path, *grants):
+    import json
+    doc = {"version": 1, "key": "k",
+           "records": {f"1:{i}": {"path": f"{g}/x", "grant": g, "complete": True}
+                       for i, g in enumerate(grants)}}
+    path.write_text(json.dumps(doc))
+    path.chmod(0o600)
+    return path
+
+
+def test_prune_keeps_only_records_of_current_rw_grants(tmp_path):
+    import json
+    path = _scans(tmp_path / "scans.json", "/ws/out", "/ws/projects")
+
+    assert daemon.prune_grant_scans(path, {"/ws/out"}) == ["/ws/projects/x"]
+    doc = json.loads(path.read_text())
+    assert (doc["version"], doc["key"]) == (1, "k")
+    assert [r["grant"] for r in doc["records"].values()] == ["/ws/out"]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert daemon.prune_grant_scans(tmp_path / "absent.json", set()) == []
+
+
+def _stopping(sup, monkeypatch, tmp_path, *, grants, still_running=False):
+    path = _scans(tmp_path / "scans.json", "/ws/out", "/ws/projects")
+    monkeypatch.setattr(daemon, "GRANT_SCANS", path)
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    states = iter([_running()])
+    monkeypatch.setattr(daemon, "status_json", lambda: next(
+        states, _running() if still_running else {"running": False}))
+    monkeypatch.setattr(daemon, "_run", lambda args, **kw: type(
+        "P", (), {"returncode": 0, "stderr": ""})())
+    monkeypatch.setattr(daemon.Supervisor, "_rw_grants", lambda self: grants)
+    sup.stop()
+    return daemon.json.loads(path.read_text())["records"]
+
+
+def test_stop_prunes_the_scans_of_grants_no_longer_rw(sup, monkeypatch, tmp_path):
+    records = _stopping(sup, monkeypatch, tmp_path, grants={"/ws/out"})
+    assert [r["grant"] for r in records.values()] == ["/ws/out"]
+
+
+@pytest.mark.parametrize("grants,still_running", [(None, False),
+                                                  ({"/ws/out"}, True)])
+def test_stop_leaves_the_scans_alone_when_unsure(sup, monkeypatch, tmp_path,
+                                                 grants, still_running):
+    records = _stopping(sup, monkeypatch, tmp_path, grants=grants,
+                        still_running=still_running)
+    assert len(records) == 2
 
 
 def test_an_adopted_daemon_starts_its_idle_clock_at_adoption(sup, monkeypatch):
@@ -363,3 +418,26 @@ def test_a_reporting_verb_does_not_wake_the_daemon(verb, monkeypatch):
     monkeypatch.setattr(hub_adapter.SUPERVISOR, "update_check", lambda: {})
     monkeypatch.setattr(hub_adapter, "_front", lambda name: asyncio.sleep(0, {}))
     asyncio.run(hub_adapter.HANDLERS[verb]({}))
+
+
+# ---------------------------------------------------------------------------
+# Sign-in: a booting daemon cannot mint yet
+# ---------------------------------------------------------------------------
+
+def test_login_url_waits_out_a_booting_daemon(sup, monkeypatch):
+    outputs = iter(["", "", "http://localhost:12203/?nonce=abc\n"])
+    monkeypatch.setattr(daemon, "_run", lambda args, timeout: subprocess.CompletedProcess(
+        args, 0, stdout=next(outputs), stderr="couldn't mint a sign-in link"))
+    monkeypatch.setattr(daemon, "status_json", _running)
+    monkeypatch.setattr(daemon.time, "sleep", lambda s: None)
+
+    assert sup.login_url() == "http://localhost:12203/?nonce=abc"
+
+
+def test_login_url_gives_up_at_once_when_no_daemon_runs(sup, monkeypatch):
+    monkeypatch.setattr(daemon, "_run", lambda args, timeout: subprocess.CompletedProcess(
+        args, 4, stdout="", stderr="No daemon running."))
+    monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
+
+    with pytest.raises(RuntimeError, match="No daemon running"):
+        sup.login_url()

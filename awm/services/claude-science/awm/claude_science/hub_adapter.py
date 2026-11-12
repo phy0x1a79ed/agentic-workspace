@@ -134,6 +134,7 @@ API_MANIFEST: dict[str, Any] = {
                 "awm session, prefer signin_url."
             ),
             "params": [],
+            "timeout": 240,
         },
         {
             "name": "signin_url",
@@ -181,20 +182,25 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "science_grants",
             "description": (
                 "The host directories Claude may read or write inside the "
-                "workbench's sandbox. With no arguments, list them. Given a "
-                "path, grant it — idempotent. Symlinks are refused, as is a "
-                "read-only grant nested under an existing read-write one, a "
-                "read-write grant overlapping a read-only one, and a "
-                "read-write grant too large for the daemon's credential scan: "
-                "either would stall every conversation on an approval."
+                "workbench's sandbox, shared by every conversation on the "
+                "node. With no arguments, list them. Given a path, grant it, "
+                "or switch an existing grant to mode — idempotent; with "
+                "remove, revoke it. Read-only may be anything; keep "
+                "read-write small and local. Refused: symlinks, a read-only "
+                "grant nested under a read-write one, and a read-write grant "
+                "that overlaps a read-only one, sits on a WSL drive (/mnt/) "
+                "or is too large for the daemon's credential scan — each "
+                "would stall every conversation on an approval."
             ),
             "params": [
                 {"name": "path", "type": "string",
                  "description": "Absolute host path. Omit to list."},
                 {"name": "mode", "type": "string",
                  "description": "'ro' (default) or 'rw'."},
+                {"name": "remove", "type": "boolean",
+                 "description": "Revoke the grant at path."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "message",
@@ -214,7 +220,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Conversation id, id prefix or name. Omit for "
                                 "the latest."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "new",
@@ -223,7 +229,11 @@ API_MANIFEST: dict[str, Any] = {
                 "Start a new Claude Science conversation with text as its "
                 "first turn, in a project named by name (found or created). "
                 "Returns the conversation id, its output folder on the host "
-                "and a cursor: read from it to follow the reply. Never retry a "
+                "and a cursor: read from it to follow the reply. mounts are "
+                "granted first, as `grants` would, and a refusal fails the "
+                "call before the conversation opens. Mounts outlast the "
+                "conversation until `grants` removes them, and every other "
+                "conversation on the node sees them too. Never retry a "
                 "failed call blindly; it may have started the conversation."
             ),
             "params": [
@@ -235,8 +245,11 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Model id. Omit for the workbench default."},
                 {"name": "effort", "type": "string",
                  "description": "Effort level. Omit for the workbench default."},
+                {"name": "mounts", "type": "array",
+                 "description": "Host folders to grant first: \"path\", "
+                                "\"path:ro\" or \"path:rw\" (default ro)."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "read",
@@ -263,7 +276,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Keep messages that carry no text, such as "
                                 "tool results. Default false."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "update_check",
@@ -385,23 +398,45 @@ def _connector(args: dict) -> dict:
                                   f"{api.LOCAL_ID_PREFIX}{name}")}
 
 
+def _grant(owner: api.Owner, grants: list[dict], path: str, mode: str) -> None:
+    """Add ``path`` in ``mode``, or switch an existing grant of it to ``mode``."""
+    if mode not in ("ro", "rw"):
+        raise ValueError(f"mode must be 'ro' or 'rw', not {mode!r}")
+    have = next((g for g in grants
+                 if path in (g.get("hostPath"), g.get("id"))), None)
+    if mode == "rw":
+        outputs.check_writable_grant(path, [g for g in grants if g is not have])
+    if have is None:
+        api.add_grant(owner, path=path, mode=mode)
+    elif have.get("mode") != mode:
+        api.set_grant_mode(owner, path=path, mode=mode)
+
+
 def _grants(args: dict) -> dict:
-    """List or add a host grant. Runs on a worker thread."""
+    """List, add, re-mode or remove a host grant. Runs on a worker thread."""
     SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
         before = api.list_grants(owner)
         path = (args.get("path") or "").strip()
         if not path:
             return {"grants": before}
-
-        mode = (args.get("mode") or "ro").strip()
-        if mode not in ("ro", "rw"):
-            raise ValueError(f"mode must be 'ro' or 'rw', not {mode!r}")
-        if mode == "rw":
-            outputs.check_writable_grant(path, before)
-        api.add_grant(owner, path=path, mode=mode)
+        if args.get("remove"):
+            api.remove_grant(owner, path=path)
+        else:
+            _grant(owner, before, path, (args.get("mode") or "ro").strip())
         after = api.list_grants(owner)
         return {"grants": after, "changed": after != before}
+
+
+def _mounts(specs: list[str]) -> list[tuple[str, str]]:
+    """``"path"``, ``"path:ro"`` or ``"path:rw"`` as ``(path, mode)``."""
+    out = []
+    for spec in specs:
+        path, _, mode = spec.strip().rpartition(":")
+        if mode not in ("ro", "rw"):
+            path, mode = spec.strip(), "ro"
+        out.append((path, mode))
+    return out
 
 
 async def _h_connector(args: dict) -> dict:
@@ -430,8 +465,11 @@ def _new(args: dict) -> dict:
     text = (args.get("text") or "").strip()
     if not text:
         raise ValueError("text is required")
+    mounts = _mounts(args.get("mounts") or [])
     SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
+        for path, mode in mounts:
+            _grant(owner, api.list_grants(owner), path, mode)
         return conversations.open_conversation(
             owner, text,
             project=(args.get("project") or "").strip() or DEFAULT_PROJECT,
