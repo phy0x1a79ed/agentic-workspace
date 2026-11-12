@@ -29,6 +29,9 @@ struct Settings {
     service_sites: Vec<(String, String)>,
     seat_image: String,
     tony_profile: Option<PathBuf>,
+    /// The nodes whose trusted sessions may have Tony's profile. A trusted level from any
+    /// other node counts as cooperative.
+    profile_nodes: Vec<String>,
     chrome: Option<chrome::Run>,
 }
 
@@ -49,6 +52,7 @@ impl Settings {
             service_sites: sites,
             seat_image: s("seat_image", "awm-browser-seat:latest"),
             tony_profile: cfg.get("tony_profile").and_then(Value::as_str).filter(|p| !p.is_empty()).map(PathBuf::from),
+            profile_nodes: cfg.get("profile_nodes").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
             chrome: cfg.get("chrome").and_then(chrome::Run::from_json),
         })
     }
@@ -56,6 +60,19 @@ impl Settings {
 
 fn p(name: &str, ty: &str, required: bool, desc: &str) -> Value {
     json!({"name": name, "type": ty, "required": required, "description": desc})
+}
+
+/// A session's level for Tony's profile. A seat's level is its node's word, and a node whose
+/// seats share a user with its door key could claim anything. So a trusted level counts only
+/// when every node behind the call is in `profile_nodes`; the node comes from the door's key.
+fn profile_level<'a>(profile_nodes: &[String], call: &Call, level: &'a str) -> &'a str {
+    let c = &call.caller;
+    let listed = std::iter::once(c.node.as_str()).chain(c.origin.as_deref()).all(|n| profile_nodes.iter().any(|x| x == n));
+    if level == "trusted" && !listed {
+        "cooperative"
+    } else {
+        level
+    }
 }
 
 /// The calling session and its level. A seat is keyed on the session and the node it runs on.
@@ -119,13 +136,14 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
     let viewer = settings.viewer.clone();
     let node = svc.context().env().node.clone();
     let svc = svc.api("description", json!(DESCRIPTION)).api("emitters", json!([])).api("sessions", json!([]));
-    let c = chrome.clone();
-    let svc = verb!(svc, book, [c], "seat_open", "Attach this session to its own browser window. A trusted session gets Tony's profile unless it asks for a blank one. A cooperative session always gets a blank one. Returns the seat id.",
+    let (c, s) = (chrome.clone(), settings.clone());
+    let svc = verb!(svc, book, [c, s], "seat_open", "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. Any other session gets a blank one. Returns the seat id.",
         json!([p("profile", "string", false, "tony or blank."), p("own_container", "boolean", false, "Run this seat in its own container.")]),
         |b, call, who| {
             c.ensure().await?;
             let own = call.args.get("own_container").map(truthy).unwrap_or(false);
-            b.open(&who.0, &who.1, call.str_arg("profile"), own).await.map(|s| s.view())
+            let level = profile_level(&s.profile_nodes, &call, &who.1);
+            b.open(&who.0, level, call.str_arg("profile"), own).await.map(|s| s.view())
         });
     let svc = verb!(svc, book, "seat_close", "Close this seat's window, tabs and container.", json!([seat()]), |b, call, who| {
         let id = req(&call, "seat").map_err(|e| BookError::Usage(e.to_string()))?;
@@ -292,7 +310,7 @@ mod tests {
     }
 
     fn settings() -> Arc<Settings> {
-        Arc::new(Settings { dir: "/nonexistent".into(), cdp: String::new(), viewer: "https://viewer".into(), service_sites: vec![("teams".into(), "https://teams.microsoft.com".into())], seat_image: String::new(), tony_profile: None, chrome: None })
+        Arc::new(Settings { dir: "/nonexistent".into(), cdp: String::new(), viewer: "https://viewer".into(), service_sites: vec![("teams".into(), "https://teams.microsoft.com".into())], seat_image: String::new(), tony_profile: None, profile_nodes: vec!["mizar".into()], chrome: None })
     }
 
     fn built(book: Book) -> Service {
@@ -330,6 +348,27 @@ mod tests {
         assert_eq!(seat["profile"], "blank");
         let refused = call(&svc, "seat_open", json!({"profile": "tony"}), Some("cooperative")).await;
         assert!(refused["error"].as_str().unwrap().contains("trusted"));
+    }
+
+    #[tokio::test]
+    async fn tonys_profile_goes_only_to_trusted_sessions_on_listed_nodes() {
+        let book = Arc::new(SeatBook::new(Arc::new(seats::tests::FakeChrome::new("shared")), None, None));
+        let svc = built(book).into_test().await.unwrap();
+        let open = |caller: Caller, profile: Option<&str>| {
+            let mut args = json!({"_caller_trust": "trusted"});
+            if let Some(p) = profile {
+                args["profile"] = json!(p);
+            }
+            let svc = &svc;
+            async move { svc.call_as("seat_open", args, caller, None).await.unwrap() }
+        };
+        assert_eq!(open(who(Some("trusted")), None).await["profile"], "tony", "mizar is listed");
+        let altair = Caller { node: "altair".into(), ..who(Some("trusted")) };
+        let relayed = Caller { origin: Some("altair".into()), session: Some("sess-r".into()), ..who(Some("trusted")) };
+        for (name, c) in [("altair", altair), ("relayed from altair", relayed)] {
+            assert_eq!(open(c.clone(), None).await["profile"], "blank", "{name}");
+            assert!(open(c, Some("tony")).await["error"].as_str().unwrap().contains("trusted"), "{name}");
+        }
     }
 
     #[tokio::test]

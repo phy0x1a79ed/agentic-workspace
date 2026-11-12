@@ -30,7 +30,7 @@ impl OneDrive {
             r => tokio::sync::OnceCell::new_with(Some(format!("/{r}"))),
         };
         let site = if cfg.site.is_empty() { "onedrive" } else { &cfg.site };
-        Ok(std::sync::Arc::new(OneDrive { name: cfg.name.clone(), root, tab: Tab::new(hub, site, "sharepoint.com") }))
+        Ok(std::sync::Arc::new(OneDrive { name: cfg.name.clone(), root, tab: Tab::new(hub, site, &["sharepoint.com"]) }))
     }
 
     async fn root(&self) -> Result<&str> {
