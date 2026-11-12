@@ -196,3 +196,20 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - No query engine now. A provider checks an offer set with L bound to itself, by type-set subset tests and lookups by who. Facts change only through events; each provider is the authority on facts about itself.
 
 **Deferred (journal 3a6c999a).** A query layer (conjunctive patterns, Datalog as the ceiling) for discovery without a who; per-step combinatorial bids; providers deciding what to compute; actions that cannot be phrased as an end state.
+
+## dependencies (2026-11-12)
+
+**Question.** How are dependencies named and matched, what is the cache key, and does baitan need metasmith's type system?
+
+**User's words.** "lineage is optional..." "cache misses are expensive, but false positive hits are wrong... Can we do caching on exact offers?" "Im also not sure that we need to include lineage constraints?" "need to think through the caching scenarios one at a time to make sure that we can still use dumb caches". "we do need to hash the inputs in some way, I suggested \"block chain\" which refers to hashing outputs by including the hashes of the inputs." "when baitan recieves the compute job, I think the types are large lost and is just a dumb job." "can we set it up as the first layer? exact match hits. later, we can add subsetting as the next layer." "rule 2 makes sense". Tests mock the jobs: "we prolly shouldnt actually run the job, but just mock it instead. this goes for builds as well."
+
+**Terms.** An *instance* is one concrete piece of data or software; its *instance id* is its hash identity. A *type* is a property set. A *fact* is a subject–predicate–object triple; the subject is an instance id. An *offer* asks for a fact to become true; its *offer key* is the hash of its canonical content. ("What" and "who" are retired.)
+
+**Decided: layer 1, exact match.**
+- The offer key hashes the contract and its script version, the input instance ids, the output-affecting params, and the dependencies by name and version. Resources, provider, place, dependency format, axes, picker, checker and size estimate stay out. Each contract declares which params affect output (rule 2, as metasmith leaves resources out of identity).
+- A result's instance id is the key of the offer that made it, so ids chain through their inputs to origin-stamped leaves. A result records its parents' ids one level up; full provenance goes in the results package or a log.
+- The cache is one table from offer key to instance. A hit is hash equality: no false positives, only misses when the same work is phrased differently.
+- The baitan core is type-agnostic. Dependencies are matched by exact name and version, through a matcher that can be swapped. Types are optional facts the core stores but does not interpret. No lineage constraints: what-planning, and metasmith's lineage constraints with it, stay with the requester. Hybrid assembly (MEGAHIT then OPERA-MS) gives no false positive, since Prodigal on each assembly has a different key.
+- A checker may watch for the plan's own evaluation output (e.g. the plan's CheckM result) and report the review after the pipeline, instead of posting a new job.
+
+**Deferred: layer 2.** Subset matching of dependencies and places by metasmith-style type sets.
