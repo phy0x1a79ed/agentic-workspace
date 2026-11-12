@@ -10,7 +10,11 @@ use crate::tab::{self, Tab};
 const JS: &str = include_str!("chat.js");
 /// Each site, the host its signed-in tab is on, and whether its tab closes after a read.
 /// Discord opens only for the call that needs it.
-const SITES: [(&str, &str, bool); 3] = [("slack", "app.slack.com", false), ("teams", "teams.microsoft.com", false), ("discord", "discord.com", true)];
+const SITES: [(&str, &[&str], bool); 3] = [
+    ("slack", &["app.slack.com"], false),
+    ("teams", &["teams.microsoft.com", "teams.cloud.microsoft"], false),
+    ("discord", &["discord.com"], true),
+];
 
 type R = Result<Value, VerbError>;
 
