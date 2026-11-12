@@ -6,9 +6,9 @@
 
 ## Current
 
-`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage, locator, gc, fronting, providers, fair-share, tool-surface, bids. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
+`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage, locator, gc, fronting, providers, fair-share, tool-surface, bids, redundancy. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
 
-Now: `redundancy`. First question: speculative backup (MapReduce-style: the runner-up starts a duplicate when it has idle capacity and the winner has not settled) against plain fail-over on a broken promise.
+Now: `build-repro`. First question: drop it, since identity is declared properties and baitan never compares bytes?
 
 ## Waiting on the user
 
@@ -33,7 +33,6 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `redundancy`: with one reliable and one flaky provider, run at least as fast as the reliable one alone, with the flaky one helping occasionally.
   - `build-repro`: do real workloads (kb, lance, musl release) give byte-identical output? E4 tested only a dependency-free crate.
   - `nextflow`: run compiled Nextflow workflows through the market. Aspirational; last under `compute-market`. The executor posts every ready task concurrently (from `fair-share`). Includes test 2 of journal 3a6c999a (checker CheckM must hit the plan's CheckM cache).
 - `envelope-mapping`: map the dex TypeScript kernel's envelope (altair, dex/edge) to `{v, id, from, to, selector, args}`; ask whether both share one envelope.
@@ -73,6 +72,7 @@ None.
 - `gc`: caller sends a disposal request after the job, straight to the holder, no bid round.
 - `fronting`: providers register at a node and fulfil as they like; locations are providers; Slurm calls cached, ≤1/min, front owns arrays; spot images persist references, not data.
 - `providers`: absorbed by `fronting`.
+- `redundancy`: no duplicates; fresh round without the failed provider; no deadlines, hangs are the provider's; per-axis bid error and success rate correct the picker.
 - `bids`: offer-carried sub-second window, early close; no bids = error; capacity is provider detail; picker falls back to ratio below 3 bids.
 - `tool-surface`: offer, status, cancel, dispose, review; watch on CLI only; single offers, internal batching.
 - `fair-share`: folded into the Slurm front's ETA; time is a common, optional axis; offers posted concurrently.

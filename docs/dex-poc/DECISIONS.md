@@ -370,3 +370,18 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - Picker: robust z-scores (median/MAD), clamped, weighted sum; with fewer than three bids, score each axis as a ratio to the best; one bid wins.
 
 **Landed.** This file.
+
+## redundancy (2026-11-12)
+
+**Question.** With one reliable and one flaky provider, how does the market run at least as fast as the reliable one alone?
+
+**User's words.** "I dont want duplications since that means mizar or some other node will be running the build at the same time." / "if an accepted offer fails, should retry on runner up. need to deal with hangs..." / "i dont think deadlines are productive. suppose a job on fir timeouts then retries at 2x time. thats potentially 3x time..." / "we need to abstract lateness to general error between bids and review scores"
+
+**Decided.**
+- No duplicate runs of one offer, ever.
+- When an awarded offer breaks its promise, baitan runs a fresh bid round without the failed provider (the runner-up with current state). No bids: the promise errors.
+- No baitan-side deadlines. Hang detection belongs to the provider: a dead provider shows as a dropped connection (`unavailable`); a dead or stuck job is the provider's watcher's to settle (process exit, Slurm job state, its own walltime and retries). The caller can always `cancel`.
+- baitan keeps, per (provider, contract), the success rate (settled against broken) and, per axis, the error between the bid's value and the measured value (time from the settle, quality axes from the review). Lateness is the time axis's case of this error.
+- The picker scores bids corrected by that history: a provider's bid on an axis is adjusted by its error record there, and its expected cost includes its failure rate.
+
+**Landed.** This file. Test 3 of journal 3a6c999a now reads without duplication: the flaky provider's failures cost one fresh round each, and its success rate pushes later awards to the reliable one.
