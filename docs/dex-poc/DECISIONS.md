@@ -434,3 +434,11 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - One selector per baitan verb; the market fans offers out to providers with `send`, providers answer with a `bid` `ask`.
 
 **Landed.** This file.
+
+## stack-prune (2026-11-12)
+
+**Question.** With dex dropped, which remaining topics apply to baitan?
+
+**Decided.** Drop `first-test`, `swap` and `coexistence` (dex module port, hot swap, session rollout). Keep `version-policy` (baitan's contract versions), `transport-survey` (baitan's carrier and event push), `core-boundary` (baitan's crate split and generated surfaces) and `handoff`.
+
+**Landed.** `STACK.md`.

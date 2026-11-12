@@ -6,7 +6,7 @@
 
 ## Current
 
-`stack-prune`. dex is no longer a dependency; decide which remaining topics still apply to baitan. Deferred items and test cases for baitan: journal 3a6c999a.
+`version-policy`. First question: how baitan handles mismatched contract versions between requesters, the market and providers. Deferred items and test cases for baitan: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -31,13 +31,9 @@ Nothing.
 
 ## Stack
 
-- `stack-prune`: dex is dropped; which remaining topics apply to baitan.
-- `first-test`: `claude-md-sync` is a candidate after the experiments. One origin per name against C3 is still open.
-- `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
-- `transport-survey`: do AWM peer links or the push path already give subscribe?
-- `core-boundary`: the core crate against the AWM adapter. Includes whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate.
-- `coexistence`: how it runs in a few select sessions (Q30) and what stays out
-- `swap`: state handover and bad-activation recovery (Q7, Q8, Q24). Later rollout step.
+- `version-policy`: mismatched baitan contract versions across requesters, market and providers.
+- `transport-survey`: baitan's carrier; do awm peer links give subscribe; what reaches Slurm fronts and spot machines.
+- `core-boundary`: baitan's market core against the awm adapter; whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate.
 - `handoff`: the brief for the build session, written from the findings
 
 ## Workers
@@ -71,6 +67,7 @@ None.
 - `build-repro`: dropped; identity is declared.
 - `nextflow`: custom executor at task level; manifest-only work dirs; three dev layers (task hash, threaded declarations, axes and reviews), all built.
 - `compute-market`: baitan; all child topics closed.
+- `stack-prune`: dropped first-test, swap, coexistence.
 - `envelope-mapping`: dex dropped; baitan takes its envelope with `replyTo` and reply selectors.
 - `redundancy`: no duplicates; sign of life via `status`; fresh round without the failed provider; no deadlines, hangs are the provider's; per-axis bid error and success rate correct the picker.
 - `bids`: offer-carried sub-second window, early close; no bids = error; capacity is provider detail; picker falls back to ratio below 3 bids.
