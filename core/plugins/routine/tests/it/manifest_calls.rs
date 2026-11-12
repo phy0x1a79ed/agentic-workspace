@@ -36,7 +36,7 @@ async fn invoke(State(gw): State<Arc<Gateway>>, headers: HeaderMap, Json(body): 
         if *gw.fail_start.lock().unwrap() {
             return Json(json!({"result": {"error": "peer unreachable"}}));
         }
-        return Json(json!({"result": {"job": "j1"}}));
+        return Json(json!({"result": {"session_id": "cc1"}}));
     }
     Json(json!({"result": {"ok": true}}))
 }

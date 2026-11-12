@@ -1,17 +1,14 @@
 //! search, kb's federation layer. It holds no content: it parses the query once, embeds its
 //! text once when a named source takes vectors, builds the caller's veil from the private marks,
 //! and asks each named source in parallel, each within its own timeout. kb's own sources answer
-//! in-process through [`awm_kb_source::Source`]; a live source another plugin declares answers
-//! over the hub; a source named `<kind>@<node>` is asked of that node's search.
+//! in-process through [`awm_kb_source::Source`]. A source named `<kind>@<node>` is asked of that
+//! node's search, and a bare kind this node does not serve goes to the first peer that does.
 //!
 //! Its database keeps only the judgements and the usage log, in place at
 //! `<AWM_DIR>/services/search/search.db`.
 
 pub mod federation;
 pub mod hits;
-pub mod live;
-pub mod merge;
-pub mod registry;
 pub mod request;
 pub mod search;
 pub mod store;

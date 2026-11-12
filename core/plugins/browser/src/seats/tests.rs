@@ -175,13 +175,29 @@ async fn own_container_carries_the_profile_the_level_allows_and_close_deletes_it
 }
 
 #[tokio::test]
-async fn a_restart_adopts_the_service_tabs_already_open() {
+async fn service_tabs_are_adopted_confined_and_closed() {
     let chrome = Arc::new(FakeChrome::new("shared"));
     let first = SeatBook::new(chrome.clone(), None, None);
-    let teams = first.service_tab("teams", "https://teams.microsoft.com/v2/").await.unwrap();
+    let eval = || json!({"expression": "1"});
+    first.service_send("teams", "https://teams.microsoft.com/v2/", "Runtime.evaluate", eval()).await.unwrap();
     let again = SeatBook::new(chrome.clone(), None, None);
-    assert_eq!(again.service_tab("teams", "https://teams.microsoft.com").await.unwrap(), teams);
-    assert_eq!(chrome.calls().iter().filter(|c| c.0 == "Target.createTarget").count(), 1);
+    again.service_send("teams", "https://teams.microsoft.com", "Runtime.evaluate", eval()).await.unwrap();
+    let calls = chrome.calls();
+    assert_eq!(calls.iter().filter(|c| c.0 == "Target.createTarget").count(), 1, "a restart adopts the open tab");
+    let evals: Vec<_> = calls.iter().filter(|c| c.0 == "Runtime.evaluate").map(|c| c.2.clone().unwrap()).collect();
+    assert_eq!(evals.len(), 2);
+    assert!(evals.iter().all(|s| s.starts_with("s0-")), "{evals:?}");
+
+    assert!(seat_msg(again.service_send("teams", "https://teams.microsoft.com", "Network.getAllCookies", json!({})).await).contains("not open"));
+
+    // A new connection invalidates the flat session.
+    chrome.generation.store(1, Ordering::SeqCst);
+    again.service_send("teams", "https://teams.microsoft.com", "Runtime.evaluate", eval()).await.unwrap();
+    assert!(chrome.calls().last().unwrap().2.as_deref().unwrap().starts_with("s1-"));
+
+    assert!(again.service_close("teams").await.unwrap());
+    assert!(!again.service_close("teams").await.unwrap());
+    assert_eq!(chrome.with(|s| s.windows.len()), 0);
 }
 
 #[tokio::test]

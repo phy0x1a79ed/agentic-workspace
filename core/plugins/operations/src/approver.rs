@@ -35,7 +35,9 @@ pub const MINUTES_MIN: i64 = 15;
 pub const MINUTES_MAX: i64 = 1440;
 pub const BURST_COUNTS: [i64; 3] = [1, 2, 4];
 /// The order kinds alcor signs. `agent` replaces spawn and new_from (CONTRACT.md b11adebc).
-pub const ORDER_KINDS: [&str; 1] = ["agent"];
+pub const ORDER_KINDS: [&str; 2] = ["agent", "service"];
+/// How long one passkey approval keeps the Ops service switches open.
+pub const SERVICE_WINDOW_S: f64 = 300.0;
 /// The kinds whose grant opens a window for its minutes, so the summary names them.
 const WINDOW_KINDS: [&str; 4] = ["admin_ssh", "trust_raise", "browser_signin", "vault_hold"];
 
@@ -99,6 +101,8 @@ impl From<crate::store::QueueError> for ApproverError {
 }
 
 pub type AResult<T> = Result<T, ApproverError>;
+
+const AGENT_MODELS: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 
 fn bad(msg: impl Into<String>) -> ApproverError {
     ApproverError::new("bad_request", msg)
@@ -804,10 +808,42 @@ impl Approver {
         Ok(env)
     }
 
+    /// Switch a service on `node` from Ops. Outside a window this device opened with its passkey,
+    /// it opens no order and answers with the request to approve.
+    pub async fn service_toggle(&self, device: &str, node: &str, service: &str, on: bool) -> AResult<Value> {
+        let node = self.order_node("service", Some(node))?;
+        if !valid_plugin(service) {
+            return Err(bad("service is a service name"));
+        }
+        let open = self.conn().query_row(
+            "SELECT 1 FROM requests WHERE kind='service_window' AND status='approved' AND requester_session IS NULL AND device=? AND decided_at>?",
+            params![device, self.now() - SERVICE_WINDOW_S],
+            |_| Ok(()),
+        ).optional()?.is_some();
+        if !open {
+            let pending: Option<String> = self.conn().query_row(
+                "SELECT request_id FROM requests WHERE kind='service_window' AND status='pending' AND requester_session IS NULL AND expires>?",
+                params![self.now()],
+                |r| r.get(0),
+            ).optional()?;
+            if let Some(request_id) = pending {
+                return Ok(json!({"needs_approval": true, "request_id": request_id}));
+            }
+            let r = self.approval_request("service_window", None, "Allow Ops to switch services for 5 minutes", MINUTES_MIN, json!({}), None, None).await?;
+            return Ok(json!({"needs_approval": true, "request_id": r["request_id"]}));
+        }
+        let env = self.issue_order("service", &node, json!({"service": service, "on": on}))?;
+        Ok(json!({"order_id": env["order"]["order_id"]}))
+    }
+
     /// Start an agent on `node` from the vault: a card in Needs you and a signed `agent`
-    /// order. No text from the vault reaches the agent.
-    pub async fn agent(&self, node: &str, note_id: Option<&str>) -> AResult<Value> {
+    /// order. No text from the vault reaches the agent, so a model or effort must be a listed one.
+    pub async fn agent(&self, node: &str, model: Option<&str>, effort: Option<&str>, note_id: Option<&str>) -> AResult<Value> {
         let node = self.order_node("agent", Some(node))?;
+        if model.is_some_and(|m| !AGENT_MODELS.contains(&m)) {
+            return Err(bad(format!("model must be one of {}", AGENT_MODELS.join(", "))));
+        }
+        effort.map(awm_trust::trust::check_effort).transpose().map_err(|e| bad(e.to_string()))?;
         if let Some(n) = note_id {
             if n.is_empty() || n.len() > 64 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
                 return Err(bad("note_id is a vault note id"));
@@ -819,6 +855,12 @@ impl Approver {
         let mut payload = json!({"task_id": task_id, "node": node});
         if let Some(n) = note_id {
             payload["note_id"] = json!(n);
+        }
+        if let Some(m) = model {
+            payload["model"] = json!(m);
+        }
+        if let Some(e) = effort {
+            payload["effort"] = json!(e);
         }
         let env = self.issue_order("agent", &node, payload)?;
         Ok(json!({"task_id": task_id, "order_id": env["order"]["order_id"]}))
@@ -853,6 +895,13 @@ impl Approver {
             "UPDATE orders SET done_at=?, ok=?, note=? WHERE order_id=? AND done_at IS NULL",
             params![self.now(), ok as i64, note, order_id],
         )?;
+        if n == 1 && !ok {
+            let payload: Option<String> = self.conn().query_row("SELECT payload FROM orders WHERE order_id=? AND kind='agent'", [order_id], |r| r.get(0)).optional()?;
+            let task = payload.and_then(|p| serde_json::from_str::<Value>(&p).ok()).and_then(|p| p["task_id"].as_str().map(str::to_string));
+            if let Some(task) = task {
+                self.store.agent_order_failed(&task, &note).map_err(|e| ApproverError::new("failed", e.to_string()))?;
+            }
+        }
         Ok(json!({"order_id": order_id, "recorded": n == 1}))
     }
 

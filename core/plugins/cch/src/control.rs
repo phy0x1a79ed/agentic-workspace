@@ -18,6 +18,7 @@ use awm_harness::claude::records;
 use awm_harness::claude::roster::{self, JobId};
 use awm_harness::claude::{trust, ClaudeHome};
 use awm_plugin_sdk::procfs;
+use awm_plugin_sdk::ids::{Name, Platform, SessionId};
 use regex::Regex;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -25,7 +26,6 @@ use tokio::time::{sleep, Instant};
 
 use crate::guards::{self, EmptyText};
 use crate::lane::{AnyLane, Host, Key, Lane, LaneError, Opener};
-use crate::lineage;
 use crate::paths::Paths;
 use crate::permission_mode::{walk_lock, WALK_WAIT};
 use crate::promises::{Change, Promises, APPLIED, FAILED};
@@ -110,6 +110,11 @@ pub struct Target {
 }
 
 impl Target {
+    /// The session's canonical id.
+    pub fn canonical(&self) -> Option<String> {
+        SessionId::canonical_of_native(Platform::Claude, self.session_id.as_deref()?)
+    }
+
     /// The name, else the job id, else the pid.
     pub fn label(&self) -> String {
         [self.name.as_deref(), self.job.as_deref()]
@@ -122,7 +127,7 @@ impl Target {
 
 /// No session on this node answers to `unknown_ref`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("no session on this node has the job id or name {}; `list_other` shows them", py_repr(.unknown_ref))]
+#[error("no session on this node has the id {}; `list_other` shows them", py_repr(.unknown_ref))]
 pub struct UnknownSession {
     pub unknown_ref: String,
 }
@@ -177,10 +182,6 @@ impl<L: Lane> Screen<L> {
 
     async fn press(&mut self, key: Key) -> Result<(), ControlError> {
         Ok(self.lane.press(key).await?)
-    }
-
-    fn forget(&mut self) {
-        self.lane.forget();
     }
 
     fn hold(&self) -> impl Future<Output = Result<OwnedMutexGuard<()>, ControlError>> + Send + 'static {
@@ -379,6 +380,13 @@ fn alive(pid: Option<u32>, start: Option<&str>) -> bool {
 
 /// Every session on this node that `list_other` would show.
 fn candidates(home: &ClaudeHome) -> Vec<Target> {
+    let mut out = running(home);
+    out.extend(stopped_jobs(home, &out));
+    out
+}
+
+/// Every session the daemon's roster lists, plus every live interactive session.
+fn running(home: &ClaudeHome) -> Vec<Target> {
     let mut out: Vec<Target> = roster::load(home)
         .into_iter()
         .filter(|j| j.has_record)
@@ -425,6 +433,30 @@ fn candidates(home: &ClaudeHome) -> Vec<Target> {
     out
 }
 
+/// Every job the daemon's roster no longer lists, by its state record: a stopped session.
+fn stopped_jobs(home: &ClaudeHome, listed: &[Target]) -> Vec<Target> {
+    let listed: HashSet<&str> = listed.iter().filter_map(|t| t.job.as_deref()).collect();
+    let mut dirs: Vec<String> = std::fs::read_dir(home.jobs())
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    dirs.into_iter().filter(|short| !listed.contains(short.as_str())).filter_map(|short| stopped_job(home, short)).collect()
+}
+
+/// The job `short` as a stopped session, from its state record.
+fn stopped_job(home: &ClaudeHome, short: String) -> Option<Target> {
+    let state = records::read_json(&home.job_state(&short));
+    Some(Target {
+        pid: 0,
+        kind: SessionKind::Background,
+        alive: false,
+        name: str_of(state.get("name")),
+        session_id: Some(str_of(state.get("sessionId"))?),
+        job: Some(short),
+        is_self: false,
+    })
+}
+
 fn describe(t: &Target) -> String {
     let at = match &t.job {
         Some(job) if !job.is_empty() => format!("job {job}"),
@@ -459,41 +491,36 @@ async fn mark_self(home: &ClaudeHome, mut t: Target, caller_pid: Option<u32>) ->
     t
 }
 
-/// The session `job` names (a job id, a session id, or a name, exactly then case-blind), or the
-/// caller's own when it is omitted. A name two sessions share is refused with the candidates.
-pub async fn resolve<E: Effects>(fx: &E, job: Option<&str>, caller_pid: Option<u32>) -> Result<Target, ControlError> {
-    let wanted = job.map(str::trim).unwrap_or_default();
-    if wanted.is_empty() {
+/// The session whose canonical id is `session`, live or stopped, or the caller's own when it is
+/// omitted.
+pub async fn resolve<E: Effects>(fx: &E, session: Option<&str>, caller_pid: Option<u32>) -> Result<Target, ControlError> {
+    let Some(wanted) = session.filter(|s| !s.is_empty()) else {
         return caller_target(fx.home(), caller_pid).await;
+    };
+    let id = SessionId::parse(wanted).map_err(|e| ResolveError(e.to_string()))?;
+    let (uuid, job) = (id.harness_native(), id.job_dir().map(str::to_string));
+    let home = fx.home().clone();
+    let found = blocking(move || {
+        let is_it = |t: &Target| t.session_id.as_deref() == Some(uuid.as_str());
+        let live = running(&home);
+        live.iter().find(|t| is_it(t)).cloned().or_else(|| {
+            let job = job.filter(|j| !live.iter().any(|t| t.job.as_deref() == Some(j)))?;
+            stopped_job(&home, job).filter(is_it)
+        })
+    })
+    .await;
+    match found {
+        Some(t) => Ok(mark_self(fx.home(), t, caller_pid).await),
+        None => Err(UnknownSession { unknown_ref: wanted.into() }.into()),
     }
+}
+
+/// Every session, live or stopped, whose whole name is `name`, any case.
+pub async fn named<E: Effects>(fx: &E, name: &str) -> Vec<Target> {
+    let Ok(name) = Name::new(name) else { return vec![] };
     let home = fx.home().clone();
     let cands = blocking(move || candidates(&home)).await;
-    let folded = wanted.to_lowercase();
-    let tiers: [Vec<&Target>; 3] = [
-        cands
-            .iter()
-            .filter(|t| t.job.as_deref() == Some(wanted) || t.session_id.as_deref() == Some(wanted))
-            .collect(),
-        cands.iter().filter(|t| t.name.as_deref() == Some(wanted)).collect(),
-        cands.iter().filter(|t| t.name.as_deref().unwrap_or_default().to_lowercase() == folded).collect(),
-    ];
-    for matches in tiers {
-        match matches.as_slice() {
-            [] => {}
-            [one] => return Ok(mark_self(fx.home(), (*one).clone(), caller_pid).await),
-            many => {
-                let listed: Vec<String> = many.iter().map(|t| describe(t)).collect();
-                return Err(ResolveError(format!(
-                    "{} names {} sessions: {}. Pass the job id.",
-                    py_repr(wanted),
-                    many.len(),
-                    listed.join("; ")
-                ))
-                .into());
-            }
-        }
-    }
-    Err(UnknownSession { unknown_ref: wanted.into() }.into())
+    cands.into_iter().filter(|t| t.name.as_deref().is_some_and(|n| name.matches(n))).collect()
 }
 
 fn require_running(t: &Target) -> Result<(), ControlError> {
@@ -516,11 +543,11 @@ async fn bridge_id(home: &ClaudeHome, t: &Target) -> Option<String> {
 }
 
 fn refused(t: &Target, why: &str) -> Value {
-    json!({"ok": false, "refused": true, "session": t.label(), "job": t.job, "reason": why})
+    json!({"ok": false, "refused": true, "session": t.label(), "session_id": t.canonical(), "reason": why})
 }
 
 fn identify(t: &Target) -> Value {
-    json!({"session": t.label(), "job": t.job, "self": t.is_self})
+    json!({"session": t.label(), "session_id": t.canonical(), "self": t.is_self})
 }
 
 fn ok_for(t: &Target) -> Value {
@@ -594,7 +621,7 @@ async fn command<E: Effects>(fx: &E, t: &Target, cmd: Command<'_>) -> Result<Val
             ..SendRequest::new(cmd.text, Some(t.pid))
         };
         let out = fx.send_self(req).await?;
-        return Ok(with(out, json!({"self": true, "job": t.job})));
+        return Ok(with(out, json!({"self": true, "session_id": t.canonical()})));
     }
     if let Some(no) = guards::refusal(cmd.text, cmd.confirm, cmd.allow_modal)? {
         return Ok(no);
@@ -780,12 +807,6 @@ fn is_model_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || "._[]:-".contains(c))
 }
 
-fn is_rc_name(name: &str) -> bool {
-    let b = name.as_bytes();
-    (1..=64).contains(&b.len())
-        && b[0].is_ascii_alphanumeric()
-        && b[1..].iter().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(c))
-}
 
 /// Switch the target's model with `/model <name>`, answering the confirm dialog it may raise.
 pub async fn model<E: Effects>(
@@ -832,9 +853,6 @@ pub async fn rename<E: Effects>(
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 80 || !is_printable(name) || name.starts_with('-') {
         return Ok(reason("name must be a short printable string on one line that does not start with '-'"));
-    }
-    if name.to_lowercase().contains("<warm") {
-        return Ok(reason("a name may not carry the warm pool's mark"));
     }
     let text = format!("/rename {name}");
     slash(fx, job, caller_pid, &text, "the rename", new_change("rename", name, ""), None).await
@@ -1005,7 +1023,7 @@ pub async fn mcp<E: Effects>(
             change: Some(new_change("mcp", &format!("{action} {}", server.trim()), "")),
             ..SendRequest::new(&line, Some(t.pid))
         };
-        return Ok(with(fx.send_self(req).await?, json!({"self": true, "job": t.job})));
+        return Ok(with(fx.send_self(req).await?, json!({"self": true, "session_id": t.canonical()})));
     }
     Ok(mcp_other(fx, &t, &line).await?)
 }
@@ -1135,33 +1153,24 @@ async fn remove_job<R: Remover>(remove: &R, job: &str) -> StopOutcome {
 /// returned. A terminal session the caller retires itself is left open for its terminal to close.
 pub async fn stop<E: Effects, R: Remover>(
     fx: &E,
-    job: Option<&str>,
+    session: Option<&str>,
     caller_pid: Option<u32>,
     confirm: bool,
     remove: R,
 ) -> Result<Value, ControlError> {
-    let Some(job) = job.map(str::trim).filter(|j| !j.is_empty()) else {
-        return Ok(reason("job is required: the session to stop"));
+    let Some(session) = session.filter(|s| !s.is_empty()) else {
+        return Ok(reason("session_id is required: the session to stop"));
     };
-    let t = match resolve(fx, Some(job), caller_pid).await {
-        Ok(t) => t,
-        Err(e @ (ControlError::Resolve(_) | ControlError::Unknown(_))) => {
-            // A job whose session has exited has no live row to resolve, and would otherwise stay
-            // in the fleet view as stopped for good.
-            let listed = lineage::is_job(job)
-                && tokio::fs::metadata(fx.home().jobs().join(job)).await.is_ok_and(|m| m.is_dir());
-            if !listed {
-                return Err(e);
-            }
-            let result = remove_job(&remove, job).await;
-            let mut out = with(json!({"ok": done(&result), "job": job, "exited": true}), outcome_json(&result));
-            if !done(&result) {
-                out = with(out, json!({"reason": stop_failure(&result)}));
-            }
-            return Ok(out);
+    let t = resolve(fx, Some(session), caller_pid).await?;
+    if let (false, false, Some(job)) = (t.alive, t.is_self, t.job.as_deref()) {
+        // A job whose session has exited would otherwise stay in the fleet view as stopped for good.
+        let result = remove_job(&remove, job).await;
+        let mut out = with(json!({"ok": done(&result), "session_id": t.canonical(), "exited": true}), outcome_json(&result));
+        if !done(&result) {
+            out = with(out, json!({"reason": stop_failure(&result)}));
         }
-        Err(e) => return Err(e),
-    };
+        return Ok(out);
+    }
     let terminal = t.kind != SessionKind::Background || t.job.as_deref().is_none_or(str::is_empty);
     if terminal && t.is_self && confirm {
         // The caller learns of it, so the sessions that wait on it wake. Its terminal closes it.
@@ -1239,20 +1248,39 @@ pub async fn remote_control<E: Effects>(
     require_running(&t)?;
     let bridge = bridge_id(fx.home(), &t).await;
     if on {
-        if name.is_some_and(|n| !is_rc_name(n)) {
-            return Ok(reason("name must be a plain label"));
-        }
+        let name = match name.map(Name::new).transpose() {
+            Ok(n) => n.map(|n| n.rc()),
+            Err(e) => return Ok(reason(&e.to_string())),
+        };
         if bridge.is_some() {
             let out = with(ok_for(&t), json!({"changed": false, "detail": "Remote Control is already on"}));
             return Ok(with(out, link_fields(bridge.as_deref())));
         }
-        return turn_on(fx, &t, name).await;
+        return turn_on(fx, &t, name.as_deref()).await;
     }
     if bridge.is_none() {
         let out = with(ok_for(&t), json!({"changed": false, "detail": "Remote Control is already off"}));
         return Ok(with(out, link_fields(None)));
     }
     turn_off(fx, &t).await
+}
+
+/// Put the Remote Control of `job`, which holds session `session_id`, back the way it was last
+/// switched, after a relaunch brought it up the other way. None when it already matches. One try:
+/// a refusal is logged by the caller, never retried, so a human's own `/rc` later is not fought.
+pub async fn restore_remote_control<E: Effects>(
+    fx: &E,
+    job: &str,
+    session_id: &str,
+    on: bool,
+    name: Option<&str>,
+) -> Option<Result<Value, ControlError>> {
+    let (home, j) = (fx.home().clone(), job.to_string());
+    let bridged = blocking(move || roster::job_bridge_id(&home, &j)).await.is_some();
+    if bridged == on {
+        return None;
+    }
+    Some(remote_control(fx, on, name, Some(session_id), None).await)
 }
 
 async fn turn_on<E: Effects>(fx: &E, t: &Target, name: Option<&str>) -> Result<Value, ControlError> {
@@ -1393,15 +1421,15 @@ async fn turn_off_later<E: Effects>(fx: &E, t: &Target, resume: bool) -> Result<
     ))
 }
 
-/// The text of the option the cursor is on, from the latest paint of it.
+/// The text of the option the cursor is on, the lowest one painted.
 pub fn selected_option(screen: &str) -> Option<String> {
-    CURSOR.captures_iter(&guards::plain_screen(screen)).last().map(|c| c[1].trim().to_string())
+    CURSOR.captures_iter(&guards::current_screen(screen)).last().map(|c| c[1].trim().to_string())
 }
 
 /// Which key moves the cursor toward the disconnect option, or None if unknown.
 fn direction(screen: &str) -> Option<Key> {
-    let plain = guards::plain_screen(screen);
-    let lines: Vec<&str> = plain.split('\n').collect();
+    let shown = guards::current_screen(screen);
+    let lines: Vec<&str> = shown.split('\n').collect();
     let target = lines.iter().rposition(|ln| ln.to_lowercase().contains(DISCONNECT_OPTION))?;
     let cursor = lines.iter().rposition(|ln| CURSOR.is_match(ln))?;
     Some(if cursor > target { Key::Up } else { Key::Down })
@@ -1424,7 +1452,7 @@ async fn drive_disconnect<E: Effects>(
 }
 
 fn shows_disconnect(screen: &str) -> bool {
-    guards::plain_screen(screen).to_lowercase().contains(DISCONNECT_OPTION)
+    guards::current_screen(screen).to_lowercase().contains(DISCONNECT_OPTION)
 }
 
 async fn drive_on<E: Effects>(
@@ -1488,6 +1516,9 @@ async fn await_modal<L: Lane>(sess: &mut Screen<L>, wait: Wait) -> Result<Option
 }
 
 /// Move the cursor onto 'Disconnect this session'. `Some` is the reason it could not.
+///
+/// Each read is the whole stream since the lane opened: a key press repaints only the rows that
+/// changed, so the screen is the replay of every paint.
 async fn walk_to_disconnect<L: Lane>(sess: &mut Screen<L>, mut screen: String) -> Result<Option<String>, ControlError> {
     let mut key = None;
     for _ in 0..=MAX_MODAL_STEPS {
@@ -1507,7 +1538,6 @@ async fn walk_to_disconnect<L: Lane>(sess: &mut Screen<L>, mut screen: String) -
                 }
             },
         };
-        sess.forget();
         sess.press(step).await?;
         sleep(KEY_SETTLE).await;
         screen = sess.read().await?;
@@ -1822,11 +1852,26 @@ mod tests {
     const SELF_JOB: &str = "aaaaaaaa";
     const OTHER_JOB: &str = "bbbbbbbb";
     const DEAD_JOB: &str = "cccccccc";
+
+    /// The canonical id of the session test job `short` holds.
+    fn sid(short: &str) -> String {
+        format!("cc{short}000040008000000000000000")
+    }
+
+    fn uuid(short: &str) -> String {
+        format!("{short}-0000-4000-8000-000000000000")
+    }
     // Above the kernel's largest pid, so no process ever holds it.
     const DEAD_PID: u32 = (1 << 22) + 12345;
     const PLAIN: &str = "some output\n? for shortcuts";
     const PROMPT: &str = "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel";
-    const OPTIONS: [&str; 3] = ["Show QR code", "Disconnect this session", "Continue"];
+    // Claude Code 2.1.321's `/rc` modal on a connected session, as its daemon pty streamed it:
+    // the open, then the repaint after each Up. The cursor starts on Continue, the last option.
+    const RC_OPEN: &str = include_str!("../testdata/rc_modal_2.1.321/open.stream");
+    const RC_UP: [&str; 2] = [
+        include_str!("../testdata/rc_modal_2.1.321/up1.stream"),
+        include_str!("../testdata/rc_modal_2.1.321/up2.stream"),
+    ];
     const MODEL_KEY: &str = "model-a";
 
     fn me() -> u32 {
@@ -1848,8 +1893,8 @@ mod tests {
     #[derive(Default)]
     struct ScreenState {
         frames: VecDeque<String>,
-        // The Remote Control modal: a list with a cursor that Down and Up move.
-        modal: Option<(Vec<String>, usize)>,
+        // What the session paints after each Up or Down, appended to the stream.
+        repaints: VecDeque<String>,
         presses: Vec<Key>,
         closed: bool,
         on_press: Option<OnPress>,
@@ -1866,9 +1911,10 @@ mod tests {
             s
         }
 
-        fn modal(options: &[&str], cursor: usize) -> Self {
-            let s = Self::default();
-            s.0.lock().unwrap().modal = Some((options.iter().map(|o| o.to_string()).collect(), cursor));
+        /// A pty stream that grows by one of `repaints` on each Up or Down.
+        fn stream(open: &str, repaints: &[&str]) -> Self {
+            let s = Self::new(&[open]);
+            s.0.lock().unwrap().repaints = repaints.iter().map(|r| r.to_string()).collect();
             s
         }
 
@@ -1886,14 +1932,6 @@ mod tests {
 
         fn render(&self) -> String {
             let mut s = self.0.lock().unwrap();
-            if let Some((options, cursor)) = &s.modal {
-                let rows: Vec<String> = options
-                    .iter()
-                    .enumerate()
-                    .map(|(i, o)| format!("{}{o}", if i == *cursor { "❯ " } else { "  " }))
-                    .collect();
-                return format!("Remote Control\n{}\nEnter to select", rows.join("\n"));
-            }
             if s.frames.len() > 1 {
                 s.frames.pop_front().unwrap_or_default()
             } else {
@@ -1927,18 +1965,14 @@ mod tests {
         async fn repaint(&mut self) -> Result<bool, LaneError> {
             Ok(false)
         }
-        fn forget(&mut self) {}
         async fn press(&mut self, key: Key) -> Result<(), LaneError> {
             let hook = {
                 let mut s = self.0.lock().unwrap();
                 s.presses.push(key);
-                if let Some((options, cursor)) = &mut s.modal {
-                    let n = options.len();
-                    *cursor = match key {
-                        Key::Down => (*cursor + 1) % n,
-                        Key::Up => (*cursor + n - 1) % n,
-                        _ => *cursor,
-                    };
+                if matches!(key, Key::Up | Key::Down) {
+                    if let Some(paint) = s.repaints.pop_front() {
+                        s.frames.back_mut().expect("a stream").push_str(&paint);
+                    }
                 }
                 s.on_press.clone()
             };
@@ -2071,14 +2105,14 @@ mod tests {
                 std::fs::read(&roster).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(json!({"workers": {}}));
             doc["workers"][short] = json!({
                 "replPid": pid,
-                "sessionId": format!("sid-{short}"),
+                "sessionId": uuid(short),
                 "replProcStart": if alive { proc_start(pid) } else { "1".into() },
             });
             std::fs::write(&roster, doc.to_string()).unwrap();
             std::fs::create_dir_all(self.home.jobs().join(short)).unwrap();
-            std::fs::write(self.home.job_state(short), json!({"name": name}).to_string()).unwrap();
+            std::fs::write(self.home.job_state(short), json!({"name": name, "sessionId": uuid(short)}).to_string()).unwrap();
             if alive {
-                self.record(pid, "bg", name, json!({"jobId": short}));
+                self.record(pid, "bg", name, json!({"jobId": short, "sessionId": uuid(short)}));
             }
         }
 
@@ -2288,13 +2322,16 @@ mod tests {
     // --- resolving `job` ---
 
     #[tokio::test]
-    async fn test_an_ambiguous_name_is_refused_with_the_candidates() {
+    async fn test_a_name_finds_every_session_it_names_live_or_stopped() {
         let w = World::new();
-        w.add_job(DEAD_JOB, "other one", DEAD_PID, false);
-        let err = resolve(&w, Some("other one"), me_()).await.unwrap_err();
-        let said = err.to_string();
-        assert!(matches!(err, ControlError::Resolve(_)));
-        assert!(said.contains(OTHER_JOB) && said.contains(DEAD_JOB) && said.contains("job id"), "{said}");
+        w.add_job(DEAD_JOB, "Other One", DEAD_PID, false);
+        let mut jobs: Vec<String> = named(&w, "other one").await.into_iter().filter_map(|t| t.job).collect();
+        jobs.sort();
+        assert_eq!(jobs, [OTHER_JOB, DEAD_JOB]);
+        assert!(named(&w, "other").await.is_empty());
+        let dead = resolve(&w, Some(&sid(DEAD_JOB)), me_()).await.unwrap();
+        assert!(!dead.alive && dead.job.as_deref() == Some(DEAD_JOB));
+        assert!(matches!(resolve(&w, Some(DEAD_JOB), me_()).await, Err(ControlError::Resolve(_))));
     }
 
     // --- link ---
@@ -2305,7 +2342,8 @@ mod tests {
     async fn test_a_slash_verb_types_its_command_into_the_named_session() {
         for (verb, arg, typed) in [("model", "opus", "/model opus"), ("effort", "medium", "/effort medium"), ("rename", "  new name ", "/rename new name")] {
             let w = World::new();
-            let job = Some(OTHER_JOB);
+            let other = sid(OTHER_JOB);
+            let job = Some(other.as_str());
             let out = match verb {
                 "model" => model(&w, arg, job, me_()).await,
                 "effort" => effort(&w, arg, job, me_()).await,
@@ -2324,7 +2362,8 @@ mod tests {
             let w = World::new();
             w.s().status = status.into();
             w.set_screen(FakeScreen::new(&[&screen]));
-            let job = Some(OTHER_JOB);
+            let other = sid(OTHER_JOB);
+            let job = Some(other.as_str());
             let outs = [
                 model(&w, "opus", job, me_()).await.unwrap(),
                 effort(&w, "low", job, me_()).await.unwrap(),
@@ -2348,7 +2387,7 @@ mod tests {
     #[tokio::test]
     async fn test_message_types_the_text_into_the_other_session() {
         let w = World::new();
-        let out = message(&w, Some("other one"), "please look at X", me_(), false).await.unwrap();
+        let out = message(&w, Some(sid(OTHER_JOB).as_str()), "please look at X", me_(), false).await.unwrap();
         assert!(ok(&out));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "please look at X".to_string(), sender::ATTEMPTS)]);
     }
@@ -2383,15 +2422,15 @@ mod tests {
     async fn test_stop_removes_another_session() {
         let w = World::new();
         let rm = FakeRemover::new(true);
-        let out = stop(&w, Some("other one"), me_(), false, rm.clone()).await.unwrap();
-        assert!(ok(&out) && out["job"] == json!(OTHER_JOB) && rm.calls() == [OTHER_JOB]);
+        let out = stop(&w, Some(sid(OTHER_JOB).as_str()), me_(), false, rm.clone()).await.unwrap();
+        assert!(ok(&out) && out["session_id"] == json!(sid(OTHER_JOB)) && rm.calls() == [OTHER_JOB]);
     }
 
     #[tokio::test]
     async fn test_stop_refuses_the_callers_own_session_without_confirm() {
         let w = World::new();
         let rm = FakeRemover::new(true);
-        let out = stop(&w, Some("me"), me_(), false, rm.clone()).await.unwrap();
+        let out = stop(&w, Some(sid(SELF_JOB).as_str()), me_(), false, rm.clone()).await.unwrap();
         assert!(out["ok"] == json!(false) && out["refused"] == json!(true) && out["kind"] == json!("self"));
         assert!(rm.calls().is_empty() && w.spawned_count() == 0);
     }
@@ -2400,7 +2439,7 @@ mod tests {
     async fn test_stop_of_own_session_with_confirm_runs_after_the_call_returns() {
         let w = World::new();
         let rm = FakeRemover::new(true);
-        let out = stop(&w, Some(SELF_JOB), me_(), true, rm.clone()).await.unwrap();
+        let out = stop(&w, Some(sid(SELF_JOB).as_str()), me_(), true, rm.clone()).await.unwrap();
         assert!(ok(&out) && out["stopping"] == json!(true) && rm.calls().is_empty());
         run_spawned(&w).await;
         assert_eq!(rm.calls(), [SELF_JOB]);
@@ -2419,7 +2458,7 @@ mod tests {
             sleep(Duration::from_millis(750)).await;
             later.set_bridge(OTHER_JOB, "cse_01New");
         });
-        let out = remote_control(&w, true, Some("phone-1"), Some("other one"), me_()).await.unwrap();
+        let out = remote_control(&w, true, Some("phone-1"), Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["link"] == json!("https://claude.ai/code/session_01New"), "{out}");
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc phone-1".to_string(), 1)], "one attempt, no retry");
         assert!(out.get("link_reason").is_none());
@@ -2443,23 +2482,23 @@ mod tests {
                 at.set_bridge(OTHER_JOB, "");
             }
         });
-        remote_control(w, false, None, Some(OTHER_JOB), me_()).await.unwrap()
+        remote_control(w, false, None, Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap()
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_off_types_rc_and_selects_disconnect_in_the_modal() {
         let w = connected();
-        let modal = FakeScreen::modal(&OPTIONS, 0);
+        let modal = FakeScreen::stream(RC_OPEN, &RC_UP);
         let out = drive(&w, &modal, true).await;
         assert!(ok(&out) && out["bridge_cleared"] == json!(true) && out["remote_control"] == json!(false), "{out}");
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc".to_string(), 1)]);
-        assert_eq!(modal.presses(), [Key::Down, Key::Enter], "Show QR -> Disconnect");
+        assert_eq!(modal.presses(), [Key::Up, Key::Up, Key::Enter], "Continue -> Show QR -> Disconnect");
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_off_refuses_a_modal_that_is_not_the_expected_one() {
         let w = connected();
-        let modal = FakeScreen::modal(&["Yes", "No"], 0);
+        let modal = FakeScreen::new(&["Do you want to proceed?\n❯ Yes\n  No\nEnter to select"]);
         let out = drive(&w, &modal, true).await;
         assert!(out["ok"] == json!(false) && out["kind"] == json!("unexpected_modal"));
         assert_eq!(modal.presses(), [Key::Escape], "closed, and Enter never pressed");
@@ -2472,9 +2511,9 @@ mod tests {
         let w = World::new();
         w.s().status = "busy".into();
         let start = Instant::now();
-        let out = remote_control(&w, true, Some("phone-1"), Some(OTHER_JOB), me_()).await.unwrap();
+        let out = remote_control(&w, true, Some("phone-1"), Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["applies"] == json!("turn_end") && out["link"].is_null(), "{out}");
-        assert!(out["session"] == json!("other one") && out["job"] == json!(OTHER_JOB) && out["self"] == json!(false));
+        assert!(out["session"] == json!("other one") && out["session_id"] == json!(sid(OTHER_JOB)) && out["self"] == json!(false));
         assert!(text(&out, "link_reason").contains("mid-turn"));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/rc phone-1".to_string(), 1)], "one attempt, no retry");
         assert!(start.elapsed() < POLL, "the link timeout is not waited out");
@@ -2486,7 +2525,7 @@ mod tests {
     async fn test_an_effort_dialog_with_the_cursor_on_yes_is_answered_with_enter() {
         let w = World::new();
         let shown = w.after_typing(&effort_yes());
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        let out = effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["switch_dialog"]["answered"] == json!(true), "{out}");
         assert!(shown.presses() == [Key::Enter] && shown.closed());
     }
@@ -2495,7 +2534,7 @@ mod tests {
     async fn test_a_dialog_with_the_cursor_on_no_is_closed_with_escape() {
         let w = World::new();
         let shown = w.after_typing(&effort_no());
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        let out = effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(out["ok"] == json!(false) && text(&out, "reason").contains("No, go back"), "{out}");
         assert_eq!(shown.presses(), [Key::Escape]);
     }
@@ -2507,7 +2546,7 @@ mod tests {
         let w = World::new();
         let shown = w.after_typing(&effort_yes());
         shown.on_press(w.cli_saves(save_effort));
-        let out = effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        let out = effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && shown.presses() == [Key::Enter]);
         assert_eq!(out["switch_dialog"]["defaults_restored"], json!([format!("modelSettings.{MODEL_KEY}.effortLevel")]));
         assert_eq!(w.settings(), settings_text(), "byte for byte, formatting too");
@@ -2522,7 +2561,7 @@ mod tests {
             doc["theme"] = json!("light");
             doc["newKey"] = json!({"a": 1});
         }));
-        effort(&w, "low", Some(OTHER_JOB), me_()).await.unwrap();
+        effort(&w, "low", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         let doc: Map<String, Value> = serde_json::from_str(&w.settings()).unwrap();
         assert!(doc["theme"] == json!("light") && doc["newKey"] == json!({"a": 1}));
         assert_eq!(doc["modelSettings"][MODEL_KEY]["effortLevel"], json!("high"));
@@ -2558,7 +2597,7 @@ mod tests {
     async fn test_cd_types_the_resolved_path_and_sees_the_session_arrive() {
         let w = World::new();
         let there = moves(&w);
-        let out = cd(&w, &format!("{}/", shown(&there)), Some("other one"), me_(), "").await.unwrap();
+        let out = cd(&w, &format!("{}/", shown(&there)), Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
         assert!(ok(&out) && out["moved"] == json!(true) && out["cwd"] == json!(shown(&there)), "{out}");
         assert_eq!(out["mcp_reconnected"], json!(true));
         assert_eq!(
@@ -2575,7 +2614,7 @@ mod tests {
         for path in ["", "relative/dir", "/no/such/dir", "/tmp\n/etc"] {
             let w = World::new();
             moves(&w);
-            let out = cd(&w, path, Some(OTHER_JOB), me_(), "").await.unwrap();
+            let out = cd(&w, path, Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
             assert_eq!(out["ok"], json!(false));
             assert!(w.typed().is_empty() && w.sent().is_empty() && w.opened() == 0);
         }
@@ -2590,7 +2629,7 @@ mod tests {
             s.settled = false;
             s.follow_cd = false;
         }
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
+        let out = cd(&w, &shown(&there), Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
         assert!(ok(&out) && out["moved"] == json!(false) && text(&out, "detail").contains("mid-turn"));
         assert_eq!(w.typed_texts(), [format!("/cd {}", shown(&there))]);
         w.set_cwd(parent(), &shown(&there));
@@ -2604,7 +2643,7 @@ mod tests {
         let there = moves(&w);
         w.s().follow_cd = false;
         let start = Instant::now();
-        let out = cd(&w, &shown(&there), Some(OTHER_JOB), me_(), "").await.unwrap();
+        let out = cd(&w, &shown(&there), Some(sid(OTHER_JOB).as_str()), me_(), "").await.unwrap();
         assert!(ok(&out) && out["moved"] == json!(false) && text(&out, "detail").contains("list_other"));
         assert!(start.elapsed() >= MOVE_WAIT);
         assert!(out["mcp_reconnected"] == json!(false) && w.typed().len() == 1);
@@ -2616,7 +2655,7 @@ mod tests {
     async fn test_mcp_types_the_panel_free_line_and_reads_what_it_printed() {
         let w = World::new();
         w.s().output = Some("Successfully reconnected to awm".into());
-        let out = mcp(&w, "reconnect", "awm", Some("other one"), me_()).await.unwrap();
+        let out = mcp(&w, "reconnect", "awm", Some(sid(OTHER_JOB).as_str()), me_()).await.unwrap();
         assert!(ok(&out) && out["output"] == json!("Successfully reconnected to awm"));
         assert_eq!(w.typed(), [(OTHER_JOB.to_string(), "/mcp reconnect awm".to_string(), sender::ATTEMPTS)]);
         assert_eq!(w.s().output_seen, ["/mcp reconnect awm"]);

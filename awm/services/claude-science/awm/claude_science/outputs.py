@@ -241,6 +241,11 @@ def sync(owner: Owner, root: Path = OUTPUTS_ROOT) -> dict[str, Any]:
 def check_writable_grant(path: str, grants: list[dict[str, Any]]) -> None:
     """Refuse a rw grant that would make the daemon ask before every command."""
     target = Path(path).resolve()
+    if Path("/mnt") in target.parents:
+        raise ValueError(
+            f"rw:{target} is on a WSL drive, where the daemon's credential "
+            f"scan crawls over 9P. Grant it ro, and write to a small local "
+            f"folder such as {OUTPUTS_ROOT}.")
     for g in grants:
         if g.get("mode") != "ro":
             continue

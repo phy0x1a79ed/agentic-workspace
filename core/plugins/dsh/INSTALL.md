@@ -33,7 +33,7 @@ Writes take `settings.yaml.lock`, the lock the fork's `dsh-settings-file` writes
 
 ## Session events
 
-dsh sends `started`, `stopped` and `renamed` to reflection `harness_event`, with the fork id as `job` and `session_kind` `web`, when its `events.mux` stream or a verb's own `session.list` shows the set changed. It sends only while reflection's describe lists the `session_kind` param of `harness_event`, and it drops a failed send instead of spooling it to `unsent.jsonl`. At boot dsh reads the current set and sends nothing.
+dsh sends `started`, `stopped` and `renamed` to reflection `harness_event`, with `session_kind` `web`, when its `events.mux` stream or a verb's own `session.list` shows the set changed. It sends only while reflection's describe lists the `session_kind` param of `harness_event`, and it drops a failed send instead of spooling it to `unsent.jsonl`. At boot dsh reads the current set and sends nothing.
 
 ## Tracked configuration
 

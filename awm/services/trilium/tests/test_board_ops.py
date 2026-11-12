@@ -1,4 +1,4 @@
-"""The Ops note, the page installer and the pushes (fleet.md R79, R147, queue.md R63 item 3)."""
+"""The Ops data, the Control panel installer and the pushes (fleet.md R79, R147, queue.md R63 item 3)."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ pytestmark = [pytest.mark.unit]
 
 NODES = [
     {"node": "mizar", "role": "compute", "last_seen": 1000, "sessions_7d": 12,
-     "sessions": [{"job": "ab12", "name": "plugin-redux/port-trilium", "link": "https://claude.ai/code/s1",
+     "sessions": [{"session_id": "cc00000000000040008000000000ab12", "name": "plugin-redux/port-trilium", "link": "https://claude.ai/code/s1",
                    "scope": "awm/x", "remote_control": True}],
      "services": [{"service": "trilium", "up": True}],
-     "uses": [{"tool": "journal", "host": "alcor", "available": True, "last_checked": 5, "last_used": 4},
-              {"tool": "zotero", "host": "deneb", "available": False}]},
+     "uses": [{"tool": "journal", "host": "alcor", "listed": True, "last_checked": 5, "last_used": 4},
+              {"tool": "zotero", "host": "deneb", "listed": False}]},
     {"node": "capella", "role": "station", "sessions_7d": 0, "sessions": []},
     {"node": "deneb", "role": "front", "sessions_7d": 1, "sessions": []},
     {"node": "lyra", "role": "compute", "sessions_7d": 3, "sessions": []},
@@ -31,10 +31,9 @@ NODES = [
 
 PUSH = {
     "nodes": NODES,
-    "services": [{"tool": "journal", "host": "alcor", "service": "journal", "health": "up",
-                  "last_response": 9, "last_used": 8}],
+    "services": [{"tool": "journal", "host": "alcor", "service": "journal", "health": "up"}],
     "seats": [{"seat": "acct/123", "name": "seat:discord/lab/steward", "state": "empty",
-               "remote_control": False}],
+               "remote_control": False, "model": "sonnet", "effort": "low", "refresh": True}],
     "notices": [{"kind": "scope-hygiene", "node": "mizar", "title": "Scope hygiene",
                  "body": "2 removed", "ts": 1}],
 }
@@ -61,10 +60,12 @@ def test_render_writes_one_roster_note_that_the_pages_read(world):
     assert mizar["portal"] == "https://mizar.test/" and mizar["sessions_7d"] == 12
     assert mizar["sessions"][0]["rc_url"] == "https://claude.ai/code/s1"
     assert roster["services"][0]["health"] == "up" and roster["services"][0]["service"] == "journal"
-    assert [u["service"] for u in mizar["services"]] == ["journal"]  # a tool it cannot use is not listed
+    assert [(u["service"], u["enabled"]) for u in mizar["services"]] == [("trilium", None)]  # an older node sends no enabled
     assert mizar["sessions"][0]["remote_control"] is True
     assert roster["seats"] == [{"seat": "acct/123", "label": "seat:discord/lab/steward",
-                                "state": "empty", "remote_control": False, "rc_url": "", "node": ""}]
+                                "state": "empty", "remote_control": False, "rc_url": "", "node": "",
+                                "rc_live": "", "ts": "", "model": "sonnet", "effort": "low",
+                                "refresh": True, "refresh_live": ""}]
 
 
 def test_render_keeps_the_portals_note_and_one_note_per_notice(world):
@@ -80,13 +81,24 @@ def test_render_keeps_the_portals_note_and_one_note_per_notice(world):
         n for n in fake.notes.values() if n["title"] == "scope-hygiene - mizar"]) == 1
 
 
-def test_a_second_render_with_the_same_roster_writes_nothing(world):
+def clocks(seen):
+    return {**PUSH, "nodes": [{**NODES[0], "last_seen": seen}, *NODES[1:]]}
+
+
+@pytest.mark.parametrize("push, writes", [
+    (PUSH, False),
+    (clocks(1000 + ops.SEEN_LAG_S), False),   # only the clocks moved
+    (clocks("1970-01-01T00:21:40+00:00"), False),  # an ISO clock reads as the same epoch seconds
+    (clocks(1001 + ops.SEEN_LAG_S), True),    # last_seen fell too far behind
+    ({**PUSH, "seats": [{**PUSH["seats"][0], "ts": "2"}]}, True),
+])
+def test_a_render_writes_the_roster_only_when_a_page_would_show_it(world, push, writes):
     fake, fence = world
     r = OpsRenderer(fence, {})
     r.render(PUSH)
     fake.calls.clear()
-    r.render(PUSH)
-    assert [c for c in fake.calls if c[0] in ("PATCH", "PUT", "POST", "DELETE")] == []
+    r.render(push)
+    assert bool([c for c in fake.calls if c[0] in ("PATCH", "PUT", "POST", "DELETE")]) == writes
 
 
 def test_a_roster_push_keeps_the_notices_and_a_notices_push_keeps_the_roster(world):
@@ -108,24 +120,34 @@ def test_install_makes_the_pages_idempotently(world):
     rel = {(a["noteId"], a["name"]): a["value"] for a in fake.attributes.values()
            if a["type"] == "relation"}
     assert rel[(ids.ROOT_ID, "renderNote")] == ids.PAGE_ID
-    assert rel[(ids.OPS_ID, "renderNote")] == ids.OPS_PAGE_ID
-    assert fake.notes[ids.ROOT_ID]["type"] == "render" and fake.notes[ids.OPS_ID]["type"] == "render"
+    assert (ids.OPS_ID, "renderNote") not in rel
+    assert fake.notes[ids.ROOT_ID]["type"] == "render" and fake.notes[ids.ROOT_ID]["title"] == "Control panel"
+    assert fake.notes[ids.OPS_ID]["type"] == "book" and fake.notes[ids.OPS_ID]["parents"] == [ids.ROOT_ID]
     assert fake.labels(ids.ROOT_ID)["alcorOrigin"] == "https://auth.tony-xy-liu.com"
     bot = ids.BOT_SCRIPT_ID
     assert fake.labels(bot)["run"] == "frontendStartup"
     assert fake.notes[bot]["mime"] == "application/javascript;env=frontend"
     assert "approverOrigin" not in fake.labels(ids.ROOT_ID)
-    for html in (ids.PAGE_ID, ids.OPS_PAGE_ID):
-        assert "/*COMMON*/" not in fake.notes[html]["content"]
-    for js in (ids.SCRIPT_ID, ids.OPS_SCRIPT_ID, bot):
+    assert "/*COMMON*/" not in fake.notes[ids.PAGE_ID]["content"]
+    for js in (ids.SCRIPT_ID, bot):
         assert "function swarmCall" in fake.notes[js]["content"]
 
 
-def test_install_turns_the_first_boards_ops_book_into_a_render_note(world, monkeypatch):
+def test_install_folds_the_ops_page_into_the_control_panels_data_folder(world):
     fake, fence = world
-    fake.notes[ids.OPS_ID]["type"] = "book"
+    fence.update(ids.OPS_ID, title="Ops", type_="render", labels={"swarmOps": ""})
+    fence.c.move_note(ids.OPS_ID, ids.BOOK_ID)
+    fence.create(ids.OPS_ID, "ops page", "code", note_id=ids.LEGACY_OPS_PAGE_ID, mime="text/html")
+    fence.create(ids.LEGACY_OPS_PAGE_ID, "ops.js", "code", note_id=ids.LEGACY_OPS_SCRIPT_ID)
+    fence.relation(ids.OPS_ID, "renderNote", ids.LEGACY_OPS_PAGE_ID)
+    OpsRenderer(fence, {}).render(PUSH)
     install.install(fence)
-    assert fake.notes[ids.OPS_ID]["type"] == "render"
+    ops_note = fake.notes[ids.OPS_ID]
+    assert (ops_note["type"], ops_note["title"], ops_note["parents"]) == ("book", "Ops data", [ids.ROOT_ID])
+    assert "swarmOps" not in fake.labels(ids.OPS_ID)
+    assert not any(a["noteId"] == ids.OPS_ID and a["type"] == "relation" for a in fake.attributes.values())
+    assert ids.LEGACY_OPS_PAGE_ID not in fake.notes and ids.LEGACY_OPS_SCRIPT_ID not in fake.notes
+    assert fake.notes[ids.ROSTER_ID]["parents"] == [ids.OPS_ID]
 
 
 # -- the pages carry what the decisions require ----------------------------------------------------------------------------
@@ -138,7 +160,7 @@ def js(name):
 
 
 def test_no_vault_page_embeds_a_frame_from_alcor_except_sign_in_and_the_modals():
-    board = js("board.html") + js("board.js") + js("ops.js") + js("ops.html") + js("bot.js")
+    board = js("board.html") + js("board.js") + js("bot.js")
     urls = set(re.findall(r"origin\}(/[a-z/]+)", js("lib.js") + board))
     frames = re.findall(r"\$\{origin\}(/(?:signin|modal)[^`\"']*)", js("lib.js"))
     assert all(f.startswith(("/signin?frame=1", "/modal/")) for f in frames) and frames
@@ -148,10 +170,10 @@ def test_no_vault_page_embeds_a_frame_from_alcor_except_sign_in_and_the_modals()
 
 
 def test_every_press_is_a_credentialed_fetch_to_the_contract_routes():
-    lib, board, ops_js, bot = js("lib.js"), js("board.js"), js("ops.js"), js("bot.js")
+    lib, board, bot = js("lib.js"), js("board.js"), js("bot.js")
     assert 'credentials: "include"' in lib
     assert "/api/agent" in board and "/api/agent" in bot
-    assert "/api/card/" in board and "/api/seat/remote_control" in ops_js and "/api/request/" in board
+    assert "/api/card/" in board and "/api/seat/remote_control" in board and "/api/service/toggle" in board and "/api/request/" in board
     assert "note_id" in bot
 
 

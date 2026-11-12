@@ -21,7 +21,7 @@ document.addEventListener("mousedown", (ev) => { if (menu && !menu.contains(ev.t
 
 async function openMenu(anchor, noteId) {
   closeMenu();
-  const nodes = await nodeChoices();
+  const nodes = nodeChoices(await swarmRoster());
   const rect = anchor.getBoundingClientRect();
   menu = el("div", { class: "awm-menu", role: "menu" }, el("div", { class: "head" }, "New agent on…"),
     ...(nodes.length ? nodes.map((n) => el("div", { class: "item", role: "menuitem", onclick: async () => {

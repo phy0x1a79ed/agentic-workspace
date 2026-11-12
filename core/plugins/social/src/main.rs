@@ -1,9 +1,6 @@
-//! The social plugin: chat accounts, cloud buckets and seats (`awm/services/social`).
-//!
-//! `social` serves the plugin. `social gdrive-auth` mints a Google Drive refresh token.
+//! The social plugin: the bot chat accounts and their seats (`awm/services/social`).
 
 mod app;
-mod buckets;
 mod config;
 mod connectors;
 mod db;
@@ -29,13 +26,12 @@ async fn dispatch(app: Arc<Social>, name: &str, call: Call) -> Result<Value, Ver
         "seats" => app.seats_verb(call).await,
         "mount" => app.mount(call).await,
         "unmount" => app.unmount(call).await,
-        "mark_seat_done" => app.mark_seat_done(call).await,
         "forward" => app.forward(call).await,
-        "seat_reset" => app.seat_reset(call).await,
-        "seat_adopt" => app.seat_adopt(call).await,
-        "seat_admit" => app.seat_admit(call).await,
         "seat_remote_control" => app.seat_remote_control(call).await,
-        "search" => app.search(call).await,
+        "seat_refresh" => app.seat_refresh(call).await,
+        "seat_pull" => app.seat_pull(call).await,
+        "seat_report" => app.seat_report(call).await,
+        "seat_act" => app.seat_act(call).await,
         "download_attachments" => app.download_attachments(call).await,
         "accounts" => app.accounts(call).await,
         "channels" => app.channels(call).await,
@@ -44,16 +40,6 @@ async fn dispatch(app: Arc<Social>, name: &str, call: Call) -> Result<Value, Ver
         "add_operator" => app.add_operator(call).await,
         "remove_operator" => app.remove_operator(call).await,
         "lookup" => app.lookup(call).await,
-        "buckets" => app.buckets_verb(call).await,
-        "bucket_ls" => app.bucket_ls(call).await,
-        "bucket_stat" => app.bucket_stat(call).await,
-        "bucket_mkdir" => app.bucket_mkdir(call).await,
-        "bucket_get" => app.bucket_get(call).await,
-        "bucket_put" => app.bucket_put(call).await,
-        "bucket_rm" => app.bucket_rm(call).await,
-        "bucket_mv" => app.bucket_mv(call).await,
-        "bucket_cp" => app.bucket_cp(call).await,
-        "bucket_search" => app.bucket_search(call).await,
         "emit_probe" => app.emit_probe(call).await,
         other => Err(VerbError::runtime(format!("no handler for {other}"))),
     }
@@ -85,31 +71,13 @@ pub fn service(svc: Service, app: Arc<Social>) -> Service {
     svc
 }
 
-fn arg(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
-}
-
-/// `social gdrive-auth --client-id <id> (--client-secret <s> | --client-secret-file <path>) [--port N] [--no-browser]`
-async fn gdrive_auth(args: &[String]) -> anyhow::Result<()> {
-    let id = arg(args, "--client-id").ok_or_else(|| anyhow::anyhow!("--client-id is required"))?;
-    let secret = match (arg(args, "--client-secret"), arg(args, "--client-secret-file")) {
-        (Some(s), _) => s,
-        (None, Some(f)) => std::fs::read_to_string(f)?.split_whitespace().collect(),
-        _ => anyhow::bail!("--client-secret or --client-secret-file is required"),
-    };
-    let port = arg(args, "--port").map(|p| p.parse()).transpose()?.unwrap_or(0);
-    let token = buckets::gdrive::gdrive_auth(&id, &secret, port, !args.iter().any(|a| a == "--no-browser")).await?;
-    println!("{token}");
-    Ok(())
-}
-
 async fn run() -> anyhow::Result<()> {
     // Both ring and aws-lc-rs are linked, so rustls has no default until one is named.
     let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
     awm_plugin_sdk::telemetry::init();
     let awm_dir = awm_plugin_sdk::config::awm_dir();
     awm_statecheck::cli::state_subcommand("social", include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir("social"), &awm_dir)?;
-    let svc = Service::from_env()?.state(include_str!("../state.toml"));
+    let svc = Service::from_env()?;
     let env = svc.context().env().clone();
     let hub = svc.context().hub().clone();
     let loaded = config::load(&config::config_file(&env.awm_dir)).map_err(|e| anyhow::anyhow!(e))?;
@@ -118,21 +86,13 @@ async fn run() -> anyhow::Result<()> {
     }
     let db = db::Db::open(&awm_plugin_sdk::config::service_dir("social").join("social.db"))?;
     let conns: app::Conns = Arc::new(RwLock::new(BTreeMap::new()));
-    let world = Arc::new(seats::world::Live { hub: hub.clone(), here: env.node.clone(), conns: conns.clone(), ctx: Some(svc.context()) });
-    let seats = seats::Seats::new(db.clone(), loaded.seats.clone(), loaded.accounts.clone(), world);
-    let buckets = loaded
-        .buckets
-        .iter()
-        .map(|c| {
-            let b = buckets::build(c).map_err(|e| tracing::warn!("bucket {} failed to build: {e}", c.name)).ok();
-            (c.clone(), b)
-        })
-        .collect();
-    let app = Social::new(env.node.clone(), hub.clone(), db.clone(), loaded.accounts.clone(), conns.clone(), buckets, seats.clone());
+    let seats = seats::Seats::new(db.clone(), loaded.seats.clone(), loaded.accounts.clone());
+    seats.sync().await;
+    let app = Social::new(env.node.clone(), hub.clone(), db.clone(), loaded.accounts.clone(), conns.clone(), seats);
     let _ = app.ctx.set(svc.context());
 
     for a in loaded.accounts.iter().filter(|a| a.enabled) {
-        db.upsert_account(&a.name, &a.platform, a.kind(), a.display_name.as_deref().unwrap_or(""), a.enabled).await;
+        db.upsert_account(&a.name, &a.platform, "bot", a.display_name.as_deref().unwrap_or(""), a.enabled).await;
         let (m, c) = (app.clone(), app.clone());
         let hooks = connectors::Hooks {
             on_message: Arc::new(move |msg| {
@@ -160,11 +120,6 @@ async fn run() -> anyhow::Result<()> {
     service(svc, app.clone())
         .on_ready(async move {
             ready.watch_sessions().await;
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            ready.adopt_mounts().await;
-            ready.seats.unpause_summary().await;
-            ready.seats.tick().await;
-            tokio::spawn(ready.seats.clone().tick_forever());
         })
         .run()
         .await
@@ -172,12 +127,7 @@ async fn run() -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let out = match args.first().map(String::as_str) {
-        Some("gdrive-auth") => gdrive_auth(&args[1..]).await,
-        _ => run().await,
-    };
-    if let Err(e) = out {
+    if let Err(e) = run().await {
         eprintln!("social: {e:#}");
         std::process::exit(1);
     }

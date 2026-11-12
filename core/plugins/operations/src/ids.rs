@@ -15,11 +15,6 @@ pub fn is_task_id(s: &str) -> bool {
     s.len() == 8 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// One task id per federation-board card, so a replayed post opens no second card.
-pub fn intake_task_id(board_card: &str) -> String {
-    from_uuid(Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("awm-board:{board_card}").as_bytes()))
-}
-
 /// An opaque URL-safe token of `n` random bytes, as Python's `secrets.token_urlsafe(n)`.
 pub fn token(n: usize) -> String {
     use rand::RngCore;

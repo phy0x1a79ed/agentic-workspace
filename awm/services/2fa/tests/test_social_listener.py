@@ -71,23 +71,8 @@ async def test_non_approve_and_garbage_ignored(tmp_path):
     assert bursts == [] and replies == []
 
 
-class TestOwnershipDecidesWhoListens:
-    """`/approve` must arm ONE burst fleet-wide.
-
-    Duo's attempt budget is per account, not per host, so a node that borrows
-    2fa listening for the owner's slash commands spends the budget twice and
-    replies into the DM twice. Ownership is already stated by AWM_TWOFA_PEER —
-    reusing it is what stops a second flag from disagreeing with it.
-    """
-
-    def test_borrower_does_not_listen_by_default(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AWM_TWOFA_PEER", "mira")
-        monkeypatch.delenv("AWM_2FA_SOCIAL_SUBSCRIBE", raising=False)
-        cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")})
-        assert cfg.social_subscribe is False
-
-    def test_owner_with_no_listener_is_a_fault(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("AWM_TWOFA_PEER", raising=False)
+class TestListener:
+    def test_no_listener_is_a_fault(self, tmp_path, monkeypatch):
         monkeypatch.delenv("AWM_2FA_SOCIAL_SUBSCRIBE", raising=False)
         svc = TwoFAService(Config(devices={"cwl": _creds(tmp_path, "cwl")}))
         health = svc._subscription_health()

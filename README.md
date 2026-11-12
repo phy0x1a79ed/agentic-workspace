@@ -40,7 +40,7 @@ awm/setup.sh
 systemctl --user enable --now awm
 ```
 
-`setup.sh` creates or updates the `awm` mamba env, builds the static core binary in the Rust container (`scripts/rust-build.sh`), and runs `awm/install.sh`. That installs the shared libraries and runs every plugin's own `install.sh`, then places the binary at `~/.local/bin/awm`. `setup.sh` then writes `.awm/config.toml` with `awm bootstrap` and installs the `awm` user unit from `core/deploy/awm.service`. Set `AWM_BIN` to a built binary to skip the build.
+`setup.sh` creates or updates the `awm` mamba env, builds the static core binary in the Rust container (`scripts/rust-build.sh`), and places the binary at `~/.local/bin/awm`. `setup.sh` then writes `.awm/config.toml` with `awm bootstrap` and installs the `awm` user unit from `core/deploy/awm.service`. Set `AWM_BIN` to a built binary to skip the build.
 
 awm needs no sudo. The unit and the workspace `.mcp.json` name `~/.local/bin/awm` by absolute path.
 
@@ -77,10 +77,10 @@ A **plugin** is a folder under `awm/services/` or `awm/plugins/` with an `awm-pl
 
 | File | Required? | Purpose |
 |---|---|---|
-| `awm-plugin.toml` | **yes** | The manifest: its services, the tools it publishes with major and tier (`on` or `off`), its pages, its `[needs]`, and `[[service.archive]]` tables that plug it into `search`. Every function a service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. |
+| `awm-plugin.toml` | **yes** | The manifest: its services, the tools it publishes with major and tier (`on` or `off`), its pages and its `[needs]`. Every function a service registers is published as `<tool>_<verb>`. The format is `docs/redux/drafts/plugin-contract.md`. |
 | `run.sh` | **yes**, executable | The only thing the gateway runs to start the service: `bash run.sh`. It must launch the process with no arguments. |
 | `INSTALL.md` | **yes** | Install notes: deps, env, anything an operator needs. |
-| `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar. `awm/install.sh` runs it. |
+| `install.sh` | optional | Editable-installs the service's deps and writes the `.runtime-env` sidecar. The manifest's `install` names it. |
 
 ### What the gateway hands a service
 
@@ -256,7 +256,7 @@ decision stays visible.
 core/                         # the Rust core: cargo workspace of crates, built into ~/.local/bin/awm
   deploy/awm.service          # the user unit
 awm/
-  install.sh  setup.sh  environment.yml
+  setup.sh  environment.yml
   service_components/         # shared Python libraries (config, persistence, gatewayclient, ...)
   services/<name>/            # plugins: awm-plugin.toml, run.sh, INSTALL.md, pages/
   plugins/<name>/             # plugins, same shape

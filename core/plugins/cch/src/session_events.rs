@@ -2,7 +2,7 @@
 //! `harness_event` as it happens: inotify on Claude Code's records, one pidfd per live session and
 //! `docker events` for isolated sessions. Nothing polls.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::CString;
 use std::future::Future;
 use std::io;
@@ -26,6 +26,7 @@ use tokio::time::{sleep, sleep_until, Instant};
 
 use crate::gateway::{Call, Gateway};
 use crate::isolated;
+use crate::ledger;
 use crate::lineage;
 use crate::paths::Paths;
 use crate::resume::r9;
@@ -78,6 +79,9 @@ struct Facts {
     bridge: Option<String>,
     /// The `kind` of the session's `list` row.
     row_kind: &'static str,
+    /// A background job's `state` and, while it is blocked, its `needs`.
+    state: Option<String>,
+    needs: Option<String>,
 }
 
 /// One session record as read from disk.
@@ -121,7 +125,10 @@ fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
     let facts = match &job {
         Some(short) => {
             let st: Object = read_json(&home.job_state(short));
+            let state = text(st.get("state"));
             Facts {
+                needs: text(st.get("needs")).filter(|_| state.as_deref() == Some("blocked")),
+                state,
                 name: text(st.get("name")).or_else(|| text(rec.get("name"))),
                 cwd: text(rec.get("cwd")).or_else(|| text(st.get("cwd"))),
                 bridge: text(st.get("bridgeSessionId")),
@@ -135,6 +142,8 @@ fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
             cwd: text(rec.get("cwd")),
             bridge: text(rec.get("bridgeSessionId")),
             row_kind: "interactive",
+            state: None,
+            needs: None,
         },
     };
     Some(Record { claude_session_id, proc_start: proc_start_of(rec.get("procStart")), facts })
@@ -164,13 +173,21 @@ fn event(kind: &str, claude_session_id: &str, f: &Facts, task_id: Option<String>
     let mut out = json!({
         "kind": kind,
         "session_id": r9(claude_session_id),
-        "job": f.job,
         "name": f.name,
         "cwd": f.cwd,
         "session_kind": f.row_kind,
     });
     if let Some(task) = task_id {
         out["task_id"] = json!(task);
+    }
+    match (kind, f.state.as_deref()) {
+        // cch's own stop writes `stopped` before the kill: a retire, not a crash.
+        ("stopped", Some("stopped")) => out["retired"] = json!(true),
+        (_, Some(state)) => {
+            out["state"] = json!(state);
+            out["needs"] = json!(f.needs);
+        }
+        _ => {}
     }
     let rc_url = bridge_link(f.bridge.as_deref());
     if kind == "remote_control" || rc_url.is_some() {
@@ -232,7 +249,19 @@ struct Watcher<F> {
     /// Each watched pid: the session its record names, and the process start it was opened for.
     by_pid: HashMap<u32, (String, String)>,
     out: mpsc::UnboundedSender<Value>,
+    /// The jobs a pid was ever seen for. A new pid for one of them is a relaunch.
+    seen_jobs: HashSet<String>,
+    rc: mpsc::UnboundedSender<Rc>,
     quiet: bool,
+}
+
+/// What the Remote Control restore hears of a background job.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rc {
+    /// The job came back under a new pid.
+    Relaunched(String),
+    /// The job's Remote Control bridge came or went.
+    Bridge(String),
 }
 
 impl<F: Effects> Watcher<F> {
@@ -240,14 +269,20 @@ impl<F: Effects> Watcher<F> {
         if self.quiet {
             return;
         }
-        let task_id = match f.job.clone() {
-            Some(job) => {
-                let paths = self.paths.clone();
-                blocking(move || lineage::read_lineage(&paths, &job).and_then(|r| r.task_id)).await.flatten()
-            }
-            None => None,
+        let pool = {
+            let path = self.paths.ledger_path();
+            let id = r9(claude_session_id);
+            blocking(move || ledger::load(&path).get(&id).copied()).await.flatten()
         };
-        let _ = self.out.send(event(kind, claude_session_id, f, task_id));
+        let task_id = {
+            let (paths, id) = (self.paths.clone(), r9(claude_session_id));
+            blocking(move || lineage::read_lineage(&paths, &id).and_then(|r| r.task_id)).await.flatten()
+        };
+        let mut ev = event(kind, claude_session_id, f, task_id);
+        if let Some(stage) = pool {
+            ev["pool"] = json!(stage);
+        }
+        let _ = self.out.send(ev);
     }
 
     /// Take `pid` off the session it was counted for; the session departs when no pid is left.
@@ -283,6 +318,11 @@ impl<F: Effects> Watcher<F> {
                     return;
                 }
                 self.by_pid.insert(pid, (sid.clone(), rec.proc_start.clone()));
+                if let Some(job) = &rec.facts.job {
+                    if !self.seen_jobs.insert(job.clone()) && !self.quiet {
+                        let _ = self.rc.send(Rc::Relaunched(job.clone()));
+                    }
+                }
             }
         }
         let Some(t) = self.sessions.get_mut(&sid) else {
@@ -299,6 +339,14 @@ impl<F: Effects> Watcher<F> {
         }
         if before.bridge != rec.facts.bridge {
             self.emit("remote_control", &sid, &rec.facts).await;
+            if let Some(job) = rec.facts.job.clone().filter(|_| !self.quiet) {
+                let _ = self.rc.send(Rc::Bridge(job));
+            }
+        }
+        if (&before.state, &before.needs) != (&rec.facts.state, &rec.facts.needs)
+            && rec.facts.state.as_deref() != Some("stopped")
+        {
+            self.emit("state", &sid, &rec.facts).await;
         }
     }
 
@@ -331,6 +379,8 @@ impl<F: Effects> Watcher<F> {
             cwd: rec.as_ref().and_then(|r| r.cwd.clone()),
             bridge: None,
             row_kind: "isolated",
+            state: None,
+            needs: None,
         };
         let task_id = rec.as_ref().and_then(|r| text(r.extra.get("task_id")));
         if !self.quiet {
@@ -376,11 +426,12 @@ impl<F: Effects> Watcher<F> {
 }
 
 /// Watch with `fx` and report through `gw` until `fx` runs out of changes. The state on disk at
-/// the start is read silently: a restart sends nothing.
-pub async fn watch<G: Gateway + 'static, F: Effects>(paths: Arc<Paths>, gw: Arc<G>, fx: F) {
+/// the start is read silently: a restart sends nothing. Each job that comes back under a new pid,
+/// and each bridge change of a job, goes to `rc`.
+pub async fn watch<G: Gateway + 'static, F: Effects>(paths: Arc<Paths>, gw: Arc<G>, fx: F, rc: mpsc::UnboundedSender<Rc>) {
     let (out, events) = mpsc::unbounded_channel();
     let reporter = tokio::spawn(report(gw, events));
-    let mut w = Watcher { paths, fx, sessions: BTreeMap::new(), by_pid: HashMap::new(), out, quiet: true };
+    let mut w = Watcher { paths, fx, sessions: BTreeMap::new(), by_pid: HashMap::new(), out, seen_jobs: HashSet::new(), rc, quiet: true };
     w.rescan().await;
     w.quiet = false;
     loop {
@@ -399,9 +450,9 @@ pub async fn watch<G: Gateway + 'static, F: Effects>(paths: Arc<Paths>, gw: Arc<
 }
 
 /// Report this node's session events to reflection for as long as cch runs. Never returns.
-pub async fn run<G: Gateway + 'static>(paths: Arc<Paths>, gw: Arc<G>) {
+pub async fn run<G: Gateway + 'static>(paths: Arc<Paths>, gw: Arc<G>, rc: mpsc::UnboundedSender<Rc>) {
     match Live::start(&paths) {
-        Ok(fx) => watch(paths, gw, fx).await,
+        Ok(fx) => watch(paths, gw, fx, rc).await,
         Err(e) => tracing::warn!("cch: session events are off: {e}"),
     }
     std::future::pending::<()>().await;
@@ -736,6 +787,7 @@ mod tests {
         alive: Arc<Mutex<HashSet<u32>>>,
         watched: Arc<Mutex<HashSet<u32>>>,
         task: Option<JoinHandle<()>>,
+        relaunches: Option<mpsc::UnboundedReceiver<Rc>>,
     }
 
     impl World {
@@ -753,6 +805,7 @@ mod tests {
                 alive: Arc::default(),
                 watched: Arc::default(),
                 task: None,
+                relaunches: None,
             }
         }
 
@@ -781,8 +834,11 @@ mod tests {
         }
 
         fn job_state(&self, job: &str, name: &str, bridge: Option<&str>) {
+            self.job_record(job, json!({"name": name, "cwd": "/work/beta"}), bridge);
+        }
+
+        fn job_record(&self, job: &str, mut st: Value, bridge: Option<&str>) {
             std::fs::create_dir_all(self.paths.home.jobs().join(job)).unwrap();
-            let mut st = json!({"name": name, "cwd": "/work/beta"});
             if let Some(b) = bridge {
                 st["bridgeSessionId"] = json!(b);
             }
@@ -800,8 +856,10 @@ mod tests {
             let (tx, changes) = mpsc::unbounded_channel();
             let (booted, boot_done) = tokio::sync::oneshot::channel();
             let fx = FakeFx { changes, alive: self.alive.clone(), watched: self.watched.clone(), booted: Some(booted) };
+            let (relaunched, relaunches) = mpsc::unbounded_channel();
             self.tx = Some(tx);
-            self.task = Some(tokio::spawn(watch(self.paths.clone(), self.gw.clone(), fx)));
+            self.relaunches = Some(relaunches);
+            self.task = Some(tokio::spawn(watch(self.paths.clone(), self.gw.clone(), fx, relaunched)));
             boot_done.await.unwrap();
         }
 
@@ -856,7 +914,7 @@ mod tests {
         assert_eq!(kinds(&sent), ["started"]);
         let ev = &sent[0];
         assert_eq!(ev["session_id"], json!(r9(SID_A)));
-        assert!(ev["name"] == json!("first") && ev["cwd"] == json!("/work/alpha") && ev["job"].is_null());
+        assert!(ev["name"] == json!("first") && ev["cwd"] == json!("/work/alpha"));
         assert_eq!(ev["session_kind"], json!("interactive"));
         assert!(ev.get("rc_url").is_none() && ev.get("task_id").is_none());
     }
@@ -866,13 +924,13 @@ mod tests {
         let mut w = World::open();
         w.start().await;
         w.job_state(JOB, "worker", Some("cse_01Job"));
-        std::fs::write(w.paths.lineage_path(JOB), json!({"job": JOB, "task_id": TASK}).to_string()).unwrap();
+        std::fs::write(w.paths.lineage_path(&r9(SID_B)), json!({"task_id": TASK}).to_string()).unwrap();
         w.background(102, SID_B, JOB);
         w.push(Change::Session(102));
         let sent = w.finish().await;
         assert_eq!(kinds(&sent), ["started"]);
         let ev = &sent[0];
-        assert!(ev["job"] == json!(JOB) && ev["name"] == json!("worker") && ev["session_kind"] == json!("bg"), "{ev}");
+        assert!(ev["session_id"] == json!(r9(SID_B)) && ev["name"] == json!("worker") && ev["session_kind"] == json!("bg"), "{ev}");
         assert_eq!(ev["task_id"], json!(TASK));
         assert_eq!(ev["rc_url"], json!("https://claude.ai/code/session_01Job"));
     }
@@ -892,6 +950,38 @@ mod tests {
         assert_eq!(*w.watched.lock().unwrap(), HashSet::from([202]));
     }
 
+    /// A job back under a new pid, by a swap or a relaunch after its stop, is reported once so its
+    /// Remote Control switch can be put back, and so is its bridge coming up after. A job's first
+    /// pid is a start, not a relaunch.
+    #[tokio::test(start_paused = true)]
+    async fn a_job_back_under_a_new_pid_is_a_relaunch() {
+        let mut w = World::open();
+        w.background(102, SID_B, JOB);
+        w.job_state(JOB, "worker", None);
+        w.start().await;
+        w.kill(102);
+        sleep(Duration::from_secs(1)).await;
+        w.background(202, SID_B, JOB);
+        w.push(Change::Session(202));
+        sleep(Duration::from_millis(10)).await;
+        w.kill(202);
+        sleep(SWAP_GRACE * 30).await;
+        w.background(302, SID_B, JOB);
+        w.push(Change::Session(302));
+        sleep(Duration::from_millis(10)).await;
+        w.job_state(JOB, "worker", Some("cse_bridge"));
+        w.push(Change::Session(302));
+        w.background(402, SID_A, "e5f6a7b8");
+        w.push(Change::Session(402));
+        w.finish().await;
+        let mut got = Vec::new();
+        while let Ok(rc) = w.relaunches.as_mut().unwrap().try_recv() {
+            got.push(rc);
+        }
+        let back = Rc::Relaunched(JOB.into());
+        assert_eq!(got, [back.clone(), back, Rc::Bridge(JOB.into())]);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_clear_stops_the_old_id_and_starts_the_new_one_on_the_same_pid() {
         let mut w = World::open();
@@ -904,6 +994,31 @@ mod tests {
         assert_eq!(kinds(&sent), ["started", "stopped"]);
         assert!(sent[0]["session_id"] == json!(r9(SID_B)) && sent[1]["session_id"] == json!(r9(SID_A)));
         assert_eq!(*w.watched.lock().unwrap(), HashSet::from([101]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_job_state_change_is_sent_once_and_a_retire_marks_its_stop() {
+        let mut w = World::open();
+        w.background(102, SID_B, JOB);
+        w.job_record(JOB, json!({"name": "worker", "state": "working", "needs": "approve plan"}), None);
+        w.start().await;
+        let blocked = json!({"name": "worker", "state": "blocked", "needs": "pick one", "detail": "a"});
+        for (st, detail) in [(&blocked, "a"), (&blocked, "b")] {
+            let mut st = st.clone();
+            st["detail"] = json!(detail);
+            w.job_record(JOB, st, None);
+            w.push(Change::Job(JOB.into()));
+            sleep(Duration::from_millis(10)).await;
+        }
+        w.job_record(JOB, json!({"name": "worker", "state": "stopped"}), None);
+        w.push(Change::Job(JOB.into()));
+        sleep(Duration::from_millis(10)).await;
+        w.kill(102);
+        sleep(SWAP_GRACE * 2).await;
+        let sent = w.finish().await;
+        assert_eq!(kinds(&sent), ["state", "stopped"], "a detail-only rewrite and the stop write send no state");
+        assert!(sent[0]["state"] == json!("blocked") && sent[0]["needs"] == json!("pick one"), "{}", sent[0]);
+        assert_eq!(sent[1]["retired"], json!(true));
     }
 
     #[test]

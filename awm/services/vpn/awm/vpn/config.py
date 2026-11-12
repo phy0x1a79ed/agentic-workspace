@@ -57,6 +57,26 @@ def bounce_port(profile: str) -> int:
     return BOUNCE_PORT[profile]
 
 
+def bounce_callers_path() -> Path:
+    """Public keys of the nodes that jump through this node's bounce, one per line; rendered by the cloud role."""
+    return SERVICE_DIR / "bounce_callers"
+
+
+def bounce_authorized_keys() -> str:
+    """The bounce's authorized keys: this node's own bounce key, then each caller key."""
+    callers = bounce_callers_path()
+    lines = callers.read_text().splitlines() if callers.exists() else []
+    return "\n".join([ensure_bounce_key(), *(l.strip() for l in lines if l.strip() and not l.startswith("#"))])
+
+
+def configured(profile: str) -> bool:
+    """Whether vpn.toml holds a section for ``profile``."""
+    try:
+        return isinstance(_load_toml().get(profile), dict)
+    except VpnConfigError:
+        return False
+
+
 def bounce_key_path() -> Path:
     """Host path of the bounce SSH private key (0600); public key is `.pub`."""
     return SERVICE_DIR / "bounce"
@@ -66,7 +86,7 @@ def ensure_bounce_key() -> str:
     """Generate the bounce keypair on first use; return the public key text.
 
     One keypair serves every profile: the public key is injected into each
-    container as the sole authorized key (see ``ssh_server``), and the private
+    container with the caller keys (see ``ssh_server``), and the private
     key is what ``~/.ssh/config``'s bounce host points ``IdentityFile`` at.
     ed25519, no passphrase, stored 0600 under :data:`SERVICE_DIR`.
     """
@@ -143,8 +163,7 @@ def load_profile(profile: str) -> ProfileConfig:
 
     image = _opt(section, "image", DEFAULT_IMAGE[profile])
 
-    # The bounce sshd in every profile authorizes this one public key.
-    bounce_pubkey = ensure_bounce_key()
+    bounce_keys = bounce_authorized_keys()
     twofa_device: str | None = None
 
     if profile == "ubc":
@@ -164,14 +183,14 @@ def load_profile(profile: str) -> ProfileConfig:
             "UBC_USER": _req(section, "user", profile),
             "UBC_PASSWORD": _req(section, "password", profile),
             "UBC_SECOND_FACTOR": _opt(section, "second_factor", "push"),
-            "BOUNCE_AUTHORIZED_KEY": bounce_pubkey,
+            "BOUNCE_AUTHORIZED_KEY": bounce_keys,
         }
     elif profile == "proton":
         env = {
             "PROTON_USERNAME": _req(section, "username", profile),
             "PROTON_PASSWORD": _req(section, "password", profile),
             "PROTON_SERVER": _opt(section, "server"),
-            "BOUNCE_AUTHORIZED_KEY": bounce_pubkey,
+            "BOUNCE_AUTHORIZED_KEY": bounce_keys,
         }
     else:  # pragma: no cover - guarded by the PROFILES check above
         env = {}

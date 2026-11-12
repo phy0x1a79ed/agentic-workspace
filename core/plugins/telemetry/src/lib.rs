@@ -18,7 +18,7 @@ pub fn swarm(cfg: &config::InstallConfig) -> Option<String> {
 
 /// Serve the roster.
 pub async fn run_roster() -> anyhow::Result<()> {
-    let svc = Service::from_env()?.state(include_str!("../state.toml"));
+    let svc = Service::from_env()?;
     let swarm = swarm(&config::InstallConfig::load()?);
     let part = alcor::RosterPart::load(svc.context().env().state_dir(), swarm.clone(), alcor::edge_singletons())?;
     let ctx = svc.context();

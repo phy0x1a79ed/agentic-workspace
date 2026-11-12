@@ -167,15 +167,16 @@ impl RosterPart {
         handle
     }
 
-    /// Read social's roster, one `seats` call per live account. An account that fails logs and
-    /// leaves the others in.
+    /// Read social's roster, one `seats` call per enabled account. An account that fails logs and
+    /// leaves the others in. A seat list needs no live socket, and social's accounts are not yet
+    /// live when it restarts together with telemetry.
     async fn read_seats(&self, hub: &Hub, ctx: &Context) {
         let accounts = match hub.call("social", "accounts", json!({}), None).await {
             Ok(v) => v.get("accounts").and_then(Value::as_array).cloned().unwrap_or_default(),
             Err(e) => return tracing::warn!("social accounts: {e}"),
         };
         let mut rows = vec![];
-        for a in accounts.iter().filter(|a| a["enabled"] == true && a["live"] == true) {
+        for a in accounts.iter().filter(|a| a["enabled"] == true) {
             let Some(name) = a["name"].as_str() else { continue };
             match hub.call("social", "seats", json!({"account": name}), None).await {
                 Ok(v) => rows.extend(account_rows(name, &v)),
@@ -257,7 +258,7 @@ mod tests {
         let part = RosterPart::load(tmp.path().join("services/telemetry"), Some("tony".into()), singles()).unwrap();
         let mut t = service(Service::new(env(tmp.path(), "alcor")), part).into_test().await.unwrap();
         let hello = json!({"swarm": "tony", "node": "mizar", "items": [{"type": "hello", "role": "home",
-            "sessions": [{"job": "a1", "link": "https://claude.ai/code/a1", "task_id": "CW"}]}]});
+            "sessions": [{"session_id": "a1", "link": "https://claude.ai/code/a1", "task_id": "CW"}]}]});
 
         let e = t.call_as("report", hello.clone(), from("lyra"), Some("peer:lyra")).await.unwrap_err();
         assert!(e.message.contains("must come from mizar"), "{e:?}");

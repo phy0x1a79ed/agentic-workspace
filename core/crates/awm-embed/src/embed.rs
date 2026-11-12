@@ -1,9 +1,9 @@
-//! The embedders: MiniLM on tract-onnx, and a deterministic stub for tests.
+//! The embedders: an ONNX model on tract, and a deterministic stub for tests.
 //!
-//! MiniLM reproduces sentence-transformers' `encode(normalize_embeddings=True)`: truncation at
-//! 256 tokens, padding to the batch's longest, mean pooling over the attention mask, then L2.
+//! [`Onnx`] reproduces sentence-transformers' `encode(normalize_embeddings=True)`: truncation at
+//! the model's `max_seq_length`, padding to the batch's longest, the model's pooling, then L2.
 
-use crate::model::{self, DIM, MAX_SEQ_LENGTH};
+use crate::model::{Model, Pooling};
 use awm_pycompat::re::words;
 use sha1::{Digest, Sha1};
 use std::path::Path;
@@ -32,6 +32,10 @@ pub trait Embedder: Send + Sync {
     /// Tokens per text, uncapped and without special tokens.
     fn count_tokens(&self, texts: &[&str]) -> Vec<usize>;
     fn encode(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError>;
+    /// One search query, with the model's query prefix.
+    fn encode_query(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        Ok(self.encode(&[text])?.remove(0))
+    }
 }
 
 /// True when `AWM_SEARCH=0` turns embedding off, whatever is installed.
@@ -41,8 +45,9 @@ pub fn disabled() -> bool {
 
 type Plan = std::sync::Arc<TypedRunnableModel>;
 
-/// all-MiniLM-L6-v2 on tract-onnx.
-pub struct MiniLm {
+/// A sentence-transformers model exported to ONNX, run on tract.
+pub struct Onnx {
+    model: &'static Model,
     encoder: Tokenizer,
     counter: Tokenizer,
     plan: Plan,
@@ -56,18 +61,18 @@ fn threads() -> usize {
     want.clamp(1, cpus)
 }
 
-impl MiniLm {
-    /// Load from `<awm_dir>/models/`, after checking every file's sha256.
-    pub fn load(awm_dir: &Path) -> Result<Self, EmbedError> {
+impl Onnx {
+    /// Load `model` from `<awm_dir>/models/`, after checking every file's sha256.
+    pub fn load(awm_dir: &Path, model: &'static Model) -> Result<Self, EmbedError> {
         if disabled() {
             return Err(EmbedError::Unavailable("semantic search is turned off by AWM_SEARCH=0".into()));
         }
-        Self::load_dir(&model::model_dir(awm_dir))
+        Self::load_dir(&model.dir(awm_dir), model)
     }
 
-    /// Load from `dir`, after checking every file's sha256.
-    pub fn load_dir(dir: &Path) -> Result<Self, EmbedError> {
-        model::verify(dir).map_err(|e| EmbedError::Unavailable(e.to_string()))?;
+    /// Load `model` from `dir`, after checking every file's sha256.
+    pub fn load_dir(dir: &Path, model: &'static Model) -> Result<Self, EmbedError> {
+        model.verify(dir).map_err(|e| EmbedError::Unavailable(e.to_string()))?;
         let failed = |e: &dyn std::fmt::Display| EmbedError::Failed(e.to_string());
         let counter = Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| failed(&e))?;
         let mut encoder = counter.clone();
@@ -75,7 +80,7 @@ impl MiniLm {
         counter.with_truncation(None).map_err(|e| failed(&e))?;
         counter.with_padding(None);
         encoder
-            .with_truncation(Some(TruncationParams { max_length: MAX_SEQ_LENGTH, ..Default::default() }))
+            .with_truncation(Some(TruncationParams { max_length: model.max_seq_length, ..Default::default() }))
             .map_err(|e| failed(&e))?;
         encoder.with_padding(Some(PaddingParams { strategy: PaddingStrategy::BatchLongest, ..Default::default() }));
         let plan = tract_onnx::onnx()
@@ -87,7 +92,7 @@ impl MiniLm {
             1 => Executor::SingleThread,
             n => Executor::multithread_with_name(n, "awm-embed"),
         };
-        Ok(Self { encoder, counter, plan, executor })
+        Ok(Self { model, encoder, counter, plan, executor })
     }
 
     fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
@@ -102,43 +107,55 @@ impl MiniLm {
         };
         let ids = column(&|e| e.get_ids())?;
         let mask = column(&|e| e.get_attention_mask())?;
-        let types = column(&|e| e.get_type_ids())?;
-        let out = multithread_tract_scope(self.executor.clone(), || self.plan.run(tvec!(ids, mask, types)))
+        let mut inputs = tvec!(ids, mask);
+        if self.plan.model().inputs.len() > 2 {
+            inputs.push(column(&|e| e.get_type_ids())?);
+        }
+        let out = multithread_tract_scope(self.executor.clone(), || self.plan.run(inputs))
             .map_err(|e| failed(&e))?;
         let hidden = out[0].to_plain_array_view::<f32>().map_err(|e| failed(&e))?;
-        if hidden.shape() != [rows, len, DIM] {
+        let dim = self.model.dim;
+        if hidden.shape() != [rows, len, dim] {
             return Err(EmbedError::Failed(format!("model output shape {:?}", hidden.shape())));
         }
         let hidden = hidden.as_slice().ok_or_else(|| EmbedError::Failed("model output is not contiguous".into()))?;
-        Ok(enc.iter().enumerate().map(|(r, e)| pool(e.get_attention_mask(), &hidden[r * len * DIM..(r + 1) * len * DIM])).collect())
+        let pooling = self.model.pooling;
+        Ok(enc
+            .iter()
+            .enumerate()
+            .map(|(r, e)| pool(pooling, dim, e.get_attention_mask(), &hidden[r * len * dim..(r + 1) * len * dim]))
+            .collect())
     }
 }
 
-/// Mean pooling over the attention mask, then L2 normalisation with torch's eps of 1e-12.
-fn pool(mask: &[u32], hidden: &[f32]) -> Vec<f32> {
-    let mut acc = vec![0f32; DIM];
-    let mut n = 0f32;
-    for (t, &m) in mask.iter().enumerate() {
-        if m == 0 {
-            continue;
+/// Pool the token states, then L2-normalise with torch's eps of 1e-12.
+fn pool(pooling: Pooling, dim: usize, mask: &[u32], hidden: &[f32]) -> Vec<f32> {
+    let mut acc = match pooling {
+        Pooling::Cls => hidden[..dim].to_vec(),
+        Pooling::Mean => {
+            let mut acc = vec![0f32; dim];
+            let mut n = 0f32;
+            for (t, _) in mask.iter().enumerate().filter(|(_, &m)| m != 0) {
+                n += 1.0;
+                acc.iter_mut().zip(&hidden[t * dim..(t + 1) * dim]).for_each(|(a, x)| *a += x);
+            }
+            let n = n.max(1e-9);
+            acc.iter_mut().for_each(|a| *a /= n);
+            acc
         }
-        n += 1.0;
-        acc.iter_mut().zip(&hidden[t * DIM..(t + 1) * DIM]).for_each(|(a, x)| *a += x);
-    }
-    let n = n.max(1e-9);
-    acc.iter_mut().for_each(|a| *a /= n);
+    };
     let norm = acc.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
     acc.iter_mut().for_each(|a| *a /= norm);
     acc
 }
 
-impl Embedder for MiniLm {
+impl Embedder for Onnx {
     fn name(&self) -> &str {
-        model::MODEL_NAME
+        self.model.name
     }
 
     fn dim(&self) -> usize {
-        DIM
+        self.model.dim
     }
 
     fn count_tokens(&self, texts: &[&str]) -> Vec<usize> {
@@ -161,6 +178,10 @@ impl Embedder for MiniLm {
         }
         Ok(out)
     }
+
+    fn encode_query(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        Ok(self.encode_batch(&[&format!("{}{text}", self.model.query_prefix)])?.remove(0))
+    }
 }
 
 /// Bag of words hashed into `dim` dimensions: texts that share words score high.
@@ -178,7 +199,7 @@ impl Stub {
 
 impl Default for Stub {
     fn default() -> Self {
-        Self::new("stub-a", DIM)
+        Self::new("stub-a", crate::model::MINILM.dim)
     }
 }
 

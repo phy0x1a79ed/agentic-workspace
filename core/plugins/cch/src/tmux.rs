@@ -277,9 +277,6 @@ impl<R: Runner> Lane for TmuxSession<R> {
         Ok(false)
     }
 
-    /// `capture-pane` renders the current screen, so there is no stale copy to discard.
-    fn forget(&mut self) {}
-
     async fn press(&mut self, key: Key) -> Result<(), LaneError> {
         Ok(self.tmux.send_keys(&self.pane, key.tmux_name()).await?)
     }

@@ -4,7 +4,7 @@
 
 use awm_harness::contract::args::int_lenient;
 use awm_plugin_sdk::ids;
-use awm_plugin_sdk::service::{CLAIM_KEY, PID_KEY, SESSION_KEY, TRUST_KEY};
+use awm_plugin_sdk::service::{CLAIM_KEY, PID_KEY, SESSION_KEY};
 use serde_json::{json, Value};
 
 use crate::app::{text, App};
@@ -20,14 +20,12 @@ pub struct Frame {
     /// `_caller_session_id`: an isolated session's R9 id, which has no host pid. Read before
     /// `pid`.
     pub session_id: Option<String>,
-    /// `_caller_session`: a door-verified session on another node, `{session_id, node, job?, name?}`.
+    /// `_caller_session`: a door-verified session on another node, `{session_id, node, name?}`.
     pub claim: Option<Value>,
     /// `_caller_plugin`: the calling plugin's service, from the call frame alone.
     pub plugin: Option<String>,
     /// The node a verified order's plugin speaks from, when it is not this node.
     pub plugin_node: Option<String>,
-    /// `_caller_trust`: the level the gateway gave the call.
-    pub trust: Option<String>,
     /// The `X-Awm-As` principal, `peer:<node>` for a call from another node.
     pub as_: Option<String>,
     /// The caller as its harness described it, so one call asks the providers once.
@@ -44,10 +42,9 @@ impl Frame {
         let pid = int_lenient(args.get(PID_KEY), 0);
         Self {
             pid: (pid > 0).then(|| u32::try_from(pid).ok()).flatten(),
-            session_id: ids::to_r9(args.get(SESSION_KEY).and_then(Value::as_str)),
+            session_id: args.get(SESSION_KEY).and_then(Value::as_str).and_then(ids::SessionId::checked),
             claim: args.get(CLAIM_KEY).filter(|c| c.is_object()).cloned(),
             plugin: plugin.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string),
-            trust: args.get(TRUST_KEY).and_then(Value::as_str).map(str::to_string),
             as_: as_.map(str::to_string),
             ..Self::default()
         }
@@ -81,12 +78,12 @@ impl Frame {
     }
 }
 
-/// A session's prefix. A session with no name goes by its job id.
-fn sender_prefix(name: Option<&str>, job: Option<&str>, session_id: Option<&str>, node: &str) -> String {
-    match (name, job.or(session_id)) {
-        (Some(n), Some(j)) => format!("from {n}@{node} [job {j}]: "),
+/// A session's prefix. A session with no name goes by its session id.
+fn sender_prefix(name: Option<&str>, session_id: Option<&str>, node: &str) -> String {
+    match (name, session_id) {
+        (Some(n), Some(id)) => format!("from {n}@{node} [{id}]: "),
         (Some(n), None) => format!("from {n}@{node}: "),
-        (None, Some(j)) => format!("from {j}@{node}: "),
+        (None, Some(id)) => format!("from {id}@{node}: "),
         (None, None) => format!("from shell@{node}: "),
     }
 }
@@ -125,14 +122,14 @@ impl<G: Gateway> App<G> {
     /// Who the line is from, built from the gateway's stamps alone.
     async fn sender(&self, frame: &Frame) -> String {
         if let Some(c) = &frame.claim {
-            return sender_prefix(text(c, "name"), text(c, "job"), text(c, "session_id"), text(c, "node").unwrap_or("unknown"));
+            return sender_prefix(text(c, "name"), text(c, "session_id"), text(c, "node").unwrap_or("unknown"));
         }
         let node = self.node.name();
         if let Some(plugin) = &frame.plugin {
             return format!("from {plugin}@{}: ", frame.plugin_node.as_deref().unwrap_or(&node));
         }
         match self.actor(frame).await {
-            Some(who) => sender_prefix(text(&who, "name"), text(&who, "job"), text(&who, "session_id"), &node),
+            Some(who) => sender_prefix(text(&who, "name"), text(&who, "session_id"), &node),
             None => format!("from shell@{node}: "),
         }
     }
@@ -153,12 +150,12 @@ mod tests {
 
     #[test]
     fn the_frame_reads_only_the_stamps() {
-        let args = json!({"_caller_pid": 4242, "_caller_session_id": "CC0E38", "_caller_session": {"node": "far"},
+        let args = json!({"_caller_pid": 4242, "_caller_session_id": "cc0e380e380e380e380e380e380e380e38", "_caller_session": {"node": "far"},
                           "_caller_trust": "cooperative", "pid": 7, "session_id": "cc99"});
         let f = Frame::from_args(&args, Some("peer:far"), Some("social"));
-        assert_eq!((f.pid, f.session_id.as_deref(), f.plugin.as_deref()), (Some(4242), Some("cc0e38"), Some("social")));
-        assert_eq!((f.claim.clone(), f.trust.as_deref()), (Some(json!({"node": "far"})), Some("cooperative")));
-        assert_eq!(f.me(), json!({"session_id": "cc0e38"}));
+        assert_eq!((f.pid, f.session_id.as_deref(), f.plugin.as_deref()), (Some(4242), Some("cc0e380e380e380e380e380e380e380e38"), Some("social")));
+        assert_eq!(f.claim, Some(json!({"node": "far"})));
+        assert_eq!(f.me(), json!({"session_id": "cc0e380e380e380e380e380e380e380e38"}));
         let bare = Frame::from_args(&json!({"_caller_pid": 0, "_caller_session_id": "builder"}), None, Some(" "));
         assert_eq!(bare, Frame::default());
         assert_eq!((bare.me(), bare.pid_text()), (json!({"pid": null}), "None".to_string()));

@@ -127,12 +127,20 @@ def wired(monkeypatch):
         if path.endswith("/tool-permissions"):
             return httpx.Response(200, json={"tools": state["tools"]})
         if path == "/api/preferences/host-grants":
-            if request.method == "POST":
-                body = json.loads(request.content)
-                if not any(g["path"] == body["path"] for g in state["grants"]):
-                    state["grants"].append(body)
-                return httpx.Response(200, json={})
-            return httpx.Response(200, json={"grants": state["grants"]})
+            if request.method == "GET":
+                return httpx.Response(200, json={"grants": state["grants"]})
+            body = json.loads(request.content)
+            state["grants"] = [g for g in state["grants"]
+                               if g["hostPath"] != body["path"]]
+            if request.method != "DELETE":
+                state["grants"].append({"id": body["path"],
+                                        "hostPath": body["path"],
+                                        "mode": body["mode"]})
+            return httpx.Response(200, json={})
+        if path == "/api/projects":
+            return httpx.Response(200, json={"project_id": "proj_1"})
+        if path == "/api/projects/proj_1/request":
+            return httpx.Response(200, json={"root_frame_id": "f" * 32})
         return httpx.Response(404, json={"detail": f"no route {path}"})
 
     monkeypatch.setattr(hub_adapter.SUPERVISOR, "ensure_running", lambda: {})
@@ -190,3 +198,40 @@ def test_an_unknown_grant_mode_is_refused_here(wired):
     hub_adapter, _, _ = wired
     with pytest.raises(ValueError, match="'ro' or 'rw'"):
         hub_adapter._grants({"path": "/ws/data", "mode": "read-only"})
+
+
+def test_a_new_mode_for_an_existing_grant_patches_it(wired, tmp_path):
+    hub_adapter, calls, state = wired
+    hub_adapter._grants({"path": str(tmp_path)})
+    out = hub_adapter._grants({"path": str(tmp_path), "mode": "rw"})
+    assert out["changed"] is True
+    assert ("PATCH", "/api/preferences/host-grants") in calls
+    assert [g["mode"] for g in state["grants"]] == ["rw"]
+
+
+def test_remove_revokes_the_grant(wired):
+    hub_adapter, calls, state = wired
+    hub_adapter._grants({"path": "/ws/data"})
+    out = hub_adapter._grants({"path": "/ws/data", "remove": True})
+    assert out == {"grants": [], "changed": True}
+    assert ("DELETE", "/api/preferences/host-grants") in calls
+
+
+def test_new_grants_its_mounts_before_the_first_turn(wired, tmp_path,
+                                                     monkeypatch):
+    hub_adapter, calls, state = wired
+    monkeypatch.setattr(hub_adapter.outputs, "ensure_project",
+                        lambda owner, pid, root: tmp_path)
+    hub_adapter._new({"text": "hi",
+                      "mounts": ["/ws/data", f"{tmp_path}:rw"]})
+    assert {(g["hostPath"], g["mode"]) for g in state["grants"]} == {
+        ("/ws/data", "ro"), (str(tmp_path), "rw")}
+    first_turn = calls.index(("POST", "/api/projects/proj_1/request"))
+    assert calls.index(("POST", "/api/preferences/host-grants")) < first_turn
+
+
+def test_a_refused_mount_opens_no_conversation(wired):
+    hub_adapter, calls, _ = wired
+    with pytest.raises(ValueError, match="WSL drive"):
+        hub_adapter._new({"text": "hi", "mounts": ["/mnt/d/x:rw"]})
+    assert not any(path.startswith("/api/projects") for _, path in calls)

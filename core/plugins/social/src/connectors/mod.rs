@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awm_plugin_sdk::VerbError;
 use base64::Engine;
 use futures_util::future::BoxFuture;
 use serde::Serialize;
@@ -18,75 +17,11 @@ use serde_json::{json, Value};
 use crate::config::AccountConfig;
 use crate::db::{Db, History};
 
-pub mod blocks;
 pub mod discord;
-pub mod gmail;
 pub mod slack;
 
-pub type Result<T> = std::result::Result<T, VerbError>;
-
-/// The error classes the Python raised, which callers read from `error_class`.
-pub fn runtime(msg: impl Into<String>) -> VerbError {
-    VerbError::new("RuntimeError", msg)
-}
-pub fn value(msg: impl Into<String>) -> VerbError {
-    VerbError::new("ValueError", msg)
-}
-pub fn unsupported(msg: impl Into<String>) -> VerbError {
-    VerbError::new("NotImplementedError", msg)
-}
-pub fn permission(msg: impl Into<String>) -> VerbError {
-    VerbError::new("PermissionError", msg)
-}
-
-/// A file on a message. `url` and `ref` are hints only: a download re-fetches the message.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Attachment {
-    pub idx: i64,
-    pub filename: String,
-    pub mime: String,
-    pub size: i64,
-    pub url: String,
-    #[serde(skip)]
-    pub r#ref: Value,
-}
-
-/// Where a chat sits, for a seat's line and session name.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatKind {
-    /// A direct message with one person.
-    Dm,
-    /// A group DM.
-    Group,
-    #[default]
-    Channel,
-}
-
-/// A message from a platform, normalised. `to_holder` is false for a message kept from a seat.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Inbound {
-    pub account: String,
-    pub platform: String,
-    pub channel_id: String,
-    pub channel_name: String,
-    pub text: String,
-    pub sender_id: String,
-    pub sender_name: String,
-    pub thread_id: String,
-    pub message_id: String,
-    pub ts: String,
-    pub attachments: Vec<Attachment>,
-    pub sender_bot: bool,
-    pub to_holder: bool,
-    /// The workspace or guild name. Empty for a DM.
-    pub server: String,
-    pub kind: ChatKind,
-    /// The sender is outside the lab: a Slack restricted or foreign-team user.
-    pub outside: bool,
-    /// Found by a resync after a gap, not by the live feed.
-    pub resynced: bool,
-}
+pub use awm_chat::{blocks, permission, runtime, unsupported, value, Attachment, Channel, ChatKind, Downloaded, Identity, Inbound, Result};
+pub use awm_chat::slack::{attachments as slack_attachments, looks_like_user_id as looks_like_slack_user_id};
 
 /// A slash command, from Discord's `/approve`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -100,19 +35,6 @@ pub struct Command {
     pub channel_id: String,
     pub is_dm: bool,
     pub operator: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Channel {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Identity {
-    pub id: String,
-    pub name: String,
 }
 
 /// One file to send: inline `text`, base64 `b64`, or a `path` on this node.
@@ -132,18 +54,29 @@ pub struct OutFile {
 impl OutFile {
     /// `{filename}` plus one of `path`, `b64` or `text`, as `send`'s `files` holds it.
     pub fn from_value(v: &Value) -> Result<Self> {
-        let filename = v.get("filename").and_then(Value::as_str).unwrap_or("").to_string();
-        let body = if let Some(p) = v.get("path").and_then(Value::as_str) {
+        let Some(o) = v.as_object() else {
+            return Err(value(format!("a file is {{filename, path|b64|text}}, not {v}")));
+        };
+        let str_of = |k: &str| o.get(k).and_then(Value::as_str);
+        let body = if let Some(p) = str_of("path") {
             FileBody::Path(PathBuf::from(p))
-        } else if let Some(b) = v.get("b64").and_then(Value::as_str) {
+        } else if let Some(b) = str_of("b64") {
             FileBody::B64(b.to_string())
         } else {
-            FileBody::Text(match v.get("text") {
+            FileBody::Text(match o.get("text") {
                 Some(Value::String(s)) => s.clone(),
-                None | Some(Value::Null) => String::new(),
+                None | Some(Value::Null) => return Err(value(format!("a file needs path, b64 or text: {v}"))),
                 Some(other) => other.to_string(),
             })
         };
+        let filename = match (str_of("filename").filter(|f| !f.is_empty()), &body) {
+            (Some(f), _) => f.to_string(),
+            (None, FileBody::Path(p)) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        if filename.is_empty() {
+            return Err(value(format!("a file needs a filename: {v}")));
+        }
         Ok(Self { filename, body })
     }
 
@@ -166,14 +99,6 @@ impl OutFile {
 
 /// What `send` hands back: at least `message_id`, plus `channel_id`, `ts` and `files`.
 pub type Sent = serde_json::Map<String, Value>;
-
-/// One downloaded attachment.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Downloaded {
-    pub filename: String,
-    pub mime: String,
-    pub data: Vec<u8>,
-}
 
 pub type OnMessage = Arc<dyn Fn(Inbound) -> BoxFuture<'static, ()> + Send + Sync>;
 pub type OnCommand = Arc<dyn Fn(Command) -> BoxFuture<'static, ()> + Send + Sync>;
@@ -268,40 +193,11 @@ pub fn slack_reaction(account: &str, channel: &str, message_id: &str, name: &str
     Ok(json!({"as": "reaction", "emoji": name, "removed": remove, "message_id": message_id, "channel_id": channel}))
 }
 
-/// A Slack message's `files[]`. A hidden or tombstoned file with no url is skipped.
-pub fn slack_attachments(m: &Value) -> Vec<Attachment> {
-    let mut out = vec![];
-    for (i, f) in m.get("files").and_then(Value::as_array).into_iter().flatten().enumerate() {
-        let s = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-        let url = Some(s("url_private_download")).filter(|u| !u.is_empty()).unwrap_or_else(|| s("url_private"));
-        if url.is_empty() && matches!(s("mode").as_str(), "hidden" | "tombstone") {
-            continue;
-        }
-        let filename = [s("name"), s("title")].into_iter().find(|n| !n.is_empty()).unwrap_or_else(|| format!("attachment-{i}"));
-        out.push(Attachment {
-            idx: i as i64,
-            filename,
-            mime: s("mimetype"),
-            size: f.get("size").and_then(Value::as_i64).unwrap_or(0),
-            url: url.clone(),
-            r#ref: json!({"id": s("id"), "url": url}),
-        });
-    }
-    out
-}
-
-/// Slack user ids are `U…`, or `W…` on enterprise grid, in capitals.
-pub fn looks_like_slack_user_id(s: &str) -> bool {
-    let mut c = s.chars();
-    matches!(c.next(), Some('U' | 'W')) && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_alphanumeric()) && s == s.to_uppercase()
-}
-
 /// Build one account's connector: a Slack token routes by its prefix inside the Slack client.
 pub fn build(cfg: AccountConfig, hooks: Hooks) -> anyhow::Result<Arc<dyn Connector>> {
     Ok(match cfg.platform.as_str() {
         "slack" => slack::SlackConnector::create(cfg, hooks)?,
         "discord" => discord::DiscordConnector::create(cfg, hooks)?,
-        "gmail" => gmail::GmailConnector::create(cfg, hooks)?,
         other => anyhow::bail!("no connector for platform {other:?}"),
     })
 }

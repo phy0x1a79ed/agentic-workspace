@@ -1,0 +1,490 @@
+{
+  "functions": [
+    {
+      "name": "accounts",
+      "tool": "productivity_accounts",
+      "description": "List Tony's own accounts (gmail, Slack) with their platform, and whether each answers a login now (`live`, else `error`)."
+    },
+    {
+      "name": "channels",
+      "tool": "productivity_channels",
+      "description": "List an account's chats: Slack channels, and DMs with `include_dms`; Gmail mailboxes and labels.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "include_dms",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "fetch",
+      "tool": "productivity_fetch",
+      "description": "Read an account's latest messages live, oldest first, with attachment metadata. Gmail reads INBOX, from one sender when `channel` is an address; `before` is an exclusive UID. Slack reads one chat; `before` is a ts. Nothing is marked read.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "before",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "search",
+      "tool": "productivity_search",
+      "description": "Search an account's own index live: Gmail's search syntax over All Mail, or Slack search.messages. Returns matches with attachment metadata.",
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "download_attachments",
+      "tool": "productivity_download_attachments",
+      "description": "Download a message's attachments to a fresh temp dir on the node you call from (outside the awm workspace). Re-fetches the message live; returns `dir` and each file's `path`, `filename`, `mime`, `size`. Files together may not pass 24 MiB. `idx` selects one attachment. A Gmail `message_id` is the Message-ID header.",
+      "timeout": 300,
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "channel",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "idx",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "draft",
+      "tool": "productivity_draft",
+      "description": "Save a Gmail draft for Tony to finish and send himself; nothing is sent. `file` attaches a file from your own node (an absolute path); `files` attaches several, each a path on your node; `bucket_files` attaches drive files as [{bucket, path}]. 24 MiB in all. `reply_to` (a Message-ID) threads it as a reply and fills `to` and `subject` from that message unless given. Returns the draft's Message-ID.",
+      "timeout": 300,
+      "params": [
+        {
+          "name": "account",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "to",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "cc",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "subject",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "file",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "files",
+          "type": "array",
+          "required": false
+        },
+        {
+          "name": "bucket_files",
+          "type": "array",
+          "required": false
+        },
+        {
+          "name": "reply_to",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "chat_read",
+      "tool": "productivity_chat_read",
+      "description": "Read Tony's Slack, Teams or Discord through his signed-in tab in alcor's browser. Without `chat`, lists the site's chats as {id, name, kind}. With `chat` (an id, or a name that matches one chat), returns its last `limit` messages, oldest first, with each attachment's `idx`. Discord's tab opens for the call and closes after it.",
+      "timeout": 120,
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "slack, teams or discord."
+        },
+        {
+          "name": "chat",
+          "type": "string",
+          "required": false,
+          "description": "A chat id or name. Omit to list the chats."
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false,
+          "description": "Messages to return, 1 to 100. Default 30."
+        }
+      ]
+    },
+    {
+      "name": "chat_download",
+      "tool": "productivity_chat_download",
+      "description": "Download a chat message's attachments to a fresh temp dir on the node you call from. `message_id` is the `id` chat_read gave; `idx` selects one attachment. 24 MiB in all.",
+      "timeout": 300,
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "slack, teams or discord."
+        },
+        {
+          "name": "chat",
+          "type": "string",
+          "required": true,
+          "description": "A chat id or name."
+        },
+        {
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "idx",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "chat_stage",
+      "tool": "productivity_chat_stage",
+      "description": "Put files in a chat's compose box in alcor's browser for Tony to send himself; nothing is sent. `file` is a path on your own node, `files` several, `bucket_files` drive files as [{bucket, path}]. 24 MiB in all. Returns a screenshot of the tab as a file, so you can check the files landed. Tony sends through `browser viewer`.",
+      "timeout": 180,
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "slack, teams or discord."
+        },
+        {
+          "name": "chat",
+          "type": "string",
+          "required": true,
+          "description": "A chat id or name."
+        },
+        {
+          "name": "file",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "files",
+          "type": "array",
+          "required": false
+        },
+        {
+          "name": "bucket_files",
+          "type": "array",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "buckets",
+      "tool": "productivity_buckets",
+      "description": "List configured cloud file-store buckets (Google Drive, and OneDrive or SharePoint through alcor's browser) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer."
+    },
+    {
+      "name": "bucket_ls",
+      "tool": "productivity_bucket_ls",
+      "description": "List the immediate children of a folder in a bucket. `path` is relative to the bucket root (omit for root). A missing path is a not-found error, a file is a not-a-folder error. Returns entries with name, path, is_dir, size, mime, web_url. `recursive=true` walks the whole tree instead, stopping at `limit` entries (default 1000) and setting `truncated` when more exist.",
+      "timeout": 600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "recursive",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_stat",
+      "tool": "productivity_bucket_stat",
+      "description": "Return the entry for one file or folder in a bucket, or a not-found error. Paths as for bucket_ls.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "bucket_mkdir",
+      "tool": "productivity_bucket_mkdir",
+      "description": "Create the folder at `path` in a bucket, with every missing parent. Succeeds on an existing folder. Paths as for bucket_ls.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "bucket_get",
+      "tool": "productivity_bucket_get",
+      "description": "Download a file from a bucket. A file up to 24 MiB lands in a fresh temp dir on the node you call from, as `files[0].path`. A bigger file, or a folder, downloads to a temp dir on alcor (`node`), streamed in chunks (OneDrive takes 40 MiB a file at most); a folder refuses over `limit` entries (default 10000) and lists the files that fail in `failures`. Google-native docs are exported (Docs→pdf, Sheets→csv).",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_put",
+      "tool": "productivity_bucket_put",
+      "description": "Upload to `path` in a bucket, creating or overwriting it. `file` is a path on the node you call from, up to 24 MiB. `src` is a path on alcor instead, any size, streamed in chunks; a folder there uploads as the folder `path`, and files that fail are listed in `failures`. `parents=true` creates missing folders above `path`; without it a missing folder is a not-found error. Returns the resulting entry.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "file",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "mime",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "parents",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_rm",
+      "tool": "productivity_bucket_rm",
+      "description": "Delete the file/folder at `path` in a bucket.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "bucket_mv",
+      "tool": "productivity_bucket_mv",
+      "description": "Move or rename the file or folder `src` to `dst` in a bucket. `dst` is the full new path, not a folder to move into. Paths as for bucket_ls. Sharing goes with the item. An existing `dst` is an error unless `overwrite=true`, which first moves it to the trash. `parents=true` creates missing folders above `dst`. Returns the new entry.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "dst",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "overwrite",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "parents",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_cp",
+      "tool": "productivity_bucket_cp",
+      "description": "Copy the file or folder `src` to `dst` in a bucket. Arguments and errors as for bucket_mv. Returns the new entry.",
+      "timeout": 3600,
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "src",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "dst",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "overwrite",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "parents",
+          "type": "boolean",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "bucket_search",
+      "tool": "productivity_bucket_search",
+      "description": "Search a bucket for files whose name contains `query`, across the whole drive. Returns matching entries. Google Drive refuses a `path` scope; OneDrive searches under it.",
+      "params": [
+        {
+          "name": "bucket",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

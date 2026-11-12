@@ -30,6 +30,7 @@ pub mod keeper;
 pub mod memwatch;
 pub mod isolated;
 
+pub mod ledger;
 pub mod pool;
 pub mod claim;
 pub mod seed;

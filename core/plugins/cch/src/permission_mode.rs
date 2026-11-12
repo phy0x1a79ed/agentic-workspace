@@ -339,7 +339,6 @@ mod tests {
             s.hidden = false;
             Ok(true)
         }
-        fn forget(&mut self) {}
         async fn press(&mut self, key: Key) -> Result<(), LaneError> {
             assert_eq!(key, Key::ShiftTab);
             let mut s = self.state();

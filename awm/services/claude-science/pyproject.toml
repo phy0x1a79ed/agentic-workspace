@@ -10,6 +10,8 @@ description = "AWM claude-science service: supervise the Claude Science workbenc
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "starlette",
+    "uvicorn",
 ]
 
 [project.optional-dependencies]

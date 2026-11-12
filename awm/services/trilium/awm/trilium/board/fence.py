@@ -133,12 +133,23 @@ class Fence:
         self._require("relation", note_id)
         self.c.set_attribute(note_id=note_id, name=name, value=target, type="relation")
 
+    def unrelate(self, note_id: str, name: str) -> None:
+        self._require("relation", note_id)
+        self.c.clear_attribute(note_id=note_id, name=name, type="relation")
+
     def move(self, note_id: str, parent: str) -> None:
         """Put the note under this parent and nowhere else. A root stays put."""
         if note_id in self.roots:
             raise Refused(f"move on {note_id} refused: a writer root stays put")
         self._require("move", note_id, parent)
         self.c.move_note(note_id, parent)
+
+    def nest_root(self, note_id: str, parent: str) -> None:
+        """Put one root under another. Nothing else moves a root."""
+        if note_id not in self.roots or parent not in self.roots:
+            raise Refused(f"nest_root of {note_id} under {parent} refused: both must be roots")
+        if (self.note(note_id) or {}).get("parentNoteIds") != [parent]:
+            self.c.move_note(note_id, parent)
 
     def delete(self, note_id: str) -> None:
         if note_id in self.roots:

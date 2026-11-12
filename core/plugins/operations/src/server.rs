@@ -375,8 +375,9 @@ async fn agent(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) 
     if let Err(r) = everyday(&v, &method, &h, "agent") {
         return r;
     }
-    let note = b.get("note_id").and_then(Value::as_str).filter(|s| !s.is_empty());
-    ok(v.approver.agent(sv(&b, "node"), note).await)
+    let pick = |key| b.get(key).and_then(Value::as_str);
+    let note = pick("note_id").filter(|s| !s.is_empty());
+    ok(v.approver.agent(sv(&b, "node"), pick("model"), pick("effort"), note).await)
 }
 
 async fn card_action(State(v): S, method: Method, h: HeaderMap, Path((task_id, action)): Path<(String, String)>) -> Response {
@@ -386,8 +387,7 @@ async fn card_action(State(v): S, method: Method, h: HeaderMap, Path((task_id, a
     let store = v.approver.store.clone();
     let out = match action.as_str() {
         "close" => blocking(move || store.card_close(&task_id)).await,
-        "reject" => blocking(move || store.card_reject(&task_id)).await,
-        _ => return deny("unknown_action", "a card closes or rejects"),
+        _ => return deny("unknown_action", "a card closes"),
     };
     ok(out.map_err(ApproverError::from))
 }
@@ -396,12 +396,32 @@ async fn seat_rc(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>
     if let Err(r) = everyday(&v, &method, &h, "seat_remote_control") {
         return r;
     }
-    let Some(hub) = v.hub.as_ref() else { return deny("failed", "no gateway") };
     let on = b.get("on").is_some_and(crate::service::truthy);
-    match hub.call("social", "seat_remote_control", json!({"seat": sv(&b, "seat"), "on": on}), None).await {
+    social(&v, "seat_remote_control", json!({"seat": sv(&b, "seat"), "on": on})).await
+}
+
+/// An Ops seat switch, answered by social.
+async fn social(v: &Vault, verb: &str, args: Value) -> Response {
+    let Some(hub) = v.hub.as_ref() else { return deny("failed", "no gateway") };
+    match hub.call("social", verb, args, None).await {
         Ok(out) => Json(out).into_response(),
         Err(e) => deny("failed", &e.to_string()),
     }
+}
+
+async fn seat_refresh(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
+    if let Err(r) = everyday(&v, &method, &h, "seat_refresh") {
+        return r;
+    }
+    social(&v, "seat_refresh", json!({"seat": sv(&b, "seat"), "model": sv(&b, "model"), "effort": sv(&b, "effort")})).await
+}
+
+async fn service_toggle(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
+    let d = match everyday(&v, &method, &h, "service_toggle") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    ok(v.approver.service_toggle(&d, sv(&b, "node"), sv(&b, "service"), b.get("on").is_some_and(crate::service::truthy)).await)
 }
 
 async fn request_reject(State(v): S, method: Method, h: HeaderMap, Path(request_id): Path<String>) -> Response {
@@ -511,6 +531,8 @@ pub fn router(v: Arc<Vault>) -> Router {
         .route("/api/agent", post(agent))
         .route("/api/card/{task_id}/{action}", post(card_action))
         .route("/api/seat/remote_control", post(seat_rc))
+        .route("/api/seat/refresh", post(seat_refresh))
+        .route("/api/service/toggle", post(service_toggle))
         .route("/api/request/{request_id}", get(request_view))
         .route("/api/request/{request_id}/options", post(request_options))
         .route("/api/request/{request_id}/approve", post(request_approve))

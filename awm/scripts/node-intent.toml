@@ -38,7 +38,6 @@
 "cli:globus" = "the Globus backup endpoint shares capella's home directory"
 "npm:chrome-devtools-mcp" = "capella-local tool; no awm service uses it"
 "claude-mcp:zotero" = "Tony's Zotero library is reachable from capella only"
-"secret-file:caviar-board-token.json" = "caviar's board token, kept for Tony to hand over"
 
 "config-dir:claude" = "capella desktop config"
 "config-dir:gcloud" = "capella's Google Cloud work"

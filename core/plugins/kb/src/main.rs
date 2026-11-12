@@ -1,4 +1,5 @@
 //! kb: awm's knowledge base. One process serves the `journal`, `search` and `transcripts` tools.
+//! A node with a papers generation also serves the `papers` source, which ranks by its own model.
 //! Each search source keeps its own LanceDB database under `services/kb/lance/<source>/`, and
 //! search federates them in-process and asks peers over the hub. The model loads once here.
 
@@ -32,6 +33,27 @@ enum Cmd {
     /// journal's rollback: copy every post written since the cutover back into the frozen
     /// tables of journal.db, so the Python journal reads them.
     ExportBack,
+    /// Build a papers generation from a semdb build and make it the one kb serves.
+    PapersImport {
+        /// The semdb build directory (registry/, chunks/, vectors/).
+        #[arg(long)]
+        semdb: std::path::PathBuf,
+        /// semdb's citation graph.
+        #[arg(long)]
+        graph: Option<std::path::PathBuf>,
+        /// The Zotero items, one JSON object per line.
+        #[arg(long)]
+        zotero: Option<std::path::PathBuf>,
+        /// The bge-large-en-v1.5 model files. A domain update keeps the current generation's.
+        #[arg(long, required_unless_present = "domains", conflicts_with = "domains")]
+        model: Option<std::path::PathBuf>,
+        /// The papers root to write into; default `<AWM_DIR>/services/kb/lance/papers`.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+        /// Update only these semdb domains, in a clone of the current generation.
+        #[arg(long, num_args = 1..)]
+        domains: Vec<String>,
+    },
 }
 
 fn decl(awm_dir: &Path) -> anyhow::Result<Decl> {
@@ -41,7 +63,7 @@ fn decl(awm_dir: &Path) -> anyhow::Result<Decl> {
 /// The model, or `None` when it is absent or turned off: sources then store their writes and
 /// embed them when it loads.
 fn embedder(awm_dir: &Path) -> Option<Arc<dyn Embedder>> {
-    match awm_embed::MiniLm::load(awm_dir) {
+    match awm_embed::Onnx::load(awm_dir, &awm_embed::MINILM) {
         Ok(m) => Some(Arc::new(m)),
         Err(e) => {
             tracing::warn!("kb: no embedder, answering on keywords: {e}");
@@ -60,21 +82,25 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
             return Ok(());
         }
+        Some(Cmd::PapersImport { semdb, graph, zotero, model, root, domains }) => {
+            awm_plugin_sdk::telemetry::init();
+            let root = root.unwrap_or_else(|| awm_kb_papers::root(&awm_dir));
+            let opts = awm_kb_papers::import::Opts { semdb, graph, zotero, model, root, domains };
+            let out = runtime()?.block_on(awm_kb_papers::import::run(&opts))?;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+            return Ok(());
+        }
         Some(Cmd::Serve) | None => {}
     }
-    let snapshot = awm_statecheck::snapshot_once("kb", &decl(&awm_dir)?)?;
-    runtime()?.block_on(run(&awm_dir, snapshot))
+    runtime()?.block_on(run(&awm_dir))
 }
 
 fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread().enable_all().build()
 }
 
-async fn run(awm_dir: &Path, snapshot: awm_statecheck::snapshot::Outcome) -> anyhow::Result<()> {
+async fn run(awm_dir: &Path) -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
-    for p in &snapshot.taken {
-        tracing::info!("kb: took the pre-redux snapshot {}", p.display());
-    }
     let svc = Service::from_env()?;
     let ctx = svc.context();
     let hub = ctx.hub().clone();
@@ -85,8 +111,15 @@ async fn run(awm_dir: &Path, snapshot: awm_statecheck::snapshot::Outcome) -> any
     let workspace = awm_plugin_sdk::config::workspace_root();
     let guide = awm_kb_guide::Guide::open(awm_dir, &workspace, model.clone(), Arc::new(awm_kb_guide::HubGuide(hub.clone()))).await?;
     let transcripts = awm_kb_transcripts::open(awm_dir, &services.join("transcripts"), ctx.clone())?;
-    let sources: Vec<Arc<dyn Source>> = vec![journals.clone(), guide.clone(), Arc::new(awm_kb_transcripts::source::Transcripts::new(transcripts.clone()))];
-    let search = awm_kb_search::Search::with_hub(&services.join("search"), sources, model, hub.clone())?;
+    let mut sources: Vec<Arc<dyn Source>> = vec![journals.clone(), guide.clone(), Arc::new(awm_kb_transcripts::source::Transcripts::new(transcripts.clone()))];
+    let papers = awm_kb_papers::Papers::open(awm_dir).await.unwrap_or_else(|e| {
+        tracing::error!("kb: the papers generation did not open, serving no papers: {e:#}");
+        None
+    });
+    sources.extend(papers.clone().map(|p| p as Arc<dyn Source>));
+    let papers_spec = awm_kb_papers::spec();
+    let known = awm_kb_search::request::Kinds([(papers_spec.name, (papers_spec.fields, papers_spec.hit))].into_iter().collect());
+    let search = awm_kb_search::Search::with_hub(&services.join("search"), sources, known, model, hub.clone())?;
 
     let svc = awm_kb_journals::register(svc, journals.clone());
     let svc = awm_kb_search::register(svc, Arc::new(search));
@@ -98,6 +131,13 @@ async fn run(awm_dir: &Path, snapshot: awm_statecheck::snapshot::Outcome) -> any
         Ok(())
     })
     .on_ready(async move {
+        if let Some(p) = papers {
+            let c = ctx.clone();
+            ctx.spawn("papers-sync", async move {
+                awm_kb_papers::sync::follow(c, p).await;
+                Ok(())
+            });
+        }
         journals.start(ctx);
         guide.follow(hub);
     })

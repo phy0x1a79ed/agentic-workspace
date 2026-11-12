@@ -31,7 +31,7 @@ class Now:
 
 
 async def test_handover_takes_standby_on_partner_then_reboots(cfg):
-    gw = FakeGateway({(WAKE, "standby_take"): {"ok": True, "job": "j1", "link": "https://l"}})
+    gw = FakeGateway({(WAKE, "standby_take"): {"ok": True, "session_id": "cc" + "b" * 32, "link": "https://l"}})
     ran = []
     out = await standby.handover(cfg, gw, reason="kernel update", reboot=True, runner=ran.append)
     assert gw.calls[0] == (WAKE, "standby_take",
@@ -52,7 +52,7 @@ async def test_handover_never_reboots_without_a_standby(cfg):
 async def test_take_starts_a_briefed_remote_control_session(alcor_cfg, store, gw):
     out = await standby.take(alcor_cfg, store, gw, down="mizar", reason="kernel update",
                              now=Now())
-    assert out["ok"] and out["job"] == "abcd1234" and not out["reused"]
+    assert out["ok"] and out["session_id"] == "cc" + "a" * 32 and not out["reused"]
     _, verb, args, peer = gw.calls[0]
     assert verb == "start_other" and peer is None
     assert args["remote_control"] is True and args["name"] == "standby-for-mizar"
@@ -70,7 +70,7 @@ async def test_release_messages_the_session_with_the_report(alcor_cfg, store, gw
                                 report={"revive": {"revived": ["8162a704"]}})
     assert out["held"] and out["delivered"]
     _, verb, args, _ = gw.calls[-1]
-    assert verb == "message" and args["job"] == "abcd1234" and "8162a704" in args["text"]
+    assert verb == "message" and args["to"] == {"id": "cc" + "a" * 32} and "8162a704" in args["text"]
     assert standby.status(store)["holds"][0]["state"] == "released"
 
 

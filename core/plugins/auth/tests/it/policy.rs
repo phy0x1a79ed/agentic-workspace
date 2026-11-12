@@ -1,6 +1,6 @@
 //! The public door's verdicts against Python's (`vectors/policy.json`), plus the profile's security claims.
 
-use awm_plugin_auth::policy::{self, board, classify, slices, tether, vault, Verdict};
+use awm_plugin_auth::policy::{self, classify, slices, tether, vault, Verdict};
 use base64::Engine;
 use serde_json::{json, Value};
 
@@ -37,8 +37,6 @@ fn every_path_gets_pythons_verdicts() {
         assert_eq!(tether::owns(path), row["tether_owns"], "{path:?}");
         assert_eq!(tether::refused(path), row["tether_refused"], "{path:?}");
         assert_eq!(tether::upstream_path(path), row["tether_upstream"].as_str().unwrap(), "{path:?}");
-        assert_eq!(board::owns(path), row["board_owns"], "{path:?}");
-        assert_eq!(board::in_mount(path), row["board_in_mount"], "{path:?}");
     }
 }
 
@@ -49,16 +47,6 @@ fn every_raw_target_is_stripped_as_python_strips_it() {
         assert_eq!(vault::upstream_raw_path(&raw), unhex(&row["vault"]), "vault {raw:?}");
         assert_eq!(slices::upstream_raw_path(&raw), unhex(&row["slices"]), "slices {raw:?}");
         assert_eq!(tether::upstream_raw_path(&raw), unhex(&row["tether"]), "tether {raw:?}");
-        assert_eq!(board::upstream_raw_path(&raw), unhex(&row["board"]), "board {raw:?}");
-    }
-}
-
-#[test]
-fn every_board_method_gets_pythons_answer_and_cap() {
-    for row in vectors()["board"].as_array().unwrap() {
-        let (m, p) = (row["method"].as_str().unwrap(), row["path"].as_str().unwrap());
-        assert_eq!(board::allows(m, p), row["allows"], "{m} {p:?}");
-        assert_eq!(board::body_cap(m, p) as u64, row["body_cap"].as_u64().unwrap(), "{m} {p:?}");
     }
 }
 
@@ -88,8 +76,6 @@ fn the_constants_are_pythons() {
     assert_eq!(table(tether::NOT_FORWARDED), c["tether_not_forwarded"]);
     let all: Vec<&str> = slices::all_not_forwarded().iter().map(|(k, _)| *k).collect();
     assert_eq!(json!(all), c["slices_all_not_forwarded"]);
-    assert_eq!(board::MAX_BODY as u64, c["board_max_body"].as_u64().unwrap());
-    assert_eq!(board::MAX_FILE_BODY as u64, c["board_max_file_body"].as_u64().unwrap());
     assert_eq!(vault::manifest(), c["vault_manifest"]);
 }
 
@@ -198,7 +184,8 @@ fn the_tether_mount_claims_its_surface_and_refuses_near_misses() {
     let claimed = [
         "/tether".to_string(), "/tether/win".into(), "/tether/bin/tether".into(), "/tether/claim/1".into(),
         format!("/tether/join/7/{TICKET}"), format!("/tether/seat/{TICKET}/recv"), "/room/acre-anchor-kettle/send".into(),
-        "/room/acre-anchor-kettle-abbey-otter-lamp/recv".into(),
+        "/room/acre-anchor-kettle-abbey-otter-lamp/recv".into(), "/room/acre-anchor-kettle/file".into(),
+        format!("/room/acre-anchor-kettle/file/{TICKET}"),
     ];
     for path in &claimed {
         assert!(tether::owns(path), "{path}");
@@ -211,6 +198,8 @@ fn the_tether_mount_claims_its_surface_and_refuses_near_misses() {
         format!("/tether/seat/{TICKET}/join"), "/tether/bin/../../etc/passwd".into(), "/tether/invoke".into(),
         "/tether/issue".into(), "/tether/status".into(), "/room".into(), "/room/acre-anchor".into(),
         "/room/Acre-anchor-kettle".into(), "/room/acre-anchor-kettle/".into(), "/room/acre-anchor-kettle/close".into(),
+        "/room/acre-anchor-kettle/file/".into(), format!("/room/acre-anchor-kettle/file/{t31}"),
+        format!("/room/acre-anchor-kettle/file/{}", TICKET.to_uppercase()), format!("/room/acre-anchor-kettle/send/{TICKET}"),
     ];
     for path in &misses {
         assert!(!tether::owns(path), "{path}");
@@ -224,33 +213,3 @@ fn the_tether_mount_claims_its_surface_and_refuses_near_misses() {
     }
 }
 
-#[test]
-fn the_board_door_admits_its_shapes_by_method_and_refuses_the_rest() {
-    let shapes: Vec<(&str, String)> = vec![
-        ("POST", "/board/cards".into()), ("GET", "/board/cards".into()), ("GET", format!("/board/cards/{TICKET}")),
-        ("POST", format!("/board/cards/{TICKET}/claim")), ("POST", format!("/board/cards/{TICKET}/complete")),
-        ("GET", format!("/board/cards/{TICKET}/events")), ("POST", format!("/board/cards/{TICKET}/files")),
-        ("GET", format!("/board/cards/{TICKET}/files/{TICKET}")), ("GET", "/board/stream".into()),
-    ];
-    for (m, path) in &shapes {
-        assert_eq!(classify(path), Verdict::Board, "{path}");
-        assert!(policy::allows(path, None));
-        assert!(board::allows(m, path), "{m} {path}");
-        let wrong = if *m == "GET" { "DELETE" } else { "PUT" };
-        assert!(!board::allows(wrong, path), "{wrong} {path}");
-    }
-    let bad = [
-        "/board".to_string(), "/board/cards/".into(), "/board/health".into(), "/board/cards/short".into(),
-        format!("/board/cards/{}", &TICKET[..31]), format!("/board/cards/{}", TICKET.to_uppercase()),
-        format!("/board/cards/{TICKET}/release"), format!("/board/cards/{TICKET}/claim/extra"), format!("/board/cards/{TICKET}\n"),
-        format!("/board/cards/{TICKET}/files/../../stream"),
-    ];
-    for path in &bad {
-        assert!(!board::owns(path), "{path:?}");
-        assert_eq!(classify(path), Verdict::Deny, "{path:?}");
-        assert!(!policy::allows(path, Some("tony")), "{path:?}");
-    }
-    assert_eq!(board::upstream_raw_path(b"/board/c%61rds"), None);
-    assert_eq!(board::body_cap("POST", &format!("/board/cards/{TICKET}/files")), board::MAX_FILE_BODY);
-    assert_eq!(board::body_cap("POST", &format!("/board/cards/{TICKET}/messages")), board::MAX_BODY);
-}

@@ -105,8 +105,8 @@ impl Holder {
             trust: Some(self.trust.clone()),
             scope: Some(self.own_scope()),
             origin: None,
-            job: None,
             name: self.name.clone(),
+            kind: Some("isolated".into()),
         }
     }
 }

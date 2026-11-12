@@ -135,15 +135,24 @@ pub struct Call<'a> {
     pub verb: &'a str,
     /// The tool serves the harness contract. Only reflection drives a harness.
     pub harness: bool,
-    /// The call names another session by `job`.
+    /// The call names another session in its `to`.
     pub names_other: bool,
+}
+
+impl Call<'_> {
+    /// Whether a call's `args` name another session: a reflection `to`.
+    pub fn names_other(args: &serde_json::Value) -> bool {
+        args.get("to").is_some_and(|t| !t.is_null())
+    }
 }
 
 /// Verbs that bring up a top-level session (channels.md R125 item 3).
 pub const START_VERBS: [&str; 3] = ["start_other", "resume_other", "adopt_other"];
 /// The `social` verbs a seat holds and answers its own chats with (R69). social keeps them
 /// to the chats the session holds, and a mount to chats below trusted that no sibling holds.
-pub const SEAT_CHAT_VERBS: [&str; 9] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "mark_seat_done", "forward"];
+pub const SEAT_CHAT_VERBS: [&str; 8] = ["send", "react", "fetch", "history", "download_attachments", "mount", "unmount", "forward"];
+/// The `seats` verbs a seat's agent answers with.
+pub const SEAT_AGENT_VERBS: [&str; 3] = ["send", "react", "download"];
 /// The `2fa` verbs that only read. ssh arms the approver itself for fir and sockeye.
 pub const TWOFA_READS: [&str; 5] = ["devices", "ping", "reachability", "status", "pending"];
 const DESCRIBE: &str = "describe";
@@ -164,12 +173,14 @@ pub fn call_refusal(level: Level, call: &Call) -> Option<String> {
         return whole();
     }
     match tool {
-        // A seat answers its own chats and nothing more: no search, lookup, DM or bucket.
+        // A seat answers its own chats and nothing more: no lookup or DM.
         "social" => partial(SEAT_CHAT_VERBS.contains(&verb)),
+        "seats" => partial(SEAT_AGENT_VERBS.contains(&verb)),
         // No cards; request_human is the one way to Tony's queue (items 5 and 6).
         "operations" => partial(verb == "request_human"),
-        // The vault holds the board's cards and Tony's own notes (items 5 and 10).
-        "trilium" => whole(),
+        // The vault holds the board's cards and Tony's own notes (items 5 and 10), and
+        // productivity his own mail, chats and drives.
+        "trilium" | "productivity" => whole(),
         "2fa" if untrusted => whole(),
         "2fa" => partial(TWOFA_READS.contains(&verb)),
         // ssh arms Duo for fir and sockeye, the grant of item 1 that untrusted lacks.
@@ -230,6 +241,25 @@ pub fn journal_bound(edges: &EdgeList, level: Level, node: &str, project: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_to_names_another_session() {
+        use serde_json::json;
+        assert!(Call::names_other(&json!({"to": {"id": "cc00"}})) && Call::names_other(&json!({"to": {"name": "x"}})));
+        assert!(!Call::names_other(&json!({"text": "x"})) && !Call::names_other(&json!({"to": null})));
+    }
+
+    #[test]
+    fn a_seat_agent_answers_but_runs_no_other_seats_verb() {
+        let call = |verb| Call { tool: "seats", verb, harness: false, names_other: false };
+        for level in [Level::Cooperative, Level::Untrusted] {
+            assert_eq!(call_refusal(level, &call("send")), None);
+            assert!(call_refusal(level, &call("mark_done")).is_some());
+            assert!(call_refusal(level, &call("reset")).is_some());
+            assert!(call_refusal(level, &call("list")).is_some());
+        }
+        assert_eq!(call_refusal(Level::Trusted, &call("reset")), None);
+    }
     use crate::grant::payload_digest;
     use crate::grant::tests::{key, sign};
 
@@ -259,7 +289,7 @@ mod tests {
                              ("journal", "post"), ("channel", "open"), ("browser", "tab_open")] {
             assert_eq!(call_refusal(c, &call(tool, verb)), None, "{tool}.{verb}");
         }
-        for (tool, verb) in [("social", "search"), ("social", "lookup"), ("social", "open_dm"), ("social", "bucket_get"), ("social", "keepers"),
+        for (tool, verb) in [("social", "lookup"), ("social", "open_dm"), ("social", "keepers"), ("productivity", "fetch"), ("productivity", "describe"),
                              ("operations", "task_report"), ("operations", "approval_request"), ("trilium", "note_get"),
                              ("trilium", "describe"), ("2fa", "burst"), ("reflection", "start_other"), ("reflection", "resume_other")] {
             assert!(call_refusal(c, &call(tool, verb)).is_some(), "{tool}.{verb}");

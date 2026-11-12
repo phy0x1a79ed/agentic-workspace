@@ -110,3 +110,30 @@ def test_items_is_open_to_peers_and_the_operator_only(tmp_path, monkeypatch):
         assert asyncio.run(hub_adapter._h_items({}, as_))["total"] == 1
     with pytest.raises(PermissionError):
         asyncio.run(hub_adapter._h_items({}, "user:someone"))
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_items_call_returns_when_a_sync_moves_the_bundle(monkeypatch):
+    """The long poll kb holds open through the singleton door, in place of an event."""
+    library = _library(1)
+
+    class _Held:
+        def read(self):
+            return library
+
+    def _run(vault, **kw):
+        library.update(_library(1, 2))
+        return {"pull": {"changed": True}}
+
+    monkeypatch.setattr(hub_adapter.sync, "held", lambda vault: _Held())
+    monkeypatch.setattr(hub_adapter.sync, "run", _run)
+    monkeypatch.setattr(hub_adapter.vault, "Vault", lambda: None)
+
+    quiet = await hub_adapter._h_items({"since": {"users/0": 1}, "wait": 0})
+    assert quiet["total"] == 0
+    waiting = asyncio.create_task(hub_adapter._h_items({"since": {"users/0": 1}, "wait": 30}))
+    await asyncio.sleep(0.05)
+    assert not waiting.done()
+    await hub_adapter._h_sync({"trigger": "push"})
+    page = await asyncio.wait_for(waiting, 5)
+    assert [i["key"] for i in page["items"]] == ["K2"]

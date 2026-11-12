@@ -1,4 +1,5 @@
-//! Deletes the sessions the pool made and nobody took. It plans by default, and before each
+//! Deletes the sessions the pool made and nobody took, and forgets ledger entries whose session
+//! is gone. It plans by default, and before each
 //! deletion re-reads the session's own record rather than trusting the plan's snapshot: between
 //! a tick and its removals a session can be claimed, renamed or prompted.
 //!
@@ -6,11 +7,14 @@
 //! whatever claiming rejected: "delete the extras" would delete the session somebody is attached
 //! to and typing into.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use awm_harness::claude::cli::{RunError, Runner};
+use awm_harness::claude::roster;
 use serde::Serialize;
 
+use crate::ledger;
 use crate::lineage::Processes;
 use crate::pool::{Pool, Terminals};
 use crate::sessions::{age_s, Session};
@@ -21,7 +25,10 @@ pub const REMOVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// One session the plan may delete, and why. `removed` is set once [`apply`] has acted on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Removal {
-    pub session: String,
+    pub session_id: Option<String>,
+    /// The job `claude rm` takes.
+    #[serde(skip)]
+    pub short: String,
     pub name: String,
     pub why: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,14 +41,20 @@ pub struct Removal {
 /// The terminals are read once for the whole plan: re-reading them per session lets the set
 /// change underneath a single plan.
 pub fn plan<P: Processes, T: Terminals>(pool: &Pool<P, T>, now: Option<f64>) -> Vec<Removal> {
+    let (version, sessions) = removable(pool, now);
+    sessions
+        .into_iter()
+        .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session_id: x.canonical(), short: x.short, name: x.name, removed: None })
+        .collect()
+}
+
+/// The binary version, and every session that may be deleted at `now`.
+fn removable<P: Processes, T: Terminals>(pool: &Pool<P, T>, now: Option<f64>) -> (Option<String>, Vec<Session>) {
     let s = pool.sessions();
     let version = s.binary_version();
     let attached = pool.terminals.attached();
-    s.load()
-        .into_iter()
-        .filter(|x| s.removable(x, version.as_deref(), now, Some(&attached)))
-        .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session: x.short, name: x.name, removed: None })
-        .collect()
+    let found = s.collectable().into_iter().filter(|x| s.removable(x, version.as_deref(), now, Some(&attached))).collect();
+    (version, found)
 }
 
 fn why<P: Processes, T: Terminals>(pool: &Pool<P, T>, s: &Session, version: Option<&str>, now: Option<f64>) -> String {
@@ -59,10 +72,7 @@ fn why<P: Processes, T: Terminals>(pool: &Pool<P, T>, s: &Session, version: Opti
 }
 
 fn still_removable<P: Processes, T: Terminals>(pool: &Pool<P, T>, short: &str) -> bool {
-    let s = pool.sessions();
-    let version = s.binary_version();
-    let attached = pool.terminals.attached();
-    s.load().iter().any(|x| x.short == short && s.removable(x, version.as_deref(), None, Some(&attached)))
+    removable(pool, None).1.iter().any(|x| x.short == short)
 }
 
 /// Carry out the plan, re-checking each session as it comes up, with `claude rm` run by `runner`.
@@ -73,7 +83,7 @@ where
 {
     let mut done = Vec::new();
     for item in pool.read(move |p| plan(p, now)).await {
-        let short = item.session.clone();
+        let short = item.short.clone();
         let check = short.clone();
         if !pool.read(move |p| still_removable(p, &check)).await {
             tracing::info!("cx: {short} stopped being removable between the plan and the removal — left alone");
@@ -83,7 +93,20 @@ where
         let removed = rm(pool, runner, &short).await;
         done.push(Removal { removed: Some(removed), ..item });
     }
+    pool.read(forget_the_gone).await;
     done
+}
+
+/// Drop the ledger entries whose job directory is gone. A dead session keeps its entry until
+/// `claude rm` succeeds, so a failed removal is retried on the next tick. Finding no job at all
+/// drops nothing.
+fn forget_the_gone<P: Processes, T: Terminals>(pool: &Pool<P, T>) {
+    let home = &pool.paths.home;
+    let kept: BTreeSet<String> =
+        roster::load(home).into_iter().chain(roster::unlisted(home)).filter_map(|s| s.canonical()).collect();
+    if !kept.is_empty() {
+        ledger::retain(&pool.paths.ledger_path(), |k| kept.contains(k));
+    }
 }
 
 async fn rm<P, T>(pool: &Pool<P, T>, runner: &impl Runner, short: &str) -> bool {
@@ -122,10 +145,24 @@ mod tests {
         // The one case removal exists for, and nothing else on a live box.
         let b = TestBox::new();
         let items: std::collections::HashMap<String, Removal> =
-            plan(&b.pool(), Some(b.a_minute_on())).into_iter().map(|i| (i.session.clone(), i)).collect();
-        assert_eq!(items.keys().cloned().collect::<HashSet<_>>(), HashSet::from(["strandeddead".into(), "stranded".into()]));
+            plan(&b.pool(), Some(b.a_minute_on())).into_iter().map(|i| (i.short.clone(), i)).collect();
+        assert_eq!(
+            items.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["strandeddead".into(), "stranded".into(), "rebooted".into()])
+        );
         assert_eq!(items["strandeddead"].why, "the process is gone");
+        assert_eq!(items["rebooted"].why, "the process is gone", "a spare the roster dropped");
         assert!(items["stranded"].why.contains("never prompted"));
+    }
+
+    #[test]
+    fn test_the_ledger_forgets_a_session_only_once_its_job_is_gone() {
+        let b = TestBox::new();
+        let gone = ledger::key("11111111-1111-4111-8111-111111111111").unwrap();
+        ledger::set(&b.paths.ledger_path(), &gone, ledger::Stage::Spare).unwrap();
+        forget_the_gone(&b.pool());
+        let held = ledger::load(&b.paths.ledger_path());
+        assert!(!held.contains_key(&gone) && held.len() == 6, "the dropped spare's entry outlives its process");
     }
 
     /// Answers `claude rm` with success, recording each argv.
@@ -145,11 +182,12 @@ mod tests {
         let b = TestBox::new();
         let rm = Rm::default();
         let done = apply(&b.pool(), &rm, None).await;
-        let by: std::collections::HashMap<_, _> = done.iter().map(|d| (d.session.as_str(), d.removed)).collect();
+        let by: std::collections::HashMap<_, _> = done.iter().map(|d| (d.short.as_str(), d.removed)).collect();
         assert_eq!(by["stranded"], Some(true));
         assert_eq!(by["strandeddead"], Some(false));
+        assert_eq!(by["rebooted"], Some(true));
         let calls = rm.0.lock().unwrap().clone();
         assert!(calls.iter().all(|c| c[1] == "rm" && c[0].ends_with("claude")));
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 3);
     }
 }

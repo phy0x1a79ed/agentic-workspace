@@ -2,7 +2,6 @@
 //! the wrapper that turns every failure into `ok: false` with a reason, logged once.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use awm_harness::contract::args::{bool_lenient, int_lenient};
 use awm_plugin_sdk::ids;
@@ -12,36 +11,27 @@ use serde_json::{json, Map, Value};
 use awm_pycompat::repr::str_repr;
 use crate::app::{declared, is_false, is_ok, merged, object, ok_or_absent, text, truthy, App, Failure};
 use crate::caller::Frame;
-use crate::gateway::{Call, Gateway};
+use crate::gateway::Gateway;
 use crate::ledger::Ticket;
-use crate::providers::{HarnessError, Provider, DOWN_FOR};
+use crate::providers::{HarnessError, Provider, Ref, DOWN_FOR};
 use crate::trust::recorded_in;
-use crate::surface::TOOL;
 use crate::waits::NewWait;
 
 /// The mode the gateway's gate restricts hardest (core modes.rs).
 pub const UNKNOWN_MODE: &str = "unknown";
 /// The level an isolated session starts at when the caller names none (fleet.md R109).
 pub const ISOLATED_TRUST: &str = "untrusted";
-/// The verbs that act on the caller's own session. Each takes no `job`, or a `job` that
-/// defaults to the caller, and each resolves the caller through [`App::resolve_caller`].
-pub const SELF_ACTING: [&str; 14] = [
-    "message_self", "compact", "mode", "whoami", "wait", "remote_control", "model", "effort", "rename", "cd", "mcp",
-    "interrupt", "link", "stop",
-];
 /// `harness_event` kinds that report a session's lifecycle.
-pub const LIFECYCLE: [&str; 4] = ["started", "stopped", "remote_control", "renamed"];
+pub const LIFECYCLE: [&str; 5] = ["started", "stopped", "remote_control", "renamed", "state"];
 /// The emit topic of the session lifecycle, `reflection/sessions`.
 pub const SESSIONS_TOPIC: &str = "sessions";
 /// The keys every `list_other` row carries, null when its provider gave none.
-pub const ROW_KEYS: [&str; 9] = ["job", "session_id", "parent", "state", "live", "alive", "kind", "name", "transcript"];
+pub const ROW_KEYS: [&str; 8] = ["session_id", "parent", "state", "live", "alive", "kind", "name", "transcript"];
 
-/// How long a verb forwarded to another node's reflection may take.
-const FORWARD_TIMEOUT: Duration = Duration::from_secs(60);
 
-const NO_MODEL: &str = "model and effort are required, with no default. Pick both to fit the task: a smaller model and \
-                        lower effort for mechanical work, a larger model and high effort for design or debugging. Fable \
-                        needs Tony's consent first.";
+/// The model and effort of a start that names neither.
+const DEFAULT_MODEL: &str = "opus";
+const DEFAULT_EFFORT: &str = "medium";
 const OWN_STOP: &str = "that is your own session; stopping it ends this conversation. Pass confirm=true to proceed.";
 const TERMINAL_WAIT: &str =
     "a terminal session stays open; the wake line is typed in when every listed session has retired. End your turn now";
@@ -54,9 +44,24 @@ fn int(args: &Value, key: &str) -> i64 {
     int_lenient(args.get(key), 0)
 }
 
-/// The `job` a verb names, or None for the caller's own session.
-fn job_arg(args: &Value) -> Option<String> {
-    args.get("job").and_then(Value::as_str).map(str::trim).filter(|j| !j.is_empty()).map(str::to_string)
+/// The `to` a verb names, None for the caller's own session, or the refusal of a malformed one.
+fn to_arg(args: &Value) -> Result<Option<Ref>, Value> {
+    Ref::from_args(args).map_err(|e| reason(&e))
+}
+
+/// The `to` a verb requires, or the refusal of a missing or malformed one.
+fn required_to(args: &Value) -> Result<Ref, Value> {
+    to_arg(args)?.ok_or_else(|| reason("to is required: {id} or {name}"))
+}
+
+/// Unwraps a `to_arg` or `required_to` result, returning its refusal as the verb's reply.
+macro_rules! or_refuse {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(refused) => return Ok(refused),
+        }
+    };
 }
 
 /// A field as Python's `str()` prints it.
@@ -70,21 +75,6 @@ fn shown(v: Option<&Value>) -> String {
 
 fn reason(text: &str) -> Value {
     json!({"ok": false, "reason": text})
-}
-
-/// Where a `to` address leads.
-enum To {
-    Here(String),
-    Peer(String),
-    Refused(Value),
-}
-
-/// Split a `to` at its last `@`, because a session name may hold `/` and even `@`.
-pub(crate) fn split_to(to: &str) -> (&str, Option<&str>) {
-    match to.rsplit_once('@') {
-        Some((who, node)) if !who.is_empty() && !node.is_empty() => (who, Some(node)),
-        _ => (to, None),
-    }
 }
 
 /// The refusal of an effort above high, the upper limit for any session reflection starts or
@@ -131,7 +121,7 @@ impl<G: Gateway> App<G> {
             "probe" => Ok(self.probe(frame, args).await),
             "stop_other" => self.stop_other(frame, args).await,
             "resume_other" => self.resume_other(frame, args).await,
-            "adopt_other" => self.on_job(frame, args, "adopt", "start_other", json!({})).await.map(|(out, _)| out),
+            "adopt_other" => self.on_other(frame, args, "adopt", "start_other", json!({})).await.map(|(out, _)| out),
             "wait" => self.wait(frame, args).await,
             "waits" => Ok(json!({"ok": true, "waits": self.waits().await})),
             "retired" => Ok(self.retired(args).await),
@@ -160,7 +150,7 @@ impl<G: Gateway> App<G> {
                     // Only a session's own call looks further: a peer's call has no caller pid,
                     // and must not fan out again from here.
                     if frame.pid.is_some() {
-                        why.push_str(&self.hint(r).await);
+                        why.push_str(&crate::peers::hint_text(&self.holders(r).await));
                     }
                 }
                 tracing::warn!("reflection: {verb} failed for caller pid {}: {why}", frame.pid_text());
@@ -262,7 +252,7 @@ impl<G: Gateway> App<G> {
         }
     }
 
-    // --- a session named by `job`, or the caller's own --------------------------------
+    // --- a session named by `to`, or the caller's own --------------------------------
 
     /// The target `named` as its harness describes it, or `named` with `known: false`.
     async fn described(&self, p: &Provider, named: &Map<String, Value>) -> Value {
@@ -273,12 +263,11 @@ impl<G: Gateway> App<G> {
         }
     }
 
-    /// The one target-and-steer helper: the provider and target args of the session `job`
-    /// names, else of the caller's own session. A `job` is a steer, checked when `steer` names
-    /// the verb.
-    async fn steer_target(&self, frame: &Frame, job: Option<&str>, steer: Option<&str>) -> Result<(Provider, Map<String, Value>), Failure> {
-        let (p, named) = self.named_target(job, frame).await?;
-        if let (Some(verb), Some(_)) = (steer, job) {
+    /// The one target-and-steer helper: the provider and target args of the session `to` names,
+    /// else of the caller's own session. A `to` is a steer, checked when `steer` names the verb.
+    async fn steer_target(&self, frame: &Frame, to: Option<&Ref>, steer: Option<&str>) -> Result<(Provider, Map<String, Value>), Failure> {
+        let (p, named) = self.target(to, frame).await?;
+        if let (Some(verb), Some(_)) = (steer, to) {
             let actor = self.actor(frame).await;
             let target = self.described(&p, &named).await;
             self.check_steer(actor.as_ref(), verb, Some(&target)).await?;
@@ -287,29 +276,33 @@ impl<G: Gateway> App<G> {
     }
 
     async fn on_target(&self, frame: &Frame, args: &Value, verb: &str, steer: Option<&str>, extra: Value) -> Result<Value, Failure> {
-        let (p, named) = self.steer_target(frame, job_arg(args).as_deref(), steer).await?;
+        let to = or_refuse!(to_arg(args));
+        let (p, named) = self.steer_target(frame, to.as_ref(), steer).await?;
         Ok(self.harness_call(&p, verb, merged(&Value::Object(named), &extra), None).await?)
     }
 
-    /// A verb that needs a `job` and always checks the steer, sent with the caller's `as`.
-    async fn on_job(&self, frame: &Frame, args: &Value, verb: &str, steer: &str, extra: Value) -> Result<(Value, Map<String, Value>), Failure> {
-        let Some(job) = job_arg(args) else { return Ok((reason("job is required"), Map::new())) };
-        let (p, named) = self.steer_target(frame, Some(&job), Some(steer)).await?;
+    /// A verb that needs a `to` and always checks the steer, sent with the caller's `as`.
+    async fn on_other(&self, frame: &Frame, args: &Value, verb: &str, steer: &str, extra: Value) -> Result<(Value, Map<String, Value>), Failure> {
+        let to = match required_to(args) {
+            Ok(to) => to,
+            Err(refused) => return Ok((refused, Map::new())),
+        };
+        let (p, named) = self.steer_target(frame, Some(&to), Some(steer)).await?;
         let out = self.harness_call(&p, verb, merged(&Value::Object(named.clone()), &extra), frame.as_.as_deref()).await?;
         Ok((out, named))
     }
 
     async fn stop(self: &Arc<Self>, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let job = job_arg(args);
+        let to = or_refuse!(to_arg(args));
         let confirm = flag(args, "confirm", false);
-        let (p, named) = match job.as_deref() {
-            Some(job) => self.steer_target(frame, Some(job), Some("stop")).await?,
+        let (p, named) = match &to {
+            Some(to) => self.steer_target(frame, Some(to), Some("stop")).await?,
             None => {
                 let (p, who) = self.resolve_caller(frame).await?;
                 if !confirm {
                     return Ok(json!({"ok": false, "reason": OWN_STOP, "kind": "self"}));
                 }
-                // Named by its id, so the provider finds the job and sees the caller stop itself.
+                // Named by its id, so the provider sees the caller stop itself.
                 let named = json!({"session_id": who.get("session_id"), "pid": frame.pid_value()});
                 (p, object(&named))
             }
@@ -323,7 +316,7 @@ impl<G: Gateway> App<G> {
     /// A retired session ends its scope claims, and wakes its waiters here and on each peer (R51).
     async fn after_retire(self: &Arc<Self>, out: Value, session_id: Option<&str>) -> Value {
         let sid = text(&out, "session_id").or(session_id).map(str::to_string);
-        let Some(sid) = sid.filter(|s| is_ok(&out) && ids::is_r9(s)) else { return out };
+        let Some(sid) = sid.filter(|s| is_ok(&out) && ids::SessionId::parse(s).is_ok()) else { return out };
         self.release_claims(&sid).await;
         let woken = self.retire(&sid, true, |row| self.wake(row)).await;
         let app = self.clone();
@@ -333,12 +326,8 @@ impl<G: Gateway> App<G> {
     }
 
     async fn message(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let job = match self.address(frame, args, false).await {
-            To::Refused(out) => return Ok(out),
-            To::Peer(node) => return Ok(self.forward(frame, "message", &node, json!({"text": args.get("text"), "confirm": args.get("confirm")}), args).await),
-            To::Here(job) => job,
-        };
-        let (p, named) = self.steer_target(frame, Some(&job), None).await?;
+        let to = or_refuse!(required_to(args));
+        let (p, named) = self.steer_target(frame, Some(&to), None).await?;
         let extra = json!({"text": self.provider_value(frame, args.get("text")).await, "confirm": flag(args, "confirm", false)});
         let mut out = self.harness_call(&p, "send", merged(&Value::Object(named), &extra), None).await?;
         if is_false(&out, "ok") && truthy(out.get("unknown_ref")) && out.get("code").is_none() {
@@ -355,43 +344,10 @@ impl<G: Gateway> App<G> {
         })
     }
 
-    /// Where a `to` points: another node, or the job of the session it names on this one.
-    async fn address(&self, frame: &Frame, args: &Value, include_stopped: bool) -> To {
-        let Some(to) = args.get("to").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) else {
-            return To::Refused(reason("to is required: <session name>@<node> or <job id>@<node>"));
-        };
-        let (who, node) = split_to(to);
-        if let Some(node) = node.filter(|n| *n != self.node.name()) {
-            return To::Peer(node.to_string());
-        }
-        let rows = self.list_other(frame, &json!({"include_stopped": include_stopped})).await;
-        let jobs: Vec<&str> = rows["sessions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|r| text(r, "name") == Some(who))
-            .filter_map(|r| text(r, "job"))
-            .collect();
-        match jobs[..] {
-            [] => To::Here(who.to_string()),
-            [job] => To::Here(job.to_string()),
-            _ => To::Refused(json!({"ok": false, "reason": format!("{who} names {} sessions: pick one by job id", jobs.len()), "jobs": jobs})),
-        }
-    }
-
-    /// Hand a verb to `node`'s reflection with the caller's session, whose door stamps the claim.
-    async fn forward(&self, frame: &Frame, verb: &str, node: &str, mut fwd: Value, args: &Value) -> Value {
-        let (who, _) = split_to(args.get("to").and_then(Value::as_str).unwrap_or_default());
-        fwd["to"] = json!(who);
-        match self.gw.call(Call::new(TOOL, verb, fwd, FORWARD_TIMEOUT).peer(Some(node)).caller_pid(frame.pid)).await {
-            Ok(out) => out,
-            Err(e) => json!({"ok": false, "error": e.to_string()}),
-        }
-    }
-
     /// Move a session, claiming the scope it moves into (sessions lane, scope claims).
     async fn cd(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let (p, named) = self.steer_target(frame, job_arg(args).as_deref(), Some("cd")).await?;
+        let to = or_refuse!(to_arg(args));
+        let (p, named) = self.steer_target(frame, to.as_ref(), Some("cd")).await?;
         let before = self.harness_call(&p, "status", Value::Object(named.clone()), None).await?;
         let sid = text(&before, "session_id").or_else(|| named.get("session_id").and_then(Value::as_str)).unwrap_or_default().to_string();
         let path = args.get("path").and_then(Value::as_str);
@@ -400,8 +356,7 @@ impl<G: Gateway> App<G> {
         let mut claim = json!("unavailable");
         let mut warning = None;
         if let (Some((project, scope)), false) = (&place, sid.is_empty()) {
-            let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": before.get("pid"),
-                             "job": before.get("job"), "terminal": interactive});
+            let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": before.get("pid"), "terminal": interactive});
             if let Some(got) = self.scopes_call("claim", ask).await {
                 if !ok_or_absent(&got) && !truthy(got.get("claimed")) {
                     let why = text(&got, "reason").map(str::to_string);
@@ -452,9 +407,15 @@ impl<G: Gateway> App<G> {
     async fn start_other(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
         let actor = self.actor(frame).await;
         self.check_steer(actor.as_ref(), "start_other", None).await?;
-        if !truthy(args.get("model")) || !truthy(args.get("effort")) {
-            return Ok(reason(NO_MODEL));
+        let mut args = args.clone();
+        if let Some(m) = args.as_object_mut() {
+            for (key, default) in [("model", DEFAULT_MODEL), ("effort", DEFAULT_EFFORT)] {
+                if !truthy(m.get(key)) {
+                    m.insert(key.into(), json!(default));
+                }
+            }
         }
+        let args = &args;
         if let Some(refused) = over_limit(args.get("effort")) {
             return Ok(refused);
         }
@@ -464,7 +425,7 @@ impl<G: Gateway> App<G> {
             None => None,
         };
         let level = self.start_level(actor.as_ref(), requested.as_deref()).await?;
-        let platform = args.get("platform").filter(|p| truthy(Some(p))).map_or_else(|| ids::PLATFORM_CLAUDE.to_string(), |p| shown(Some(p)));
+        let platform = args.get("platform").filter(|p| truthy(Some(p))).map_or_else(|| ids::Platform::Claude.code().to_string(), |p| shown(Some(p)));
         let p = self.for_platform(&platform).await?;
         // A lobby start claims nothing until its own `cd`.
         let place = (truthy(args.get("project")) && truthy(args.get("scope")) && !truthy(args.get("suggest")))
@@ -497,13 +458,11 @@ impl<G: Gateway> App<G> {
             }
         }
         if !level.is_empty() {
-            let name = args.get("name").filter(|n| truthy(Some(n))).map(|n| shown(Some(n))).unwrap_or_default();
-            let origin = match (name.strip_prefix("seat:"), &actor) {
-                (Some(seat), _) => format!("seat:{seat}"),
-                (None, Some(a)) => format!("session:{}", shown(a.get("session_id"))),
-                (None, None) => frame.as_.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| "service".into()),
+            let origin = match &actor {
+                Some(a) => format!("session:{}", shown(a.get("session_id"))),
+                None => frame.as_.clone().filter(|a| !a.is_empty()).unwrap_or_else(|| "service".into()),
             };
-            self.record_trust(&sid, &level, &origin, text(&out, "job")).await;
+            self.record_trust(&sid, &level, &origin).await;
             out["trust"] = json!(level);
         }
         if let Some(parent) = actor.as_ref().and_then(|a| text(a, "session_id")) {
@@ -524,7 +483,7 @@ impl<G: Gateway> App<G> {
                 Value::Null
             }
         };
-        let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": new_pid, "job": out.get("job")});
+        let ask = json!({"project": project, "scope": scope, "session_id": sid, "pid": new_pid});
         let Some(got) = self.scopes_call("claim", ask).await else { return merged(&out, &json!({"claim": "unavailable"})) };
         if ok_or_absent(&got) || truthy(got.get("claimed")) {
             return merged(&out, &json!({"claim": got}));
@@ -538,7 +497,7 @@ impl<G: Gateway> App<G> {
             }
         };
         let why = text(&got, "reason").map_or_else(|| format!("{project}/{scope} is held by {}", shown(got.get("holder"))), str::to_string);
-        let stopped = if stopped { out.get("job").cloned().unwrap_or(Value::Null) } else { Value::Null };
+        let stopped = if stopped { json!(sid) } else { Value::Null };
         json!({"ok": false, "claim": got, "stopped": stopped, "reason": why})
     }
 
@@ -580,7 +539,7 @@ impl<G: Gateway> App<G> {
         // `trust` is the recorded level, or the row's own for a session with no record.
         let data = self.trust_data().await;
         for r in rows.iter_mut() {
-            let level = recorded_in(&data, text(r, "session_id"), text(r, "job"));
+            let level = recorded_in(&data, text(r, "session_id"));
             r["trust"] = level.map_or_else(|| r.get("trust").cloned().unwrap_or(Value::Null), |l| json!(l));
             if let Some(link) = text(r, "link").map(str::to_string) {
                 r["rc_url"] = json!(link);
@@ -631,22 +590,19 @@ impl<G: Gateway> App<G> {
     }
 
     async fn stop_other(self: &Arc<Self>, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let (out, named) = self.on_job(frame, args, "stop", "stop_other", json!({"keep": false})).await?;
+        let (out, named) = self.on_other(frame, args, "stop", "stop_other", json!({"keep": false})).await?;
         let sid = named.get("session_id").and_then(Value::as_str).map(str::to_string);
         Ok(self.after_retire(out, sid.as_deref()).await)
     }
 
     async fn resume_other(&self, frame: &Frame, args: &Value) -> Result<Value, Failure> {
-        let job = match self.address(frame, args, true).await {
-            To::Refused(out) => return Ok(out),
-            To::Peer(node) => return Ok(self.forward(frame, "resume_other", &node, json!({"prompt": args.get("prompt")}), args).await),
-            To::Here(job) => job,
-        };
-        let extra = json!({"prompt": self.provider_value(frame, args.get("prompt")).await});
-        let (out, _) = self.on_job(frame, &json!({"job": job}), "resume", "resume_other", extra).await?;
+        let extra = json!({
+            "prompt": self.provider_value(frame, args.get("prompt")).await,
+            "model": args.get("model"), "effort": args.get("effort"),
+        });
+        let (out, named) = self.on_other(frame, args, "resume", "resume_other", extra).await?;
         if is_ok(&out) {
-            self.drop_wait_of_job(&job).await;
-            if let Some(sid) = out.get("session_id").and_then(Value::as_str) {
+            for sid in [named.get("session_id"), out.get("session_id")].into_iter().flatten().filter_map(Value::as_str) {
                 self.drop_wait(sid).await;
             }
         }
@@ -667,8 +623,8 @@ impl<G: Gateway> App<G> {
         let mut until: Vec<String> = vec![];
         for u in &raw {
             let text_u = u.as_str().map_or_else(|| u.to_string(), |s| s.trim().to_lowercase());
-            match u.as_str().map(ids::normalise) {
-                Some(Ok(id)) => {
+            match u.as_str().and_then(ids::SessionId::checked) {
+                Some(id) => {
                     if !until.contains(&id) {
                         until.push(id);
                     }
@@ -692,23 +648,23 @@ impl<G: Gateway> App<G> {
             return Ok(json!({"ok": true, "waiting": false, "until": until,
                              "reason": "every session in until has already retired; carry on"}));
         }
-        let job = text(&who, "job").map(str::to_string);
+        let kept = text(&who, "hosting") == Some("background");
         let row = self
             .add_wait(NewWait {
                 session_id: sid.clone(),
                 until,
                 tool: p.tool.clone(),
-                job: job.clone(),
+                kept,
                 name: text(&who, "name").unwrap_or_default().into(),
                 cwd: text(&who, "cwd").map(str::to_string),
                 retired: already,
             })
             .await;
-        let Some(job) = job else {
+        if !kept {
             return Ok(json!({"ok": true, "waiting": true, "until": row["until"], "retired": row["retired"],
                              "terminal": true, "note": TERMINAL_WAIT}));
-        };
-        let stop = json!({"ref": job, "pid": frame.pid_value(), "keep": true, "confirm": true});
+        }
+        let stop = json!({"session_id": sid, "pid": frame.pid_value(), "keep": true, "confirm": true});
         let out = self.harness_call(&p, "stop", stop, None).await?;
         if !is_ok(&out) {
             self.drop_wait(&sid).await;
@@ -718,7 +674,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn retired(&self, args: &Value) -> Value {
-        let Some(sid) = ids::to_r9(args.get("session_id").and_then(Value::as_str)) else {
+        let Some(sid) = args.get("session_id").and_then(Value::as_str).and_then(ids::SessionId::checked) else {
             return reason("session_id is required: an R9 session id");
         };
         json!({"ok": true, "woken": self.retire(&sid, false, |row| self.wake(row)).await})
@@ -728,7 +684,7 @@ impl<G: Gateway> App<G> {
         let asked: Vec<String> = args
             .get("session_ids")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|s| ids::to_r9(s.as_str())).collect())
+            .map(|a| a.iter().filter_map(|s| s.as_str().and_then(ids::SessionId::checked)).collect())
             .unwrap_or_default();
         let mut gone = self.retired_here(&asked).await;
         let unretired: Vec<&String> = asked.iter().filter(|s| !gone.contains(s)).collect();
@@ -761,9 +717,9 @@ impl<G: Gateway> App<G> {
         let place = self.scope_of(event.get("cwd").and_then(Value::as_str)).await;
         let (project, scope) = place.map_or((None, None), |(p, s)| (Some(p), Some(s)));
         let ts = chrono::DateTime::from_timestamp_millis(self.node.now_ms()).map(|t| t.to_rfc3339());
-        let mut out = json!({"event": field("kind"), "job": field("job"), "session_id": field("session_id"), "name": field("name"),
+        let mut out = json!({"event": field("kind"), "session_id": field("session_id"), "name": field("name"),
                              "node": self.node.name(), "project": project, "scope": scope, "kind": field("session_kind"), "ts": ts});
-        for key in ["task_id", "rc_url"] {
+        for key in ["task_id", "rc_url", "state", "needs", "retired", "pool"] {
             if let Some(v) = event.get(key).filter(|v| truthy(Some(v))) {
                 out[key] = v.clone();
             }
@@ -774,7 +730,7 @@ impl<G: Gateway> App<G> {
 
     /// A session cleared itself: its new id takes the old one as its parent (sessions.md R13).
     async fn cleared(&self, event: &Map<String, Value>) -> Value {
-        let id = |k: &str| ids::to_r9(event.get(k).and_then(Value::as_str));
+        let id = |k: &str| event.get(k).and_then(Value::as_str).and_then(ids::SessionId::checked);
         let (Some(new), Some(old)) = (id("session_id"), id("parent")) else {
             return json!({"ok": false, "error": "a clear needs session_id and parent as session ids"});
         };

@@ -272,9 +272,19 @@ impl App {
         self.index.get().ok_or_else(|| Fail::new("RuntimeError", "the transcripts index is not open yet"))
     }
 
-    /// Level the index with the archive, reading on `reader`.
+    /// Level the index with the archive and the live tree, reading the archive on `reader`.
     pub async fn reconcile(&self, reader: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync) -> Result<Value, Fail> {
-        Ok(self.ix()?.reconcile(&self.tree.archive, reader).await?)
+        Ok(self.ix()?.reconcile(&self.tree.archive, &self.tree.projects, reader).await?)
+    }
+
+    /// Index what the live transcripts gained, unless the start's reconcile is still running:
+    /// it catches the live tree up when it ends.
+    pub async fn catch_up(&self) -> Result<usize, Fail> {
+        let ix = self.ix()?;
+        if ix.progress.running.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(0);
+        }
+        Ok(ix.catch_up(&self.tree.projects).await?)
     }
 
     /// Index the sessions a sweep archived. A failure is logged: the next start's reconcile
@@ -371,6 +381,7 @@ impl App {
         let (project, limit) = (str_arg(a, "project"), int_or(a, "limit", search::QUERY_MAX_HITS)?);
         let words = awm_pycompat::pystr::strip(&query);
         let literal = search::compile(&format!("(?i){}", regex::escape(words))).map_err(|e| Fail::new("error", e))?;
+        self.catch_up().await?;
         let ix = self.ix()?;
         let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)) else {
             return Ok(json!({"hits": [], "truncated": false}));

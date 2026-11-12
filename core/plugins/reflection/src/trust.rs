@@ -1,9 +1,8 @@
 //! Trust per session in `trust.json`, and the one seam to the trust policy in awm-trust.
 //!
 //! The gateway refuses what a level may never call (channels.md R125). A steer is checked here,
-//! because only this ledger knows the target's level. A level belongs to the job as well as to
-//! the session id it started under: a cleared or respawned conversation keeps its job but takes a
-//! new session id, and must keep its level.
+//! because only this ledger knows the target's level. A level belongs to the session id it
+//! started under.
 //!
 //! A session with no recorded level reads as trusted only when a harness plugin knows it: a
 //! session started by hand, or before levels existed, acted with full trust. A session id that
@@ -53,26 +52,15 @@ impl TrustLib for Policy {
     }
 }
 
-/// Whether two descriptions name one session, across a change of session id.
+/// Whether two descriptions name one session.
 pub fn same_session(a: &Value, b: &Value) -> bool {
-    let (sa, sb) = (text(a, "session_id").unwrap_or_default(), text(b, "session_id").unwrap_or_default());
-    if !sa.is_empty() && sa == sb {
-        return true;
-    }
-    text(a, "job").is_some_and(|j| text(b, "job") == Some(j)) && sa.get(..2) == sb.get(..2)
+    text(a, "session_id").is_some_and(|sa| text(b, "session_id") == Some(sa))
 }
 
-/// The level `trust.json` holds for `session_id`, or for its job under another id of its platform.
-pub fn recorded_in(data: &Map<String, Value>, session_id: Option<&str>, job: Option<&str>) -> Option<String> {
+/// The level `trust.json` holds for `session_id`.
+pub fn recorded_in(data: &Map<String, Value>, session_id: Option<&str>) -> Option<String> {
     let sid = session_id.filter(|s| !s.is_empty())?;
-    let level_of = |rec: &Value| rec.get("level").filter(|l| truthy(Some(l))).and_then(Value::as_str).map(str::to_string);
-    if let Some(level) = data.get(sid).and_then(level_of) {
-        return Some(level);
-    }
-    let job = job.filter(|j| !j.is_empty())?;
-    data.iter()
-        .filter(|(k, r)| r.get("job").and_then(Value::as_str) == Some(job) && k.get(..2) == sid.get(..2))
-        .find_map(|(_, r)| level_of(r))
+    data.get(sid).and_then(|rec| rec.get("level")).filter(|l| truthy(Some(l))).and_then(Value::as_str).map(str::to_string)
 }
 
 impl<G: Gateway> App<G> {
@@ -80,21 +68,19 @@ impl<G: Gateway> App<G> {
         self.store.read_object(File::Trust).await
     }
 
-    /// The level recorded for `session_id`, or for its job; None for no record.
-    pub async fn recorded_level(&self, session_id: Option<&str>, job: Option<&str>) -> Option<String> {
-        session_id.filter(|s| !s.is_empty())?;
-        recorded_in(&self.trust_data().await, session_id, job)
+    /// The level recorded for `session_id`; None for no record.
+    pub async fn recorded_level(&self, session_id: Option<&str>) -> Option<String> {
+        recorded_in(&self.trust_data().await, session_id)
     }
 
     async fn harness_knows(&self, session_id: &str) -> bool {
         self.for_session(session_id).await.is_ok()
     }
 
-    /// The level of `session_id`, or of `job` under a new session id. `known` says a harness
-    /// already answered for it.
-    pub async fn level_of(&self, session_id: Option<&str>, known: bool, job: Option<&str>) -> String {
+    /// The level of `session_id`. `known` says a harness already answered for it.
+    pub async fn level_of(&self, session_id: Option<&str>, known: bool) -> String {
         let Some(sid) = session_id.filter(|s| !s.is_empty()) else { return DEFAULT_LEVEL.into() };
-        if let Some(level) = self.recorded_level(Some(sid), job).await {
+        if let Some(level) = self.recorded_level(Some(sid)).await {
             return level;
         }
         if known || self.harness_knows(sid).await {
@@ -107,20 +93,17 @@ impl<G: Gateway> App<G> {
     /// The level of a session as a harness described it.
     pub async fn level(&self, who: &Value) -> String {
         let known = who.get("known").is_none_or(|k| truthy(Some(k)));
-        self.level_of(text(who, "session_id"), known, text(who, "job")).await
+        self.level_of(text(who, "session_id"), known).await
     }
 
     /// Record `level` for a new session.
-    pub async fn record_trust(&self, session_id: &str, level: &str, origin: &str, job: Option<&str>) {
+    pub async fn record_trust(&self, session_id: &str, level: &str, origin: &str) {
         let _held = self.store.lock(File::Trust).await;
         let mut data = self.trust_data().await;
         let mut rec = data.get(session_id).map(object).unwrap_or_default();
         rec.insert("level".into(), json!(level));
         rec.insert("origin".into(), json!(origin));
         rec.insert("at_ms".into(), json!(self.node.now_ms()));
-        if let Some(job) = job.filter(|j| !j.is_empty()) {
-            rec.insert("job".into(), json!(job));
-        }
         data.insert(session_id.into(), Value::Object(rec));
         if let Err(e) = self.store.write(File::Trust, &Value::Object(data)).await {
             tracing::warn!("reflection: could not record the trust of {session_id}: {e}");
@@ -182,13 +165,12 @@ mod tests {
     }
 
     #[test]
-    fn a_level_is_found_by_its_job_under_its_platform() {
-        let data = json!({"cc55": {"level": "cooperative", "job": "j1"}, "ds66": {"level": "untrusted", "job": "j2"}});
+    fn a_level_is_found_by_its_session_id_alone() {
+        let data = json!({"cc55": {"level": "cooperative"}, "ds66": {"level": "untrusted"}});
         let data = data.as_object().unwrap();
-        assert_eq!(recorded_in(data, Some("cc55"), None).as_deref(), Some("cooperative"));
-        assert_eq!(recorded_in(data, Some("cc77"), Some("j1")).as_deref(), Some("cooperative"));
-        assert_eq!(recorded_in(data, Some("cc77"), Some("j2")), None, "another platform's job");
-        assert!(same_session(&json!({"session_id": "cc1", "job": "j"}), &json!({"session_id": "cc2", "job": "j"})));
-        assert!(!same_session(&json!({"session_id": "cc1", "job": "j"}), &json!({"session_id": "ds2", "job": "j"})));
+        assert_eq!(recorded_in(data, Some("cc55")).as_deref(), Some("cooperative"));
+        assert_eq!(recorded_in(data, Some("cc77")), None);
+        assert!(same_session(&json!({"session_id": "cc1"}), &json!({"session_id": "cc1"})));
+        assert!(!same_session(&json!({"session_id": "cc1"}), &json!({"session_id": "cc2"})));
     }
 }

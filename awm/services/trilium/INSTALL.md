@@ -15,8 +15,7 @@ machines and converges within a minute. See *One document, three machines*.
 
 This file holds the decisions a reader cannot recover from the code: why the
 vault is a second upstream on an existing listener rather than a mount or a host
-of its own, why it has no password, why the verbs that write notes are refused to
-anyone who arrives through the edge, how a public slice opens one subtree to
+of its own, why it has no password, which kinds of caller reach which verbs, how a public slice opens one subtree to
 somebody with no account, which notes an agent session may write, why the kanban board is Trilium's rather than this
 service's, why the document is replicated over an ssh forward rather than over
 the edge, why exactly one node may run a service that writes into the vault and when several may, why
@@ -116,36 +115,43 @@ and not the complete one: the complete one is the separate origin below.
 
 That is accepted, not overlooked. The mitigations are the minimal forwarded path
 list (`/etapi/`, `/custom/`, `/share/` and `/mcp` are deliberately not forwarded, and
-are matched against the path *inside* the mount — see `vault.NOT_FORWARDED`), the operator-only verb split below, and a tight
+are matched against the path *inside* the mount — see `vault.NOT_FORWARDED`), the per-caller verb split below, and a tight
 public allow-list. `/share/` stays off that list even though slices now do what
 it was for: it decides what is public from inside the document, by where a note
 is cloned, so the boundary would be set by whoever can edit the vault rather than
-by whoever can reach the host. A slice is minted by an operator verb and enforced
+by whoever can reach the host. A slice is minted by a verb no edge visitor can call, and enforced
 against a token instead. The only complete fix is a separate origin, and the escape
 hatch if the trust assumption ever changes is **one** DNS record — a `vault.`
 host bound to the same edge — not one per person.
 
-**Read verbs are public; everything else is an operator's.** The vault is shared,
-so `restore` discards everyone's work and `snapshot` and `export` each rebuild
-the whole thing on a two-core box. `status`, `snapshots` and `url` are reachable
-from a browser; `start`, `stop`, `restart`, `init`, `logs`, `snapshot`,
-`export`, `restore` and `note_upsert` are refused for any caller that arrived
-through an edge. `tests/test_operator_only.py` holds the two lists and fails
-until a newly added verb is put in one of them.
+**Each verb admits some kinds of caller.** `_caller` in `hub_adapter.py` sorts
+every call into one of six kinds, and `ACCESS` names the kinds each verb
+admits. A verb missing from `ACCESS` fails at import. `tests/test_operator_only.py`
+holds the table.
 
-The discriminator needs no new credential, because the edge already supplies one:
-`httpsfront` overwrites `X-Awm-As` on every request it forwards and never
-forwards an empty one, so **an absent identity means the call did not cross an
-edge** — it came from `/invoke` on loopback, which is the host's own CLI. That is
-`_operator_only` in `hub_adapter.py`, and it is the enforcement. The public
-allow-list is defence in depth, and could not be the enforcement: a mesh node's
-edge runs no profile and never consults it.
+| Kind | Arrives as | Reaches |
+|---|---|---|
+| host | loopback with no session pid: the host's shell and services, the edge's `slice_resolve` | every verb but the two push verbs |
+| host session | loopback with the session pid the gateway stamps | `status`, `snapshots`, `url` |
+| peer service | `peer:<node>` with no session claim | those three, the note API and slices |
+| alcor service | `peer:alcor` with no session claim | the same, and the two push verbs |
+| peer agent | `peer:<node>` with a session claim | the same, with writes gated (below) |
+| person | any other `X-Awm-As`: a browser through `httpsfront` | `status`, `snapshots`, `url` |
 
-**No edge caller writes.** Every note verb is an operator verb, including a call
-stamped `peer:alcor`. The Swarm board's writer runs inside this service, on the node
-that sets `AWM_TRILIUM_BOARD=writer`, and writes over loopback through `board/fence.py`.
+The lifecycle verbs are the host's alone. The vault is shared, so `restore`
+discards everyone's work, and `snapshot` and `export` each rebuild the whole
+vault on a two-core box.
+
+The discriminator needs no new credential. `httpsfront` overwrites `X-Awm-As` on
+every request it forwards and never forwards an empty one, so **an absent
+identity means the call did not cross an edge**. The door stamps `peer:<node>`
+and restamps the session claim from its own, so a forged claim only lowers a
+caller to a peer agent. The public allow-list is defence in depth, and could not
+be the enforcement: a mesh node's edge runs no profile and never consults it.
+
+The Control panel's writer runs inside this service and writes over loopback through `board/fence.py`.
 The fence refuses any write outside the roots `AWM_TRILIUM_WRITER_ROOTS` names (default
-`awmSwarmTasks,awmSwarmOps,awmSwarmBoard`: tasks, Ops and the board page). It never moves
+`awmSwarmTasks,awmSwarmOps,awmSwarmBoard`: tasks, Ops data and the Control panel). It never moves
 or deletes a root. It has two acts outside the roots, for the per-note bot button
 (`fleet.md` R106 item 2): its own labelled marker note under any note, and a clone of a
 source note under a card. Removing a clone removes the branch and never the note.
@@ -256,10 +262,10 @@ had just written. This is the least obvious consequence of sharing the document
 and the easiest to trip over, because installing the mirror on a second node
 looks like the obvious next step.
 
-The Swarm board has one writer too: the board writer in this service, on the node that
-sets `AWM_TRILIUM_BOARD=writer`. It writes each card under a fixed note id, so a retried
-write finds the note it made instead of a duplicate. It follows alcor's `operations/board`
-and `telemetry/roster` events and never polls. A node that is not the writer runs none of it.
+The Control panel has one writer too: the board writer in this service on deneb. It writes
+each card under a fixed note id, so a retried write finds the note it made instead of a
+duplicate. alcor's operations and telemetry push to it through the hidden verbs `board_apply`
+and `ops_render`. The writer makes no outbound call (`fleet.md` R79).
 
 WARNING: **a replica follows a deletion.** Within a minute of a note being
 deleted anywhere it is gone everywhere. Replication is not backup, which is why
@@ -280,19 +286,19 @@ CAUTION: capella sleeps with its host, so it spends time behind. That is what th
 pull cursor is for; a lagging capella is not a broken link until you have checked
 that it is awake.
 
-## The note API, and why reading it is an operator verb
+## The note API, and who may read it
 
 The service can do to a note anything a person can: read it, create, update,
 delete, move, clone, place it under several parents at once, set and clear a
 label or relation, and attach a file. `awm trilium --help` lists them.
 
-**Every one is operator-only, reads included.** The rest of the write verbs are
-operator-only because the vault is shared and one person's button acts on
-everyone's work. `note_get` is different and lands in the same place for a
-different reason: the edge deliberately does not forward `/etapi/`, so that a
-note in the vault cannot run script that walks the vault. An open read verb
-would be that same surface wearing awm's name. Nothing is lost by keeping it on
-the host — the person reading the vault already has all of it in front of them.
+**Agents on every node but the vault host read all of it,** Tony's notes
+included, and write where the next section allows. A session on the vault's own
+host is refused the note API, reads included. Its calls carry only a pid, never a
+session claim, so agents work the vault from another node, where the door labels
+them. A person through the edge never reaches the note API. The edge does not
+forward `/etapi/`, so that a note in the vault cannot run script that walks the
+vault, and an open read verb would be that surface wearing awm's name.
 
 Three places where the ETAPI shape underneath is not the shape a caller expects,
 absorbed here so that every caller does not meet them separately:
@@ -325,10 +331,8 @@ instead, the way the Zotero mirror keys on `#zoteroKey`.
 
 ## Which notes an agent session may write
 
-Every session on the host is an operator to the verbs above, so the write gate
-narrows what a session may change. It acts only on a call that carries a
-session's caller pid, which the gateway stamps. A call from a service or from the
-host's shell passes. Reads are never gated.
+The write gate acts on peer agents only. The host and peer services pass, and a
+host session never gets this far. Reads are never gated.
 
 | Effective label | Who writes |
 |---|---|
@@ -336,22 +340,31 @@ host's shell passes. Reads are never gated.
 | `#agentWritable` | agents and Tony |
 | `#agentManaged` | the operations board writer only. It also sets `#readOnly`, so the GUI shows the note read-only |
 
-Labels count when inherited, so label a subtree once with an inheritable
-`#agentWritable`. `#agentManaged` refuses a session even under a writable
-subtree. Create checks the parent. Clone, move and place check the note and every
-parent they add or remove.
+**Set the label with the "Agent writable" switch** in the note menu, beside
+Bookmark. It adds an owned, inheritable `#agentWritable`, so it covers the
+subtree. Switching it off on a note that inherits the label changes nothing and
+names every note that grants it. Move a child out of that tree to take it out of
+the grant. The switch shows only where awm serves the vault.
+
+`#agentManaged` refuses an agent even under a writable subtree. Create checks the
+parent. Clone, move and place check the note and every parent they add or
+remove. `slice_expose` checks the note it opens. `slice_list` and `slice_revoke`
+show and revoke only slices whose root the agent may write, so an agent never
+sees a token for one of Tony's links.
+
+**Inside a live slice an agent may also create.** The slice already opens that
+subtree to whoever holds the link. `note_create` admits a parent that is a live
+slice root or sits under one, and gives the new child an owned, inheritable
+`#agentWritable`, so the agent keeps editing what it made. The slice's existing
+notes stay refused. A revoked or expired slice admits no create.
 
 **CAUTION** A clone inherits from every parent it has. Cloning one of Tony's
 notes under a writable subtree would make it writable everywhere it appears. That
 is why clone checks the source note too.
 
-`AWM_TRILIUM_AGENT_GATE` is `off`, `log` or `enforce`, default `log`. Log mode
-writes each refusal as a warning to the gateway log, naming the note and the
-missing label, and lets the write through. Read those warnings to find the
-workflows that write today. Label their subtrees. Then set `enforce`.
-
-The gate is a guardrail, not a trust boundary. A session with a shell can call
-the loopback gateway without the pid header, as with the mode gate.
+The gate is a guardrail, not a trust boundary. A session under the gateway's own
+Unix account on the vault host can call the loopback gateway without the pid
+stamp and pass as the host. The gateway refuses every other account.
 
 ## A public slice of the vault
 
@@ -408,16 +421,20 @@ form with a 308.
 **Declare `AWM_EDGE_URL` on any node that mints links.** `_slice_url` builds the
 URL from `config.edge_url()`, which falls back to this host's mesh address and
 `AWM_HTTPS_PORT` when the variable is absent. A public node without it prints a
-link that resolves only on the mesh. Put the value in `/etc/awm/env` — on sirius,
-`https://nexus.tony-xy-liu.com`. The Trilium process inherits it from the gateway
-through the service, so one declaration serves the CLI and the dialog alike.
+link that resolves only on the mesh. Declare it in the node's `awm_env` in the
+cloud repo's inventory — on deneb, `https://nexus.tony-xy-liu.com`.
+
+**CAUTION** A singleton unit never sees the gateway's `config.toml` `[env]`.
+Where Trilium runs as `awm-plugin@trilium`, the cloud role `singletons_sandbox`
+copies `AWM_EDGE_URL` into the unit's drop-in. Without it the fork hides slice
+sharing and the Agent writable switch, and nothing logs why.
 
 **Seven gates, and each is meant to be the one that holds.**
 
 - The **edge** classifies `/slice/` as a verdict of its own (`policy.Verdict.SLICE`)
   and admits it with no subject. It resolves the token by calling
-  `trilium_slice_resolve` over the gateway on loopback — an operator verb, reached
-  because a loopback call carries no `X-Awm-As` — and caches the answer for a few
+  `trilium_slice_resolve` over the gateway on loopback — a host-only verb, reached
+  because a loopback call carries no `X-Awm-As` and no session pid — and caches the answer for a few
   seconds so a page load is one round trip rather than hundreds. An unknown,
   revoked or expired token is a **404, not a 403**: a slice that no longer exists
   should look like a URL that never did.
@@ -513,16 +530,6 @@ beneath it carrying the label the board groups by — `#status` unless
 nothing else, which is why the note API already reaches all of it and this
 service offers no board verb.
 
-The federation board is one such board. The note that carries `#federationBoard`
-is the board, and each card is a child note. The `board` service
-(`awm/services/board/`) writes those cards through this service's note verbs,
-so a card's status is its column and a drag in the browser changes it. This
-service's verbs admit loopback callers only, so the `board` host must run on the
-node that runs Trilium. Make that board in the browser like any other and label
-it. The `board` service refuses to guess when no note carries the label or two
-do. It writes only the four values `Posted`, `In progress`, `Done` and `Failed`,
-so the board's `label:status` definition must offer them.
-
 It offered three once. `board_ensure`, `card_upsert` and `board_cards` are gone,
 and each is replaced by something a person could do by hand:
 
@@ -560,19 +567,14 @@ CAUTION: a node that does not run the fork falls back to the grid view for
 `#viewType=chat`. It still lists the messages in sequence order. A text note a
 person adds there is sealed with its HTML as the message body.
 
-### The Swarm board and Ops
+### The Control panel
 
-The Swarm board, the Ops note and the per-note bot button are notes that this service
-writes (`queue.md` R61-R66, `fleet.md` R147). `awm/trilium/board/` holds the code. The
-pages are code notes that the vault runs, and `awm trilium board_install` rewrites them.
+The Control panel, its Ops data folder and the per-note bot button are notes that this
+service writes (`queue.md` R61-R66, `fleet.md` R147). `awm/trilium/board/` holds the code.
+The pages are code notes that the vault runs, and `awm trilium board_install` rewrites them.
 
-1. Set `AWM_TRILIUM_BOARD=writer` on exactly one node. That node writes cards and Ops and
-   subscribes to alcor's `operations/board` and `telemetry/roster` topics.
-2. Set `AWM_TRILIUM_ALCOR_ORIGIN` to alcor's public address, which the pages call.
-   Set `AWM_TRILIUM_PORTALS` (`host=node,...`) for nodes whose roster row names no portal.
-3. The first start snapshots the vault, sends operations one `board_import`, and then
-   empties the Proposed, Done and Swarm triage folders into History. A mismatch files a
-   `request_human` and leaves the vault as it was.
+1. Set `AWM_TRILIUM_ALCOR_ORIGIN` to alcor's public address, which the pages call.
+2. Set `AWM_TRILIUM_PORTALS` (`host=node,...`) for nodes whose roster row names no portal.
 
 CAUTION: the pages put their overlays and toasts on the document, outside the render
 note's container. The scripts therefore inject the shared stylesheet into the document head.
@@ -694,7 +696,7 @@ it moves the vault it replaced into `live/superseded/<timestamp>/` rather than
 deleting it.
 
 WARNING: on a shared vault a restore discards *everyone's* work since the
-snapshot, not one person's. That is why it is operator-only and why it needs
+snapshot, not one person's. That is why it is host-only and why it needs
 `--confirm`, and why the page does not offer it.
 
 ## Registrations
@@ -723,9 +725,10 @@ refused for a caller arriving through an edge.
 ./install.sh
 ```
 
-`awm/install.sh` runs this on every deploy, and so does the supervising session
-of awm's deploy refresh (`deploy.toml` at the repo root). Every step is
-idempotent.
+It is the plugin's install hook. The gateway runs it whenever the plugin
+folder's stamp moves, then restarts the service. This holds on a node that runs
+trilium as its own systemd unit too (plugin-contract § External services). Every
+step is idempotent.
 
 **The server is one fork release, and awm pins it.** `server.pin` names the
 release's version, its tarball's file name and its sha256 (install.md R115
@@ -747,6 +750,7 @@ without a server and says so. `TRILIUM_REQUIRE_SERVER=1` makes that fatal.
 5. Deploy awm. Before a push node refreshes, the deploy pushes the tarball into
    the node's artifact store, when the install config names one
    (`FEDERATION.md` § Deploy). The node never fetches it.
+6. Check `awm trilium status` on the node: `source.current` must be true.
 
 A change made as a note, such as the board page, a widget or a script, needs none
 of this. It goes live through the `trilium` tool.

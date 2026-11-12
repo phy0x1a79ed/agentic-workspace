@@ -1047,6 +1047,9 @@ fn a_caller_reaches_a_peers_singleton_through_its_door() {
         assert_eq!((who["caller"]["node"].as_str(), who["caller"]["lane"].as_str()), (Some("alcor"), Some("service")), "{who}");
         assert_eq!(who["as"], "peer:alcor");
     }
+    // alcor's usage log holds each door call, so telemetry sees a failing door.
+    let oks: Vec<Value> = usage_log(&alcor_state).into_iter().filter(|e| e["tool"] == "trilium").map(|e| e["ok"].clone()).collect();
+    assert_eq!(oks, [json!(false), json!(true), json!(true)]);
     let args = std::fs::read_to_string(&door.args).unwrap();
     assert!(args.contains("\n-p\n2201\n127.0.0.1\nport\n"), "the door listens on deneb's public address, and the request is not on the command line: {args}");
     assert!(args.contains("\n-l\nawm\n"), "the caller logs in as the door's user: {args}");
@@ -1143,19 +1146,19 @@ fn a_door_call_carries_the_calling_session() {
     let r9 = "cc0f1e2d3c4b5a69788796a5b4c3d2e1f0";
     write(&alcor_state.join("sessions.json"),
           &json!({"4242": {"ok": true, "known": true, "session_id": r9, "trust": "cooperative", "mode": null, "cwd": "/",
-                           "job": "0f1e2d3c", "name": "redux/x"}}).to_string());
+                           "name": "redux/x", "kind": "bg"}}).to_string());
     let door = fake_door(base, "alcor", "deneb", &deneb_state, &deneb.url);
     let alcor = Gateway::start_with(&alcor_state, &[("AWM_DOOR_SSH", door.ssh.to_str().unwrap()), ("AWM_EDGE_SSH", "false")]);
     let fail = || format!("{}\ndeneb: {}", log(&alcor_state), log(&deneb_state));
     let who_of = |reply: &Value| -> Value { serde_json::from_str(reply["result"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
 
-    // A session on alcor: deneb sees its id, job and name as the claim, on the node the door
+    // A session on alcor: deneb sees its id and name as the claim, on the node the door
     // verified, and its own level. A claim the session wrote into its args never leaves alcor.
     let reply: Value = http().post(format!("{}/invoke", alcor.url)).header("X-Awm-Session-Pid", "4242")
         .json(&json!({"name": "hall", "args": {"verb": "whoami", "args": {"_caller_session": {"session_id": "cc99", "node": "lyra"}}}}))
         .send().unwrap().json().unwrap();
     let who = who_of(&reply);
-    assert_eq!(who["claim"], json!({"session_id": r9, "node": "alcor", "job": "0f1e2d3c", "name": "redux/x"}), "{reply} {}", fail());
+    assert_eq!(who["claim"], json!({"session_id": r9, "node": "alcor", "name": "redux/x", "kind": "bg"}), "{reply} {}", fail());
     assert_eq!((who["trust"].as_str(), who["caller"]["lane"].as_str(), who["as"].as_str()), (Some("cooperative"), Some("service"), Some("peer:alcor")), "{who}");
 
     // alcor's own service, with no session, claims none and stays trusted.
@@ -1171,7 +1174,7 @@ fn a_door_call_carries_the_calling_session() {
     let (text, err) = door_call(&iso, "hall", json!({"verb": "whoami"}));
     assert!(!err, "{text} {}", fail());
     let who: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(who["claim"], json!({"session_id": SESSION, "node": "alcor", "name": "iso"}), "{who}");
+    assert_eq!(who["claim"], json!({"session_id": SESSION, "node": "alcor", "name": "iso", "kind": "isolated"}), "{who}");
     assert_eq!((who["trust"].as_str(), who["scope"].as_str()), (Some("untrusted"), Some("awm/iso")), "{who}");
     let (text, err) = door_call(&iso, "hall", json!({"verb": "echo", "args": {"text": "x"}}));
     assert!(err && text.contains("whitelist"), "{text}");
@@ -1271,6 +1274,13 @@ fn rpc(base: &str, token: Option<&str>, method: &str, params: Value) -> (u16, Va
     (status, resp.json().unwrap_or(Value::Null))
 }
 
+/// Every event in a gateway's usage log, oldest day first.
+fn usage_log(state: &Path) -> Vec<Value> {
+    let mut days: Vec<_> = std::fs::read_dir(state.join("usage")).unwrap().flatten().map(|e| e.path()).collect();
+    days.sort();
+    days.iter().flat_map(|p| std::fs::read_to_string(p).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect::<Vec<Value>>()).collect()
+}
+
 fn door_call(base: &str, tool: &str, arguments: Value) -> (String, bool) {
     let (status, r) = rpc(base, Some("good"), "tools/call", json!({"name": tool, "arguments": arguments}));
     assert_eq!(status, 200, "{r}");
@@ -1359,22 +1369,6 @@ fn isolated_door_end_to_end() {
     let (text, err) = door_call(&gw.url, "fake", json!({"verb": "echo", "args": {"text": "loopback"}}));
     assert_eq!((text.as_str(), err), ("loopback", false));
     assert!(gw.stop().success());
-}
-
-#[test]
-fn wants_follows_the_install_config() {
-    let tmp = tempfile::tempdir().unwrap();
-    // No config: every plugin is wanted.
-    let wants = |name: &str| {
-        Command::new(awm_bin()).args(["wants", name, "--state"]).arg(tmp.path()).status().unwrap().code().unwrap()
-    };
-    assert_eq!(wants("journal"), 0);
-    write(&tmp.path().join("config.toml"), "plugins = [\"*\"]\nexclude = [\"trilium\"]\n");
-    assert_eq!(wants("journal"), 0);
-    assert_eq!(wants("trilium"), 1);
-    write(&tmp.path().join("config.toml"), "plugins = [\"journal\"]\n");
-    assert_eq!(wants("journal"), 0);
-    assert_eq!(wants("search"), 1);
 }
 
 /// Any plugin may call any tool, so auth names the plugins that may read its secrets. The
@@ -1511,7 +1505,6 @@ fn a_plugin_hears_service_and_usage_events() {
     let payloads = until("the usage event", "uselisten", &|ps| ps.iter().any(|p| p["tool"] == "uselisten" && p["verb"] == "heard"));
     let ev = payloads.iter().find(|p| p["tool"] == "uselisten" && p["verb"] == "heard").unwrap();
     assert_eq!((&ev["plugin"], &ev["surface"], &ev["ok"]), (&json!("uselisten"), &json!("cli"), &json!(true)), "{ev}");
-    let written: String = std::fs::read_dir(state.join("usage")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap()).collect();
-    assert!(written.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|l| &l == ev), "the event differs from the line written: {ev}");
+    assert!(usage_log(&state).contains(ev), "the event differs from the line written: {ev}");
     assert!(gw.stop().success());
 }

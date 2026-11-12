@@ -1,4 +1,4 @@
-//! A source's declared fields, as its manifest's `[[service.archive]]` table names them.
+//! A source's declared fields: each with a class, the schema its filters are checked against.
 
 use awm_pycompat::repr::{repr, str_repr};
 use serde_json::Value;

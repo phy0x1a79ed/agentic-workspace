@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use awm_plugin_operations::approver::{Approver, Config, Tools};
 use awm_plugin_operations::arbutus::ArbutusIo;
-use awm_plugin_operations::front::Outside;
+use awm_plugin_operations::front::{Outside, Reach};
 use awm_plugin_operations::home::Home;
 use awm_plugin_operations::keys::Keys;
 use awm_plugin_operations::relay::async_trait_free::BoxFut;
@@ -103,7 +103,7 @@ pub fn approver(dir: &Path, store: Arc<Store>, clock: Clock) -> Approver {
     let keys = Keys::generate(&dir.join("keys")).unwrap();
     let cfg = Config {
         origin: ORIGIN.into(),
-        allowed_orders: HashMap::from([("agent".to_string(), vec!["*".to_string()])]),
+        allowed_orders: HashMap::from([("agent".to_string(), vec!["*".to_string()]), ("service".to_string(), vec!["*".to_string()])]),
         rate_max: 30,
         portals: HashMap::new(),
     };
@@ -159,20 +159,30 @@ pub struct FakeOutside {
     pub pids: Mutex<HashMap<u32, Value>>,
     pub told: Mutex<Vec<(Option<String>, String, String)>>,
     pub dms: Mutex<Vec<String>>,
+    pub asks: Mutex<Vec<String>>,
+    pub ask_fails: Mutex<bool>,
+    pub reach: Mutex<HashMap<String, Reach>>,
+    pub reaches: Mutex<Vec<String>>,
+    pub roster: Mutex<HashMap<String, HashMap<String, Option<String>>>>,
+    pub seated: Mutex<Vec<String>>,
 }
 
 impl FakeOutside {
-    /// pid 11 is session A (job-a, fix-tunnel); pid 22 is session B (job-b, other).
+    /// pid 11 is session A (fix-tunnel); pid 22 is session B (other).
     pub fn new() -> Arc<FakeOutside> {
         let pids = HashMap::from([
-            (11, json!({"ok": true, "session_id": A, "job": "job-a", "name": "fix-tunnel"})),
-            (22, json!({"ok": true, "session_id": B, "job": "job-b", "name": "other"})),
+            (11, json!({"ok": true, "session_id": A, "name": "fix-tunnel"})),
+            (22, json!({"ok": true, "session_id": B, "name": "other"})),
         ]);
-        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]) })
+        Arc::new(FakeOutside { pids: Mutex::new(pids), told: Mutex::new(vec![]), dms: Mutex::new(vec![]), asks: Mutex::new(vec![]), ask_fails: Mutex::new(false), reach: Mutex::default(), reaches: Mutex::default(), roster: Mutex::default(), seated: Mutex::default() })
     }
 
     pub fn dms(&self) -> Vec<String> {
         self.dms.lock().unwrap().clone()
+    }
+
+    pub fn asks(&self) -> Vec<String> {
+        self.asks.lock().unwrap().clone()
     }
 
     pub fn told(&self) -> Vec<(Option<String>, String, String)> {
@@ -186,9 +196,13 @@ impl Outside for FakeOutside {
         Box::pin(async move { rec })
     }
 
-    fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool> {
+    fn holds_seat<'a>(&'a self, session: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(async move { self.seated.lock().unwrap().iter().any(|s| s == session) })
+    }
+
+    fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
-            self.told.lock().unwrap().push((peer.map(str::to_string), job.to_string(), text.to_string()));
+            self.told.lock().unwrap().push((peer.map(str::to_string), session.to_string(), text.to_string()));
             true
         })
     }
@@ -198,6 +212,24 @@ impl Outside for FakeOutside {
             self.dms.lock().unwrap().push(text.to_string());
             true
         })
+    }
+
+    fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(async move {
+            self.asks.lock().unwrap().push(text.to_string());
+            !*self.ask_fails.lock().unwrap()
+        })
+    }
+
+    fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach> {
+        Box::pin(async move {
+            self.reaches.lock().unwrap().push(format!("{node}/{session}"));
+            self.reach.lock().unwrap().get(session).cloned().unwrap_or(Reach::Link(format!("https://claude.ai/code/{node}-{session}")))
+        })
+    }
+
+    fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>> {
+        Box::pin(async move { self.roster.lock().unwrap().get(node).cloned() })
     }
 }
 
@@ -244,9 +276,9 @@ impl ArbutusIo for FakeArbutus {
         })
     }
 
-    fn tell<'a>(&'a self, job: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
+    fn tell<'a>(&'a self, session: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
         Box::pin(async move {
-            self.lines.lock().unwrap().push((job.into(), line.into()));
+            self.lines.lock().unwrap().push((session.into(), line.into()));
             Ok(())
         })
     }

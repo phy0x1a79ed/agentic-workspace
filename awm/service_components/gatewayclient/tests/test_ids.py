@@ -1,51 +1,37 @@
+import json
+from pathlib import Path
+
 import pytest
 
-from awm.gatewayclient import ids
+from awm.gatewayclient.ids import BadName, BadSessionId, Name, SessionId
 
-UUID = "0E384A75-a06e-43fa-a19e-298e409a2730"
-
-
-def test_r9_strips_dashes_and_lowers():
-    assert ids.r9("cc", UUID) == "cc0e384a75a06e43faa19e298e409a2730"
+GOLDEN = json.loads((Path(__file__).parents[4] / "core/crates/awm-proto/ids_golden.json").read_text())
 
 
-def test_parse_round_trips_a_claude_uuid():
-    assert ids.parse_r9(ids.r9("cc", UUID)) == ("cc", UUID.lower())
+@pytest.mark.parametrize("row", GOLDEN["ids"], ids=lambda r: r["canonical"])
+def test_id_forms(row):
+    sid = SessionId.parse(row["canonical"])
+    assert sid.canonical() == row["canonical"]
+    assert sid.harness_native() == row["harness_native"]
+    assert sid.job_dir() == row["job_dir"]
+    assert SessionId.from_harness_native(sid.platform, row["harness_native"]) == sid
 
 
-def test_parse_keeps_other_platforms_as_hex():
-    assert ids.parse_r9("ds00ff") == ("ds", "00ff")
+@pytest.mark.parametrize("bad", GOLDEN["bad_ids"])
+def test_parse_takes_only_the_canonical_form(bad):
+    with pytest.raises(BadSessionId):
+        SessionId.parse(bad)
 
 
-@pytest.mark.parametrize("bad", ["", "cc", "zz1234", "ccxyz", "b7312951"])
-def test_parse_refuses_what_is_not_r9(bad):
-    with pytest.raises(ids.BadSessionId):
-        ids.parse_r9(bad)
+@pytest.mark.parametrize("row", GOLDEN["names"], ids=lambda r: r["name"])
+def test_name_forms(row):
+    name = Name.new(row["name"])
+    assert name.rc() == row["rc"]
+    assert all(name.matches(m) for m in row["matches"])
+    assert not any(name.matches(m) for m in row["misses"])
 
 
-def test_normalise_takes_a_bare_uuid_or_an_r9_id():
-    want = "cc0e384a75a06e43faa19e298e409a2730"
-    assert ids.normalise(UUID) == want
-    assert ids.normalise(want.upper()) == want
-
-
-def test_r9_refuses_an_unknown_platform():
-    with pytest.raises(ids.BadSessionId):
-        ids.r9("oc", UUID)
-
-
-def test_any_length_of_hex_is_an_r9_id():
-    assert ids.normalise("cc1234") == "cc1234"
-    assert ids.normalise("ds" + "a" * 40) == "ds" + "a" * 40
-
-
-def test_to_r9_answers_none_for_what_is_not_an_id():
-    assert ids.to_r9("job00001") is None
-    assert ids.to_r9(None) is None
-    assert ids.to_r9(UUID) == "cc0e384a75a06e43faa19e298e409a2730"
-
-
-def test_claude_uuid_only_for_a_full_claude_id():
-    assert ids.claude_uuid(ids.r9("cc", UUID)) == UUID.lower()
-    assert ids.claude_uuid("cc1234") is None
-    assert ids.claude_uuid("ds" + "a" * 32) is None
+@pytest.mark.parametrize("bad", GOLDEN["bad_names"])
+def test_bad_names(bad):
+    with pytest.raises(BadName):
+        Name.new(bad)

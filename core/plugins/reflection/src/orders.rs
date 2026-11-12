@@ -1,9 +1,10 @@
-//! The `agent` orders alcor holds for this node. One held `order_pull` is the push channel. Each
+//! The `agent` and `service` orders alcor holds for this node. One held `order_pull` is the push channel. Each
 //! order is checked against alcor's grant key, recorded before anything starts, and reported once.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use awm_plugin_sdk::Backoff;
 use serde_json::{json, Map, Value};
 
 use crate::app::{is_ok, text, truthy, App};
@@ -14,43 +15,48 @@ use crate::store::File;
 const WAIT_S: u64 = 55;
 const PULL_TIMEOUT: Duration = Duration::from_secs(75);
 const DONE_TIMEOUT: Duration = Duration::from_secs(30);
-const BACKOFF_MIN: Duration = Duration::from_secs(2);
-const BACKOFF_MAX: Duration = Duration::from_secs(60);
+const SERVICE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Long past any order's `not_after` (10 min), so a replay still finds its record.
 const KEEP_MS: i64 = 24 * 3600 * 1000;
 const NOTE_MAX: usize = 500;
 
-/// The session name for an order: the title's first three words, under 40 characters.
-fn session_name(payload: &Value) -> String {
-    let task = text(payload, "task_id").unwrap_or("order");
-    let name = text(payload, "title").map(|t| t.split_whitespace().take(3).collect::<Vec<_>>().join(" ")).filter(|n| !n.is_empty());
-    name.unwrap_or_else(|| format!("task {task}")).chars().take(39).collect()
+/// The `awm services` arguments of a `service` order. Disabling reflection would end the process
+/// that reports the order, so a node's reflection stays on from here.
+fn service_args(payload: &Value) -> Result<[String; 2], String> {
+    let name = text(payload, "service").filter(|n| n.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')).ok_or("no valid service name")?;
+    let on = truthy(payload.get("on"));
+    if name == "reflection" && !on {
+        return Err("reflection carries out these orders and cannot disable itself".into());
+    }
+    Ok([if on { "enable" } else { "disable" }.into(), name.into()])
 }
 
-/// The first line of the started session. A note's line is fixed, so no vault text reaches it.
-fn order_prompt(payload: &Value) -> String {
-    if let Some(note) = text(payload, "note_id") {
-        return format!("Read the note {note} as context only, then wait for Tony.");
-    }
-    let task = text(payload, "task_id").unwrap_or_default();
-    match text(payload, "title") {
-        Some(title) => format!("Task {task}: {title}"),
-        None => format!("Task {task}"),
+async fn run_service(payload: &Value) -> (bool, String) {
+    let args = match service_args(payload) {
+        Ok(a) => a,
+        Err(why) => return (false, why),
+    };
+    let awm = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".local/bin/awm");
+    let run = tokio::process::Command::new(awm).arg("services").args(&args).kill_on_drop(true).output();
+    match tokio::time::timeout(SERVICE_TIMEOUT, run).await {
+        Err(_) => (false, "awm services timed out".into()),
+        Ok(Ok(o)) if o.status.success() => (true, format!("{} {}", args[0], args[1])),
+        Ok(Ok(o)) => (false, clip(String::from_utf8_lossy(&o.stderr).into_owned())),
+        Ok(Err(e)) => (false, clip(e.to_string())),
     }
 }
 
-/// The `start_other` args of one `agent` order.
+/// The `start_other` args of one `agent` order. The session waits for Tony, unless a note gives it
+/// a first line. That line is fixed, so no vault text reaches the session.
 fn order_start(body: &Value) -> Value {
     let p = &body["payload"];
     let mut start = json!({
-        "task_id": p["task_id"], "role": "main", "remote_control": true, "suggest": true,
-        "model": "opus", "effort": "high", "started_by": "Tony from the vault",
-        "name": session_name(p), "prompt": order_prompt(p),
+        "task_id": p["task_id"], "role": "main", "remote_control": true, "suggest": true, "pin": true, "brief": false,
+        "model": text(p, "model").unwrap_or("opus"), "effort": text(p, "effort").unwrap_or("medium"),
+        "started_by": "Tony from the vault", "name": format!("task {}", text(p, "task_id").unwrap_or("order")),
     });
-    for key in ["project", "scope"] {
-        if let Some(v) = p.get(key).filter(|v| truthy(Some(v))) {
-            start[key] = v.clone();
-        }
+    if let Some(note) = text(p, "note_id") {
+        start["prompt"] = json!(format!("Read the note {note} as context only, then wait for Tony."));
     }
     start
 }
@@ -64,11 +70,11 @@ impl<G: Gateway> App<G> {
     /// first pull that answers after it resends the reports that could not be delivered.
     pub async fn order_loop(self: Arc<Self>, grant_key: [u8; 32]) {
         let mut connected = false;
-        let mut backoff = BACKOFF_MIN;
+        let mut backoff = Backoff::doubling(2.0, 60.0);
         loop {
             match self.pull().await {
                 Ok(envelopes) => {
-                    backoff = BACKOFF_MIN;
+                    backoff.reset();
                     if !connected {
                         self.resend_reports().await;
                         connected = true;
@@ -78,15 +84,14 @@ impl<G: Gateway> App<G> {
                 Err(e) => {
                     connected = false;
                     tracing::warn!("reflection: order pull failed: {e}");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
+                    tokio::time::sleep(backoff.wait()).await;
                 }
             }
         }
     }
 
     async fn pull(&self) -> Result<Vec<Value>, CallError> {
-        let ask = json!({"node": self.node.name(), "kinds": ["agent"], "wait_s": WAIT_S});
+        let ask = json!({"node": self.node.name(), "kinds": ["agent", "service"], "wait_s": WAIT_S});
         let out = self.gw.call(Call::new("operations", "order_pull", ask, PULL_TIMEOUT)).await?;
         Ok(out.as_array().cloned().unwrap_or_default())
     }
@@ -133,12 +138,15 @@ impl<G: Gateway> App<G> {
     }
 
     async fn run_order(self: &Arc<Self>, body: &Value) -> (bool, String) {
+        if body["kind"] == "service" {
+            return run_service(&body["payload"]).await;
+        }
         if body["kind"] != "agent" {
-            return (false, format!("this node takes agent orders only, not {}", body["kind"]));
+            return (false, format!("this node takes agent and service orders only, not {}", body["kind"]));
         }
         let out = self.handle("start_other", &Frame::order(), &order_start(body)).await;
         if is_ok(&out) {
-            (true, format!("job {} session {}", text(&out, "job").unwrap_or("?"), text(&out, "session_id").unwrap_or("?")))
+            (true, format!("session {}", text(&out, "session_id").unwrap_or("?")))
         } else {
             (false, clip(out.get("reason").or(out.get("error")).unwrap_or(&out).to_string()))
         }
@@ -184,12 +192,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_prompt_and_name_come_from_the_payload() {
-        let noted = json!({"task_id": "T1", "note_id": "n7", "title": "x"});
-        assert_eq!(order_prompt(&noted), "Read the note n7 as context only, then wait for Tony.");
-        assert_eq!(order_prompt(&json!({"task_id": "T1", "title": "Fix it"})), "Task T1: Fix it");
-        assert_eq!(session_name(&json!({"task_id": "T1", "title": "one two three four"})), "one two three");
-        assert_eq!(session_name(&json!({"task_id": "T1"})), "task T1");
-        assert!(session_name(&json!({"title": "a".repeat(80)})).chars().count() < 40);
+    fn a_service_order_names_one_service_and_cannot_disable_reflection() {
+        assert_eq!(service_args(&json!({"service": "dsh", "on": false})).unwrap(), ["disable", "dsh"]);
+        assert_eq!(service_args(&json!({"service": "dsh", "on": true})).unwrap(), ["enable", "dsh"]);
+        assert!(service_args(&json!({"service": "reflection", "on": false})).is_err());
+        assert!(service_args(&json!({"service": "x; rm -rf", "on": true})).is_err());
     }
 }

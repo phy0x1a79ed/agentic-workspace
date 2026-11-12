@@ -26,6 +26,9 @@ fn describe_matches_the_baseline() {
     let list = want["verbs"].as_array_mut().unwrap();
     list.retain(|v| v["verb"] != "reindex");
     for v in list.iter_mut() {
+        if v["verb"] == "claim" {
+            v["params"].as_array_mut().unwrap().retain(|p| p["name"] != "job");
+        }
         if v["verb"] == "create" {
             let d = format!("{} {}", v["description"].as_str().unwrap(), awm_plugin_scopes::service::CREATE_HOOK_SENTENCE);
             v["description"] = json!(d);

@@ -7,27 +7,56 @@
 //! records the calling session, and only that session cancels it (fleet.md R97 item 1).
 //! Every write goes through the relay, so it waits in the outbox while alcor is away.
 
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
 use crate::arbutus::Approvals;
-use crate::ids::intake_task_id;
 use crate::relay::{async_trait_free::BoxFut, ClientError, Relay};
 
-pub const NEEDS_YOU_STATES: [&str; 3] = ["planned", "blocked", "review"];
 pub const TITLE_CHARS: usize = 80;
-pub const NOTICE: &str = "This session's work is card {task_id} on Tony's Swarm board. Move it with operations task_report, and call request_human when you need Tony.";
 
 /// What the front asks of other plugins. Each degrades: a missing answer is no session, no
 /// notice or no DM, never a failed call.
 pub trait Outside: Send + Sync {
-    /// The session behind a pid on this node: `{session_id, job, name}`.
+    /// The session behind a pid on this node: `{session_id, name}`.
     fn session_of(&self, pid: u32) -> BoxFut<'_, Option<Value>>;
+    /// Whether the session is the agent of a seat on this node. A seat never gets a card. False
+    /// when seats gives no answer.
+    fn holds_seat<'a>(&'a self, session: &'a str) -> BoxFut<'a, bool>;
     /// Type one line into a session, on `peer` when it is another node.
-    fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool>;
-    /// One DM to Tony.
+    fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool>;
+    /// One line to Tony's notifications channel.
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
+    /// One message in Tony's own Discord DM.
+    fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool>;
+    /// Turn a session's Remote Control on, when it is off, and say how it can be reached.
+    fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach>;
+    /// Each session the roster holds on a node, with its claude.ai link. None when the roster has
+    /// no answer for that node.
+    fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>>;
+}
+
+/// How a session can be reached after asking for Remote Control.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reach {
+    Link(String),
+    /// `/rc` is typed and connects when the session's turn ends.
+    Connecting,
+    Unavailable,
+}
+
+const RC_PENDING: &str = "rc:";
+
+fn rc_key(node: &str, session: &str) -> String {
+    format!("{RC_PENDING}{node}:{session}")
+}
+
+/// The name `claude attach` takes for a session, when it is a Claude Code one.
+fn attach_name(session: &str) -> Option<String> {
+    awm_plugin_sdk::ids::SessionId::parse(session).ok()?.job_dir().map(str::to_string)
 }
 
 /// Who is calling, from the gateway's stamps.
@@ -38,6 +67,8 @@ pub struct Stamp {
     pub session_id: Option<String>,
     /// `_caller_session`: the claim of a session on another node.
     pub claim: Option<Value>,
+    /// The node a call from another node's service came from, by its `as` stamp.
+    pub peer: Option<String>,
 }
 
 impl Stamp {
@@ -49,7 +80,6 @@ impl Stamp {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Caller {
     pub session_id: Option<String>,
-    pub job: Option<String>,
     pub name: Option<String>,
     /// The session's own node, when it is not this one.
     pub node: Option<String>,
@@ -64,13 +94,13 @@ fn unwrap_stale(out: Value) -> Value {
     out
 }
 
-fn norm(s: &str) -> String {
-    awm_plugin_sdk::ids::normalise(s).unwrap_or_else(|_| s.trim().to_lowercase())
+pub(crate) fn norm(s: &str) -> String {
+    awm_plugin_sdk::ids::SessionId::checked(s).unwrap_or_else(|| s.trim().to_lowercase())
 }
 
 /// A session id a caller passed: refused unless it is an R9 id.
 fn norm_arg(s: &str) -> Result<String, String> {
-    awm_plugin_sdk::ids::normalise(s).map_err(|e| e.to_string())
+    awm_plugin_sdk::ids::SessionId::parse(s).map(|i| i.canonical()).map_err(|e| e.to_string())
 }
 
 fn err(e: ClientError) -> String {
@@ -130,12 +160,17 @@ pub struct Front {
     pub approver_origin: String,
     pub remind_s: f64,
     pub clock: crate::store::Clock,
+    /// How long a no-card DM waits for a queued Remote Control's link before it goes without one.
+    pub link_wait: Duration,
+    /// The Remote Control marks of DMs still being composed: their link belongs in that DM.
+    pub asking: Mutex<HashSet<String>>,
+    pub roster_moved: tokio::sync::Notify,
 }
 
-pub const VERBS: [&str; 29] = [
+pub const VERBS: [&str; 25] = [
     "task_open", "task_attach", "task_join", "task_report", "task_session_end", "task_for_session", "task_sessions", "task_get",
-    "task_list", "request_human", "hook_prompt", "hook_plan", "hook_plan_approved", "hook_todos", "hook_session_clear", "claim_task",
-    "track_task", "swarm_message_post", "swarm_messages", "intake_post", "intake_message", "approval_request", "approval_get",
+    "task_list", "request_human", "hook_plan_approved", "hook_todos", "hook_session_clear", "claim_task",
+    "track_task", "swarm_message_post", "swarm_messages", "approval_request", "approval_get",
     "approval_wait", "approval_cancel", "order_pull", "order_done", "keys", "status",
 ];
 
@@ -157,45 +192,27 @@ impl Front {
             let node = str_of(c, "node");
             return Caller {
                 session_id: str_of(c, "session_id").map(|s| norm(&s)),
-                job: str_of(c, "job"),
                 name: str_of(c, "name"),
                 node: node.filter(|n| *n != self.node),
             };
         }
-        let Some(pid) = stamp.pid else { return Caller::default() };
-        let Some(rec) = self.outside.session_of(pid).await else { return Caller::default() };
-        Caller { session_id: str_of(&rec, "session_id").map(|s| norm(&s)), job: str_of(&rec, "job"), name: str_of(&rec, "name"), node: None }
+        let service = || Caller { node: stamp.peer.clone().filter(|n| *n != self.node), ..Caller::default() };
+        let Some(pid) = stamp.pid else { return service() };
+        let Some(rec) = self.outside.session_of(pid).await else { return service() };
+        Caller { session_id: str_of(&rec, "session_id").map(|s| norm(&s)), name: str_of(&rec, "name"), node: None }
     }
 
-    fn job_key(&self, c: &Caller) -> String {
-        match &c.node {
-            Some(n) => format!("job:{n}:{}", c.job.clone().unwrap_or_default()),
-            None => format!("job:{}", c.job.clone().unwrap_or_default()),
-        }
-    }
-
-    async fn caller(&self, stamp: &Stamp) -> Caller {
-        let c = self.identify(stamp).await;
-        if let (Some(_), Some(s)) = (&c.job, &c.session_id) {
-            self.relay.set_mark(&self.job_key(&c), s);
-        }
-        c
-    }
-
-    /// The node and job a write records for the caller's session.
+    /// The node a write records for the caller's session.
     fn whereabouts(c: &Caller) -> Value {
         let mut m = Map::new();
         if let Some(n) = &c.node {
             m.insert("node".into(), json!(n));
         }
-        if let Some(j) = &c.job {
-            m.insert("job".into(), json!(j));
-        }
         Value::Object(m)
     }
 
     async fn session(&self, args: &Value, stamp: &Stamp, required: bool) -> Result<(Option<String>, Caller), String> {
-        let c = self.caller(stamp).await;
+        let c = self.identify(stamp).await;
         let session = str_of(args, "session_id").map(|s| norm_arg(&s)).transpose()?.or_else(|| c.session_id.clone());
         if required && session.is_none() {
             return Err("no calling session: pass session_id".into());
@@ -204,7 +221,7 @@ impl Front {
     }
 
     async fn own(&self, args: &Value, stamp: &Stamp) -> Result<Caller, String> {
-        let c = self.caller(stamp).await;
+        let c = self.identify(stamp).await;
         let Some(sid) = c.session_id.clone() else { return Err("this verb is for a running session: no calling session".into()) };
         if let Some(given) = str_of(args, "session_id") {
             if norm_arg(&given)? != sid {
@@ -226,14 +243,15 @@ impl Front {
         let (session, c) = self.session(a, st, false).await?;
         let title = str_of(a, "title").or_else(|| c.name.clone()).unwrap_or_default();
         let w = merge(json!({"title": title.trim(), "session_id": session, "peer": a.get("peer"), "tags": a.get("tags"),
-                             "name": str_of(a, "name").or_else(|| c.name.clone()), "rc_url": a.get("rc_url")}), Front::whereabouts(&c));
+                             "name": str_of(a, "name").or_else(|| c.name.clone())}), Front::whereabouts(&c));
         Ok(merge(json!({"ok": true}), self.relay.write("task_open", w).await.map_err(err)?))
     }
 
     pub async fn task_attach(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
-        let w = merge(json!({"task_id": a.get("task_id"), "session_id": session, "role": str_of(a, "role").unwrap_or_else(|| "worker".into()),
-                             "name": str_of(a, "name").or_else(|| c.name.clone()), "rc_url": a.get("rc_url")}), Front::whereabouts(&c));
+        let role = str_of(a, "role").unwrap_or_else(|| "worker".into());
+        let w = merge(json!({"task_id": a.get("task_id"), "session_id": session, "role": role,
+                             "name": str_of(a, "name").or_else(|| c.name.clone())}), Front::whereabouts(&c));
         Ok(merge(json!({"ok": true}), self.relay.write("task_attach", w).await.map_err(err)?))
     }
 
@@ -243,11 +261,11 @@ impl Front {
         let out = self.relay.write("task_join", w).await.map_err(err)?;
         let main = str_of(&out, "main_session_id");
         let mut told = false;
-        if let (Some(m), Some(name)) = (main.as_ref(), str_of(&out, "main_name")) {
+        if let Some(m) = main.as_ref() {
             if Some(m) != session.as_ref() {
                 let text = format!("[awm] session {} joined your task {} (operations task_sessions shows it).",
                                    session.clone().unwrap_or_default(), out["task_id"].as_str().unwrap_or_default());
-                told = self.outside.tell(out.get("main_node").and_then(Value::as_str), &name, &text).await;
+                told = self.outside.tell(out.get("main_node").and_then(Value::as_str), m, &text).await;
             }
         }
         Ok(merge(merge(json!({"ok": true}), out), json!({"main_notified": told})))
@@ -260,19 +278,12 @@ impl Front {
             None => self.task_of(session.as_deref()).await?,
         };
         let Some(task_id) = task_id else { return Err("no task: pass task_id, or open one with task_open".into()) };
-        self.report(&task_id, session.as_deref(), str_of(a, "state").unwrap_or_default().as_str(), a.get("reason").cloned(), a.get("rc_url").cloned()).await
+        self.report(&task_id, session.as_deref(), str_of(a, "state").unwrap_or_default().as_str(), a.get("reason").cloned()).await
     }
 
-    async fn report(&self, task_id: &str, session: Option<&str>, state: &str, reason: Option<Value>, rc_url: Option<Value>) -> Answer {
+    async fn report(&self, task_id: &str, session: Option<&str>, state: &str, reason: Option<Value>) -> Answer {
         let out = self.relay.write("task_report", json!({"task_id": task_id, "session_id": session, "state": state,
-                                                          "reason": reason, "rc_url": rc_url})).await.map_err(err)?;
-        if let Some(s) = session {
-            if NEEDS_YOU_STATES.contains(&state) {
-                self.relay.set_mark(&format!("needs:{s}"), task_id);
-            } else {
-                self.relay.clear_mark(&format!("needs:{s}"));
-            }
-        }
+                                                          "reason": reason})).await.map_err(err)?;
         Ok(merge(json!({"ok": true}), out))
     }
 
@@ -324,8 +335,8 @@ impl Front {
         Ok(out["task_id"].as_str().unwrap_or_default().to_string())
     }
 
-    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A service with
-    /// no session gets a card of its own on each call.
+    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A caller with a
+    /// card puts it in Needs you. One with none reaches him by DM, with a link to its session.
     pub async fn request_human(&self, a: &Value, st: &Stamp) -> Answer {
         let kind = match str_of(a, "kind").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
             Some(k) => k,
@@ -344,18 +355,127 @@ impl Front {
         if text.is_empty() {
             return Err(if kind == "blocked" { "reason is required" } else { "summary is required" }.into());
         }
-        let task_id = self.card_for(session.as_deref(), &c, &text).await?;
-        let mut out = self.report(&task_id, session.as_deref(), &kind, Some(json!(text)), None).await?;
-        out["card_url"] = self.card_link(&task_id);
+        let Some(task_id) = self.task_of(session.as_deref()).await? else {
+            return self.ask_by_dm(&kind, &text, &c).await;
+        };
+        let mut out = self.report(&task_id, session.as_deref(), &kind, Some(json!(text))).await?;
         if kind == "blocked" && a.get("urgent") == Some(&json!(true)) {
             let node = c.node.clone().unwrap_or_else(|| self.node.clone());
             let who = c.name.clone().unwrap_or_else(|| task_id.clone());
-            let attach = c.job.clone().or_else(|| c.name.clone()).unwrap_or_else(|| "<job>".into());
+            let attach = c.session_id.as_deref().and_then(attach_name).or_else(|| c.name.clone()).unwrap_or_else(|| "<session>".into());
             let message = format!("**{who}** on **{node}** needs you.\n{text}\nCard {task_id}. Attach: `claude attach {attach}` on {node}");
             out["notified"] = json!(self.outside.dm(&message).await);
             self.relay.set_mark(&format!("remind:{task_id}"), &json!({"due": (self.clock)() + self.remind_s, "text": message}).to_string());
         }
         Ok(out)
+    }
+
+    async fn ask_by_dm(&self, kind: &str, text: &str, c: &Caller) -> Answer {
+        let node = c.node.as_deref().unwrap_or(&self.node);
+        let key = c.session_id.as_ref().map(|session| rc_key(node, session));
+        if let Some(k) = &key {
+            self.asking.lock().unwrap().insert(k.clone());
+        }
+        let out = self.send_ask(kind, text, c, node).await;
+        if let Some(k) = &key {
+            self.asking.lock().unwrap().remove(k);
+            if self.relay.mark(k).is_some() {
+                self.links_due().await;
+            }
+        }
+        out
+    }
+
+    async fn send_ask(&self, kind: &str, text: &str, c: &Caller, node: &str) -> Answer {
+        let who = c.name.as_deref().unwrap_or("A service");
+        let reach = match &c.session_id {
+            Some(session) => self.turn_on_rc(node, session, who).await,
+            None => Reach::Unavailable,
+        };
+        let need = if kind == "review" { "has something for you to review" } else { "needs you" };
+        let mut message = format!("**{who}** on **{node}** {need}.\n{text}");
+        let attach = c.session_id.as_deref().and_then(attach_name).map(|job| format!("\nAttach: `claude attach {job}` on {node}")).unwrap_or_default();
+        let (link, note) = match &reach {
+            Reach::Link(url) => {
+                message.push_str(&format!("\n{url}"));
+                (Some(url), None)
+            }
+            Reach::Connecting => {
+                message.push_str(&format!("{attach}\nRemote Control connects when this session ends its turn. The link follows then."));
+                (None, Some("Remote Control connects when you end your turn, and Tony gets the link then."))
+            }
+            Reach::Unavailable => {
+                message.push_str(&attach);
+                (None, None)
+            }
+        };
+        if !self.outside.dm_tony(&message).await {
+            return Err("this session holds no card and the DM to Tony did not go out: try again".into());
+        }
+        let mut out = json!({"ok": true, "notified": true, "link": link});
+        if let Some(note) = note {
+            out["note"] = json!(note);
+        }
+        Ok(out)
+    }
+
+    /// The pending mark goes first, so a second call in the same turn types no second `/rc`:
+    /// that one would land on a connected session and open its disconnect modal.
+    async fn turn_on_rc(&self, node: &str, session: &str, who: &str) -> Reach {
+        let key = rc_key(node, session);
+        if self.relay.mark(&key).is_some() {
+            return Reach::Connecting;
+        }
+        self.relay.set_mark(&key, who);
+        let reach = match self.outside.reach(node, session).await {
+            Reach::Connecting => self.link_soon(node, session).await.map_or(Reach::Connecting, Reach::Link),
+            other => other,
+        };
+        if reach != Reach::Connecting {
+            self.relay.clear_mark(&key);
+        }
+        reach
+    }
+
+    async fn link_soon(&self, node: &str, session: &str) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + self.link_wait;
+        loop {
+            let moved = self.roster_moved.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            let links = tokio::time::timeout_at(deadline, self.outside.links(node)).await.ok()?;
+            if let Some(url) = links.and_then(|mut links| links.remove(session)).flatten() {
+                return Some(url);
+            }
+            tokio::time::timeout_at(deadline, moved).await.ok()?;
+        }
+    }
+
+    /// Send Tony the link of each session whose Remote Control has connected since it asked,
+    /// and forget each session that went. Answers how many went out.
+    pub async fn links_due(&self) -> usize {
+        self.roster_moved.notify_waiters();
+        let mut sent = 0;
+        let mut rosters = HashMap::new();
+        for (key, who) in self.relay.marks(RC_PENDING) {
+            if self.asking.lock().unwrap().contains(&key) {
+                continue;
+            }
+            let Some((node, session)) = key.strip_prefix(RC_PENDING).and_then(|k| k.split_once(':')) else { continue };
+            if !rosters.contains_key(node) {
+                rosters.insert(node.to_string(), self.outside.links(node).await);
+            }
+            let Some(links) = &rosters[node] else { continue };
+            if let Some(link) = links.get(session) {
+                let Some(url) = link else { continue };
+                if !self.outside.dm_tony(&format!("**{who}** on **{node}**: Remote Control is on.\n{url}")).await {
+                    continue;
+                }
+                sent += 1;
+            }
+            self.relay.clear_mark(&key);
+        }
+        sent
     }
 
     /// Send the one reminder of each urgent block that is still blocked. Answers how many went.
@@ -392,13 +512,13 @@ impl Front {
 
     async fn arbutus_open(&self, a: &Value, session: Option<&str>, c: &Caller) -> Answer {
         let Some(arb) = self.arbutus.clone() else { return Err("this node takes no admin approvals".into()) };
-        let agent = c.name.clone().or_else(|| c.job.clone()).unwrap_or_else(|| "a session".into());
+        let agent = c.name.clone().unwrap_or_else(|| "a session".into());
         let node = c.node.clone().unwrap_or_else(|| self.node.clone());
-        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, c.job.as_deref().unwrap_or("")).await?;
+        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, session.unwrap_or("")).await?;
         let (name, r) = (req["name"].as_str().unwrap_or_default(), req["ref"].as_str().unwrap_or_default().to_string());
         let reason = format!("Admin approval {name} (ref {r}) waits for Tony or Ryan in Slack.");
         let task_id = self.card_for(session, c, &reason).await?;
-        let out = self.report(&task_id, session, "blocked", Some(json!(reason)), None).await?;
+        let out = self.report(&task_id, session, "blocked", Some(json!(reason))).await?;
         arb.attach(&r, &task_id).map_err(|e| e.to_string())?;
         Ok(merge(out, json!({"approval": r, "notice": "A line is typed into this session when an admin decides."})))
     }
@@ -408,16 +528,6 @@ impl Front {
         if let Err(e) = self.relay.write("task_report", json!({"task_id": task_id, "state": "working", "reason": line})).await {
             tracing::warn!("operations: an Arbutus decision could not move card {task_id}: {e}");
         }
-    }
-
-    /// Tony's prompt to a session moves its card from Needs you to Working (R61 item 2).
-    pub async fn hook_prompt(&self, _a: &Value, st: &Stamp) -> Answer {
-        let c = self.caller(st).await;
-        let Some(sid) = c.session_id.clone() else { return Ok(json!({"ok": true, "moved": false})) };
-        let Some(task_id) = self.relay.mark(&format!("needs:{sid}")) else { return Ok(json!({"ok": true, "moved": false, "blocked": false})) };
-        self.report(&task_id, Some(&sid), "working", None, None).await?;
-        self.relay.clear_mark(&format!("remind:{task_id}"));
-        Ok(json!({"ok": true, "moved": true, "task_id": task_id, "blocked": false}))
     }
 
     // -- the plan, todo and clear hooks, and a session's own card ---------------------------
@@ -435,34 +545,24 @@ impl Front {
         Ok((out["task_id"].as_str().unwrap_or_default().to_string(), true))
     }
 
-    fn opened(out: Value, task_id: &str, opened: bool) -> Value {
-        let mut out = merge(out, json!({"task_id": task_id, "opened": opened}));
-        if opened {
-            out["notice"] = json!(NOTICE.replace("{task_id}", task_id));
-        }
-        out
-    }
-
-    pub async fn hook_plan(&self, a: &Value, st: &Stamp) -> Answer {
-        let (session, c) = self.session(a, st, true).await?;
-        let session = session.unwrap_or_default();
-        let text = str_of(a, "plan_text").unwrap_or_default();
-        let (task_id, opened) = self.card_or_open(&session, &c, &heading(&text).unwrap_or_default()).await?;
-        self.relay.write("task_detail", json!({"task_id": task_id, "plan": text})).await.map_err(err)?;
-        let out = self.report(&task_id, Some(&session), "planned", None, None).await?;
-        Ok(Front::opened(merge(out, json!({"blocked": true})), &task_id, opened))
-    }
-
+    /// An approved plan gives the session a card, unless it is a seat's, and goes on the card.
+    /// The session's state moves the card.
     pub async fn hook_plan_approved(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
         let session = session.unwrap_or_default();
+        if self.outside.holds_seat(&session).await {
+            return Ok(json!({"ok": true, "tracked": false}));
+        }
         let text = str_of(a, "plan_text").unwrap_or_default();
         let (task_id, opened) = self.card_or_open(&session, &c, &heading(&text).unwrap_or_default()).await?;
         if !text.is_empty() {
             self.relay.write("task_detail", json!({"task_id": task_id, "plan": text})).await.map_err(err)?;
+            let title = title_of(&heading(&text).unwrap_or_default());
+            if !title.is_empty() {
+                self.relay.write("task_autotitle", json!({"task_id": task_id, "title": title})).await.map_err(err)?;
+            }
         }
-        let out = self.report(&task_id, Some(&session), "working", None, None).await?;
-        Ok(Front::opened(merge(out, json!({"blocked": false})), &task_id, opened))
+        Ok(json!({"ok": true, "task_id": task_id, "opened": opened}))
     }
 
     pub async fn hook_todos(&self, a: &Value, st: &Stamp) -> Answer {
@@ -473,39 +573,34 @@ impl Front {
         Ok(json!({"ok": true, "tracked": true, "task_id": task_id}))
     }
 
-    /// A /clear gave the job a new session id. The old one leaves its card, so the job's
-    /// next plan opens one of its own.
+    /// A /clear gave a session a new id. The new one takes the place and role of `parent`, the
+    /// id before the clear, on its card, so the session keeps one card.
     pub async fn hook_session_clear(&self, a: &Value, st: &Stamp) -> Answer {
         let c = self.identify(st).await;
-        let (Some(_), Some(sid)) = (&c.job, &c.session_id) else { return Ok(json!({"ok": true, "ended": null})) };
-        let new = norm_arg(&str_of(a, "new_session_id").unwrap_or_else(|| sid.clone()))?;
-        let key = self.job_key(&c);
-        let seen = self.relay.mark(&key);
-        let old = [seen, Some(sid.clone())].into_iter().flatten().find(|s| !s.is_empty() && *s != new);
-        self.relay.set_mark(&key, &new);
+        let (Some(sid), Some(parent)) = (&c.session_id, str_of(a, "parent")) else { return Ok(json!({"ok": true, "ended": null})) };
+        let (new, old) = (norm_arg(sid)?, Some(norm_arg(&parent)?).filter(|p| *p != norm(sid)));
         let Some(task_id) = self.task_of(old.as_deref()).await? else { return Ok(json!({"ok": true, "ended": null})) };
         let old = old.unwrap_or_default();
+        let sessions = unwrap_stale(self.relay.read("task_sessions", json!({"task_id": task_id})).await.map_err(err)?);
+        let role = sessions.as_array().into_iter().flatten().find(|s| s["session_id"].as_str().is_some_and(|s| norm(s) == old))
+            .and_then(|s| str_of(s, "role")).unwrap_or_else(|| "main".into());
+        let w = merge(json!({"task_id": task_id, "session_id": new, "role": role, "name": c.name}), Front::whereabouts(&c));
+        self.relay.write("task_attach", w).await.map_err(err)?;
         self.relay.write("task_session_end", json!({"task_id": task_id, "session_id": old})).await.map_err(err)?;
-        self.relay.clear_mark(&format!("needs:{old}"));
-        Ok(json!({"ok": true, "ended": old, "task_id": task_id}))
+        Ok(json!({"ok": true, "ended": old, "joined": new, "task_id": task_id}))
     }
 
     pub async fn claim_task(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
-        let raw = str_of(a, "task_id").or_else(|| str_of(a, "ref")).unwrap_or_default();
-        let words: Vec<&str> = raw.split_whitespace().collect();
-        let prefixed = words.len() > 2 && words[0].eq_ignore_ascii_case("claim") && words[1].eq_ignore_ascii_case("task");
-        let Some(id) = words.get(if prefixed { 2 } else { 0 }).map(|s| s.to_string()) else { return Err("task_id is required".into()) };
+        let Some(id) = str_of(a, "task_id").filter(|s| !s.is_empty()) else { return Err("task_id is required".into()) };
         let w = merge(json!({"task_id": id, "session_id": session, "name": c.name}), Front::whereabouts(&c));
-        let out = self.relay.write("task_claim", w).await.map_err(err)?;
-        self.relay.clear_mark(&format!("needs:{}", session.unwrap_or_default()));
-        Ok(merge(json!({"ok": true}), out))
+        Ok(merge(json!({"ok": true}), self.relay.write("task_claim", w).await.map_err(err)?))
     }
 
     pub async fn track_task(&self, a: &Value, st: &Stamp) -> Answer {
         let (session, c) = self.session(a, st, true).await?;
         let (task_id, opened) = self.card_or_open(&session.unwrap_or_default(), &c, &str_of(a, "title").unwrap_or_default()).await?;
-        Ok(Front::opened(json!({"ok": true}), &task_id, opened))
+        Ok(json!({"ok": true, "task_id": task_id, "opened": opened}))
     }
 
     pub async fn swarm_message_post(&self, a: &Value, st: &Stamp) -> Answer {
@@ -527,7 +622,7 @@ impl Front {
     // -- approvals (fleet.md R97) -----------------------------------------------------------
 
     pub async fn approval_request(&self, a: &Value, st: &Stamp) -> Answer {
-        let c = self.caller(st).await;
+        let c = self.identify(st).await;
         let out = self.relay.write("approval_request", json!({
             "kind": a.get("kind"), "node": a.get("node"), "reason": a.get("reason").cloned().unwrap_or(json!("")),
             "minutes": a.get("minutes").cloned().unwrap_or(json!(15)), "payload": a.get("payload"), "session_id": c.session_id,
@@ -582,73 +677,6 @@ impl Front {
         Ok(merge(json!({"ok": true}), self.relay.status()))
     }
 
-    // -- intake: federation-board posts become cards (channels.md R77) -----------------------
-
-    async fn intake_task(&self, board_card: &str) -> Option<Value> {
-        let out = self.relay.read("task_get", json!({"task_id": intake_task_id(board_card)})).await.ok()?;
-        Some(unwrap_stale(out)).filter(Value::is_object)
-    }
-
-    /// A board card to this swarm: a card in Needs you, its body as the first message, one DM.
-    pub async fn intake_post(&self, a: &Value, st: &Stamp) -> Answer {
-        if st.is_session() {
-            return Err("intake takes the board door's own posts, not a session's".into());
-        }
-        let board_card = str_of(a, "board_card").unwrap_or_default();
-        let sender = str_of(a, "sender").unwrap_or_else(|| "?".into());
-        if board_card.is_empty() {
-            return Err("board_card is required".into());
-        }
-        if let Some(reply_to) = str_of(a, "reply_to") {
-            if self.intake_task(&reply_to).await.is_some() {
-                let body = a.get("body").filter(|v| !v.is_null()).or(a.get("title")).cloned();
-                return self.intake_message(&json!({"board_card": reply_to, "sender": sender, "body": body}), &Stamp::default()).await;
-            }
-        }
-        let task_id = intake_task_id(&board_card);
-        let raw_title = str_of(a, "title").unwrap_or_else(|| "(no title)".into());
-        let title = title_of(&format!("{sender}: {raw_title}"));
-        let open = self.relay.write("task_open", json!({
-            "task_id": task_id, "title": title, "section": "needs_you", "status": "intake",
-            "tags": ["board"], "meta": {"board_card": board_card, "from": sender},
-        })).await;
-        if let Err(e) = open {
-            if e.to_string().contains("is taken") {
-                return Ok(json!({"ok": true, "task_id": task_id, "opened": false}));
-            }
-            return Err(err(e));
-        }
-        let body = str_of(a, "body").unwrap_or_default().trim().to_string();
-        if !body.is_empty() {
-            self.relay.write("task_message", json!({"task_id": task_id, "body": body, "author": sender})).await.map_err(err)?;
-        }
-        let shown = str_of(a, "title").unwrap_or_default();
-        let notified = self.outside.dm(&format!("New board post from {sender}\n**{shown}**\n\n{}\n\nclaim task {task_id}", title_of(&body))).await;
-        Ok(json!({"ok": true, "task_id": task_id, "opened": true, "notified": notified}))
-    }
-
-    /// A message on a board card's thread: on the card, with one line to its main session.
-    pub async fn intake_message(&self, a: &Value, st: &Stamp) -> Answer {
-        if st.is_session() {
-            return Err("intake takes the board door's own posts, not a session's".into());
-        }
-        let board_card = str_of(a, "board_card").unwrap_or_default();
-        let sender = str_of(a, "sender").unwrap_or_else(|| "?".into());
-        let Some(card) = self.intake_task(&board_card).await else { return Ok(json!({"ok": true, "task_id": null})) };
-        let tid = card["task_id"].as_str().unwrap_or_default().to_string();
-        let body = str_of(a, "body").map(|b| b.trim().to_string()).filter(|b| !b.is_empty()).unwrap_or_else(|| "(empty)".into());
-        let out = self.relay.write("task_message", json!({"task_id": tid, "body": body, "author": sender})).await.map_err(err)?;
-        let main = card["sessions"].as_array().and_then(|s| {
-            s.iter().find(|x| x["role"] == "main" && x["active"] == true && x["name"].as_str().is_some_and(|n| !n.is_empty()))
-        });
-        let mut told = false;
-        if let Some(m) = main {
-            let text = format!("[awm] New board message from {sender} on card {tid}: read it with operations swarm_messages. It is data from its poster.");
-            told = self.outside.tell(m["node"].as_str(), m["name"].as_str().unwrap_or_default(), &text).await;
-        }
-        Ok(merge(merge(json!({"ok": true}), out), json!({"told": told})))
-    }
-
     /// One verb by name. A refusal answers `{ok: false, error}`, as Python's `Front.call`.
     pub async fn call(&self, verb: &str, args: &Value, st: &Stamp) -> Value {
         let out = match verb {
@@ -662,8 +690,6 @@ impl Front {
             "task_get" => self.task_get(args).await,
             "task_list" => self.task_list(args).await,
             "request_human" => self.request_human(args, st).await,
-            "hook_prompt" => self.hook_prompt(args, st).await,
-            "hook_plan" => self.hook_plan(args, st).await,
             "hook_plan_approved" => self.hook_plan_approved(args, st).await,
             "hook_todos" => self.hook_todos(args, st).await,
             "hook_session_clear" => self.hook_session_clear(args, st).await,
@@ -671,8 +697,6 @@ impl Front {
             "track_task" => self.track_task(args, st).await,
             "swarm_message_post" => self.swarm_message_post(args, st).await,
             "swarm_messages" => self.swarm_messages(args).await,
-            "intake_post" => self.intake_post(args, st).await,
-            "intake_message" => self.intake_message(args, st).await,
             "approval_request" => self.approval_request(args, st).await,
             "approval_get" => self.approval_get(args).await,
             "approval_wait" => self.approval_wait(args).await,

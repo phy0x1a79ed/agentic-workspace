@@ -44,6 +44,10 @@ pub const RESPAWN: Duration = Duration::from_secs(5);
 /// The user unit the Python cch synced isolated logins with; the watch in-process replaces it.
 pub const LOGIN_SYNC_UNIT: &str = "awm-isolated-login-sync.service";
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long after a relaunch a job with no bridge change has its recorded switch compared.
+pub const RC_SETTLE: Duration = Duration::from_secs(20);
+/// How long after a relaunch a bridge change still counts as the relaunch settling.
+pub const RC_WINDOW: Duration = Duration::from_secs(120);
 
 /// One control verb, as the verb table hands it to [`Backend::control`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +111,8 @@ pub trait Backend: Send + Sync + 'static {
     fn mode_of(&self, pid: Option<i64>) -> impl Future<Output = Mode> + Send;
     /// The session `job` names, or the caller's own ([`control::resolve`]).
     fn resolve(&self, job: Option<String>, pid: Option<u32>) -> impl Future<Output = Result<Target, ControlError>> + Send;
+    /// Every session whose whole name is `name` ([`control::named`]).
+    fn named(&self, name: &str) -> impl Future<Output = Vec<Target>> + Send;
     fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> impl Future<Output = Result<Value, ControlError>> + Send;
     /// Type into the caller's own session, arming the resume a slash command is owed.
     fn send(&self, req: SendRequest) -> impl Future<Output = Result<Value, SendError>> + Send;
@@ -363,15 +369,75 @@ impl Live {
                 Ok(())
             }
         });
+        let (rc, rc_events) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(restore_after_relaunch(self.fx.clone(), self.paths.clone(), rc_events));
         let (paths, gw) = (self.paths.clone(), Arc::new(self.hub.clone()));
         spawn_supervised("cch.session-events", RESPAWN, move || {
-            let (paths, gw) = (paths.clone(), gw.clone());
+            let (paths, gw, rc) = (paths.clone(), gw.clone(), rc.clone());
             async move {
-                session_events::run(paths, gw).await;
+                session_events::run(paths, gw, rc).await;
                 Ok(())
             }
         });
     }
+}
+
+/// Put each relaunched job's Remote Control back to its last recorded switch, at most once per
+/// relaunch. Claude Code relaunches a job with the flags it was created with, so a switch made
+/// since would otherwise be lost. The compare runs on each bridge change within [`RC_WINDOW`],
+/// and once at [`RC_SETTLE`] for a bridge that never changes. A bridge change that matches the
+/// switch, or one put back, ends the relaunch, so a later `/rc` is left alone.
+async fn restore_after_relaunch(fx: control::Live<Watch>, paths: Arc<Paths>, mut events: tokio::sync::mpsc::UnboundedReceiver<session_events::Rc>) {
+    let mut open: std::collections::HashMap<String, tokio::time::Instant> = Default::default();
+    let (settle, mut settled) = tokio::sync::mpsc::unbounded_channel::<String>();
+    loop {
+        let (job, bridged) = tokio::select! {
+            Some(event) = events.recv() => match event {
+                session_events::Rc::Relaunched(job) => {
+                    open.insert(job.clone(), tokio::time::Instant::now() + RC_WINDOW);
+                    let settle = settle.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(RC_SETTLE).await;
+                        let _ = settle.send(job);
+                    });
+                    continue;
+                }
+                session_events::Rc::Bridge(job) => (job, true),
+            },
+            Some(job) = settled.recv() => (job, false),
+            else => return,
+        };
+        let now = tokio::time::Instant::now();
+        open.retain(|_, end| now < *end);
+        if !open.contains_key(&job) {
+            continue;
+        }
+        if restore_switch(&fx, &paths, &job).await || bridged {
+            open.remove(&job);
+        }
+    }
+}
+
+/// Compare `job`'s bridge with its recorded switch and put the switch back if they differ. True
+/// when it tried.
+async fn restore_switch(fx: &control::Live<Watch>, paths: &Arc<Paths>, job: &str) -> bool {
+    let (paths, j) = (paths.clone(), job.to_string());
+    let recorded = tokio::task::spawn_blocking(move || {
+        let id = lifecycle::session_of_job(&paths, &j)?;
+        lifecycle::read_lineage(&paths, &id).map(|rec| (id, rec))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some((id, want)) = recorded.and_then(|(id, rec)| Some((id, rec.get("remote_control").cloned()?))) else { return false };
+    let on = want.as_bool().unwrap_or_else(|| want.as_str().is_some_and(|s| !s.is_empty()));
+    let Some(out) = control::restore_remote_control(fx, job, &id, on, want.as_str()).await else { return false };
+    let shown = if on { "on" } else { "off" };
+    match out {
+        Ok(out) => tracing::info!("cch: relaunched {job}: Remote Control put back {shown}: {out}"),
+        Err(e) => tracing::warn!("cch: relaunched {job}: Remote Control could not be put back {shown}: {e}"),
+    }
+    true
 }
 
 async fn keep_daemon_running(keeper: Arc<Keeper>) -> anyhow::Result<()> {
@@ -458,6 +524,10 @@ impl Backend for Live {
 
     async fn resolve(&self, job: Option<String>, pid: Option<u32>) -> Result<Target, ControlError> {
         control::resolve(&self.fx, job.as_deref(), pid).await
+    }
+
+    async fn named(&self, name: &str) -> Vec<Target> {
+        control::named(&self.fx, name).await
     }
 
     async fn control(&self, op: Op, job: Option<String>, pid: Option<u32>) -> Result<Value, ControlError> {
@@ -561,7 +631,7 @@ impl Backend for Live {
             }
             PoolOp::Claim(cwd) => {
                 let out = claim::claim(&self.pool, &DaemonKeys, &cwd).await;
-                if out.get("session").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+                if out.get("session_id").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
                     // Seed the replacement while the caller is still starting up, rather than up
                     // to a tick later.
                     self.pool_loop.kick();
@@ -569,8 +639,8 @@ impl Backend for Live {
                 Ok(out)
             }
             PoolOp::Seed => match seed::seed_one(&self.pool, &self.launcher).await {
-                Ok(short) => Ok(json!({"session": short})),
-                Err(LaunchError::Refused(why)) => Ok(json!({"session": null, "refused": why})),
+                Ok(id) => Ok(json!({"session_id": id})),
+                Err(LaunchError::Refused(why)) => Ok(json!({"session_id": null, "refused": why})),
                 Err(e) => Err(e.to_string()),
             },
             PoolOp::Remove { apply: true } => {

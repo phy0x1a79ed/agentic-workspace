@@ -43,7 +43,9 @@ Machines reach each other through ssh keys at three levels (R92). Each `authoriz
 
 - **User.** Tony's account, with a shell and agent access. A user key is an edge, and carries no forced command. awm traffic runs `AWM_EDGE_FROM=<holder> awm edge-serve` in that shell.
 - **Service.** A key locked to `awm port`, with no shell and no forwarding. `awm port` reads the request from stdin (the caller's command is the bare `port`; the older form with the JSON on the command line is still accepted), runs only the host's singletons that admit the key's holder, and logs each call to `<AWM_DIR>/port.log`. A service key from outside the edges carries an `expiry-time`: the timed invite.
-- **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane, reaches only the host's singletons that admit the holder, and logs to `<AWM_DIR>/port.log`.
+- **Service-only edge.** An edge that edges.yml writes as `{network: <net>, key: service, tools: [<tool>]}`. The caller logs in with its service key. The target's `authorized_keys` line forces `awm edge-serve --from <holder> --level service`, with `restrict`. The forced command names the node and the level, never the client. A service-level call runs on the service lane and logs to `<AWM_DIR>/port.log`. It reaches the tools the edge names and the host's singletons that admit the holder, and nothing else (R98, explicit only). A stream (a direct session or an emit) passes the same admission as a call.
+  - edges.yml refuses `tools` on a user edge, because a user edge opens every tool.
+  - edges.yml refuses a singleton's name in `tools`. A singleton keeps one list of who reaches it, its `callers`.
 - **Admin.** A separate account with sudo, for config and installs. shogun holds it on the Arbutus nodes.
 
 ## Singletons
@@ -73,7 +75,7 @@ The callers list fails closed. A node it leaves out gets the answer an unknown t
 
 **CAUTION** Each gateway reads `callers` from its own `edges.yml`. A relay with a stale copy checks against its stale list, and only the host's check stands behind it.
 
-alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and its ssh service is the slot arbiter. deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
+alcor hosts `2fa`, `operations` (the task queue and the approver), `browser` and `social`, and `ssh-arbiter` is the slot arbiter. Each seat host runs `seats`, and social never dials it. The host opens every connection: a held `social seat_pull` brings lines down, and `social seat_report` takes replies and seat state up (`docs/redux/channels.md` R148). deneb hosts `trilium`, the vault, and `relay`, the host half of the channel rooms beside the tether relay. The cloud project's `edges.yml` is the record.
 
 ## People
 
@@ -105,18 +107,18 @@ A node can mark a project or one scope of it private. Run `scope private project
 - **Where the mark lives.** `<AWM_DIR>/private.json`. `scope private` owns the writes. The gateway (`privacy.rs`) and `awm.config.privacy` read it. Every process rereads the file when it changes. A file that exists and does not parse hides everything from other nodes. The mark is per node.
 - **Slug collisions.** Claude names a transcript folder by turning every non-alphanumeric character of the path into `-`. A mark on `metasmith` would also cover `metasmith-libraries`. `scope private` refuses a mark whose slug prefixes another project's or scope's directory.
 
-**CAUTION** A mark is visibility hygiene, not a security boundary. Text about the project in another project's records stays visible, and so do kb papers and Trilium notes. A session started here across an edge reads with a local stamp.
+**CAUTION** A mark is visibility hygiene, not a security boundary. Text about the project in another project's records stays visible, and so do papers and Trilium notes. A session started here across an edge reads with a local stamp.
 
 ## Search across nodes
 
-`search query` names each source as `kind` for this node or `kind@node` for another. It groups the sources by node and asks each other node once, across the edge, with the same text and each source's filter under its bare `kind`. The answer keys each peer source as `kind@node`.
+`search query` names each source as `kind` or `kind@node`. A bare `kind` means this node when it serves the kind, else the first peer whose `search sources` lists it. Search groups the sources by node and asks each other node once, across the edge, with the same text and each source's filter under its bare `kind`. The answer keys each section as the caller wrote it, and a section a bare kind sent to a peer adds `node`, so `get` can follow its hits.
 
+- Search asks a peer only over an edge that opens `search`: a user edge, or a service edge that names it. Search reports `kind@node` over any other edge as `no edge … opens search`, and a bare kind never reaches that peer.
 - A node that is down, refuses or times out never fails the search or hides local hits. Its sources show the status.
-- Scores from different nodes do not compare, so the merge fuses ranks and ignores scores.
-- A call that arrives from another node searches that node only. No node relays a search onward.
+- Each source answers apart. Scores from different nodes never meet.
+- A call that arrives from another node searches that node only. No node relays a search onward, and a relayed bare kind never goes to a peer.
+- `search sources` adds a `mode: peer` row for each kind a peer serves, and a `peers` map with each peer's kinds or error. A relayed call sees this node's rows only, so two nodes never list each other in a loop.
 - Two nodes whose journal tag vocabularies clash do not search each other. Search marks each `name@node` source of a clashed node refused and does not ask it, until the newer tag is renamed.
-
-`ARCHITECTURE.md` § *The search archive* covers the plug-in contract.
 
 A post that arrives across an edge carries the stamp `peer:<node>` as its author. The `author` argument moves to `meta.claimed_author`, so a post proves its origin.
 
@@ -131,9 +133,9 @@ A post that arrives across an edge carries the stamp `peer:<node>` as its author
 
 ## Connection-slot arbiter
 
-A lockout-sensitive host fails closed after a few failed 2FA prompts. fir locks the Alliance account after 10 failed Duo prompts. Several nodes drive the same account through the one 2fa singleton, so the attempt budget is fleet-global, and one node keeps it. The ssh singleton on alcor is the slot arbiter. A node finds it in the edge list, or in `AWM_SSH_SLOT_PEER`.
+A lockout-sensitive host fails closed after a few failed 2FA prompts. fir locks the Alliance account after 10 failed Duo prompts. Several nodes drive the same account through the one 2fa singleton, so the attempt budget is fleet-global, and one node keeps it. The `ssh-arbiter` singleton on alcor is the slot arbiter, and the lock code lives only there. A node's ssh service takes its lease from the node that `AWM_SSH_SLOT_PEER` names, over an edge, because a lease is a stream and the door carries none. altair's edge to alcor is service-only for this.
 
-For a host with a 2FA device, a connect first takes that host's slot from the arbiter. The arbiter grants at most one attempt in flight, fleet-wide. After a failure it refuses every attempt until an operator clears it. A host with no 2FA device keeps a breaker per node.
+For a host with a 2FA device, a connect first takes that host's slot from the arbiter. The arbiter grants at most one attempt in flight, fleet-wide. After a failure it refuses every attempt until an operator clears it.
 
 **The lease is a connection, not a timer.** The requester opens a direct session to the arbiter, and the open socket is the lease. A dead requester frees or trips its slot the moment its socket drops. The grant or refusal rides as the first frame (`{"lease":"granted"|"busy"|"locked"}`).
 
@@ -145,28 +147,38 @@ For a host with a 2FA device, a connect first takes that host's slot from the ar
 
 - LOCKED persists in the arbiter's lockfile. LEASED dies with its socket.
 - The arbiter is the only notifier on a LOCKED transition, so the requester's own attempt stays silent.
-- An arbiter that cannot be reached refuses the connect. No VPN, 2FA or ssh runs, and no MFA is spent.
+- An arbiter that cannot be reached refuses the connect. No 2FA or ssh runs, and no MFA is spent.
 - The alert names the requester, which travels with the lease. The arbiter never names itself.
 
 **The verdict answers "was the MFA budget spent?", not "did the connect succeed".** A connect that died before the auth phase reports `verdict_ok`. `SSHService._is_preauth_failure` classifies the ssh stderr asymmetrically. Only unambiguous markers count as pre-auth (`kex_exchange_identification`, `Exceeded MaxStartups`, `Connection refused`, DNS or routing). Any auth-phase marker vetoes, and so does an askpass deviation. No evidence holds the slot. The classification runs on the requester.
+
+**One UBC VPN session, on altair.** UBC ends an account's oldest VPN session once it holds about three, so a second node's tunnel can cut altair's. Only altair loads the `vpn` plugin. Its service keeps the `ubc` tunnel up and re-dials when docker reports the container died. After three dials in a row that fail or live under ten minutes, it stops and pages the operator, so a flapping tunnel spends no more Duo pushes. Every other node with a sockeye edge renders `vpn_ubc` as a `ProxyJump altair` to the bounce on altair's loopback, and altair admits their edge keys there. A jump refused because the tunnel is down is pre-auth, so it spends no slot.
 
 **CAUTION** Before a new node's first connect to a lockout-sensitive host, copy the host's keys from a node that has them: `ssh-keygen -F <host>`, appended to the new node's `~/.ssh/known_hosts`. Otherwise the askpass refuses the fingerprint prompt and the connect fails.
 
 ## Deploy
 
-mizar holds the canonical repo of awm. Agents land their own branches through the land queue, `scripts/land.sh`. The skills `ci/land` and `ci/merge` carry the protocol. No agent is started for a failure, and no session is warned of a restart. Never hand-patch a running node: the next landing reverts the patch.
+mizar holds the canonical repo of awm. Sessions take work live with the `ship` skill, which holds the protocol and names these commands:
 
-1. Push your branch to mizar when you work on another node (`PROTOCOLS.md` § *Pushing to mizar*).
-2. Run `scripts/land.sh submit --brief <file> --restart <plugins|gateway|none>` from your scope. It queues the branch and returns at once. The brief is the merger's only context.
-3. One agent at a time, the merger, holds the project's lease and runs `scripts/land.sh batch`. The batch state lives in `<AWM_DIR>/land/<project>/`. The batch merges each queued branch onto `release` in queue order. It rebuilds every stale pin with `deploy.toml` § `artifacts` `refresh` (`scripts/refresh-pins.sh`) and commits the new pins as `deploy: refresh pins`. It then runs the `check` in `deploy.toml` and promotes `feat → dev → release`. The pin step builds into mizar's real `<AWM_DIR>/artifacts` and keeps its cargo target and `node_modules` caches in `<AWM_DIR>/build-cache`.
-4. It pushes `release` to the `github` remote, fast-forward only. A backup that has diverged stops the batch before anything lands.
-5. It refreshes each node in the install config's `[fleet]` order, one at a time, and stops at the first failure. For a node in `[fleet.push.<node>]`, such as altair, it first pushes `release` to that node as `refs/mizar/release`, fast-forward only. When that entry names an `artifacts` directory, it pushes each file the release pins (`deploy.toml` § `artifacts`) from mizar's `<AWM_DIR>/artifacts`, and refuses a file whose sha256 differs from its pin. The core binary (`scripts/core.pin`), the built pages (`scripts/pages.pin`) and the Trilium server tarball travel this way. Their node never fetches them.
-6. On each node it runs `deploy.toml` § `refresh` over ssh: `scripts/refresh-checkout.sh` moves the checkout awm runs from to the new release, then `scripts/node-refresh.sh` runs `scripts/awm-deploy.sh` and checks every enabled service. The checkout is the workspace root, not `projects/awm/release`. `refresh-checkout.sh` refuses a checkout with local commits. `node-refresh.sh` runs in a transient user unit, `awm-refresh-<sha>`, so an awm restart cannot kill it. It writes its result to `<AWM_DIR>/state/refresh/<sha>.json` and answers a second call from that file. deneb names its own command in the install config, because awm runs there as the `awm` user.
-7. A failed step keeps the batch for the merger to fix. Each ticket ends `landed` or `bounced`, and `scripts/land.sh wait <ticket>` returns it.
+- Pins: `scripts/refresh-pins.sh`. In a worktree, set `AWM_DIR` to the canonical `<workspace>/.awm`, or the pins build into a store no node reads.
+- Smoke tests: `scripts/run-tests.sh --smoke --changed release`.
+- Rollout: `scripts/rollout.sh --restart <list> <sha>`.
+
+ No agent is started for a failure, and no session is warned of a restart. Never hand-patch a running node: the next refresh reverts the patch.
+
+A session on another node pushes its branch to mizar first (`PROTOCOLS.md` § *Pushing to mizar*). The rollout does this for each node in the install config's `[fleet]` order:
+
+1. Skip a sleeper that does not answer.
+2. For a node in `[fleet.push.<node>]`, such as altair, push `release` to it as `refs/mizar/release`, fast-forward only. When that entry names an `artifacts` directory, push each file the release pins (`deploy.toml` § `artifacts`) from mizar's `<AWM_DIR>/artifacts`. The core binary (`scripts/core.pin`), the built pages (`scripts/pages.pin`) and the Trilium server tarball travel this way. Their node never fetches them.
+3. Run `deploy.toml` § `refresh` over ssh: `scripts/refresh-checkout.sh` moves the checkout awm runs from to the new release, then `scripts/node-refresh.sh` runs `scripts/awm-deploy.sh` and checks every enabled service. deneb names its own command in the install config, because awm runs there as the `awm` user.
+
+A failed node does not stop the others. The rollout lists each failure and exits non-zero. Rerun it to recover: `node-refresh.sh` skips a node whose result succeeded and runs one whose result failed.
+
+The checkout is the workspace root, not `projects/awm/release`. `refresh-checkout.sh` refuses a checkout with local commits. `node-refresh.sh` runs in a transient user unit, `awm-refresh-<sha>`, so an awm restart cannot kill it. It writes its result to `<AWM_DIR>/state/refresh/<sha>.json`.
 
 altair does no awm work. It only receives each release.
 
-`awm deploy` brings the node in line with its checkout. A push node builds nothing: mizar builds the core binary and the plugin pages, and its deploy pushes both to the node's `<AWM_DIR>/artifacts` (`deploy.toml` § `artifacts`, pins `scripts/core.pin` and `scripts/pages.pin`). `scripts/awm-deploy.sh` checks each against its pin, unpacks the page dists into the checkout, and runs the binary as `awm deploy --bin <binary> --no-build`. A sha256 that differs from a pin, or a pin older than its inputs, stops it. mizar's deploy rebuilds a stale pin itself (§ Deploy step 3), so no one builds by hand. `awm deploy --dry-run` prints each step. It runs `awm/install.sh`, which installs the plugins the node's `config.toml` enables (it asks `awm wants <plugin>`, the rule the gateway loads by, so no second list exists), places the binary at `~/.local/bin/awm`, writes `config.toml` when the node has none, and replaces the `awm` user unit from `core/deploy/awm.service`. It restarts the unit when the binary or the unit changed, and reloads the plugins otherwise. Then it waits for every enabled service and checks each thing it placed. `awm/scripts/build.sh` runs `npm ci` first when `package-lock.json` changed since the last install.
+`awm deploy` brings the node in line with its checkout. A push node builds nothing: mizar builds the core binary and the plugin pages, and its deploy pushes both to the node's `<AWM_DIR>/artifacts` (`deploy.toml` § `artifacts`, pins `scripts/core.pin` and `scripts/pages.pin`). `scripts/awm-deploy.sh` checks each against its pin, unpacks the page dists into the checkout, and runs the binary as `awm deploy --bin <binary> --no-build`. A sha256 that differs from a pin, or a pin older than its inputs, stops it. The release train rebuilds a stale pin with `scripts/refresh-pins.sh`, so no one builds by hand. `awm deploy --dry-run` prints each step. It runs `awm/install.sh`, which installs the plugins the node's `config.toml` enables (it asks `awm wants <plugin>`, the rule the gateway loads by, so no second list exists), places the binary at `~/.local/bin/awm`, writes `config.toml` when the node has none, and replaces the `awm` user unit from `core/deploy/awm.service`. It restarts the unit when the binary or the unit changed, and reloads the plugins otherwise. Then it waits for every enabled service and checks each thing it placed. `awm/scripts/build.sh` runs `npm ci` first when `package-lock.json` changed since the last install.
 
 - awm needs no sudo and no `/usr/local/bin`. The unit and the workspace `.mcp.json` name `~/.local/bin/awm` by absolute path. The edge runs `PATH="$HOME/.local/bin:$PATH" awm edge-serve`, because a non-interactive ssh shell often lacks `~/.local/bin`.
 - The gateway passes a service only `config.toml` `[env]`.

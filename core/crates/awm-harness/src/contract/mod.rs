@@ -6,7 +6,7 @@ pub mod events;
 pub mod target;
 
 pub use events::{lost_notice, HarnessEvent, Kind, Reporter, Sender};
-pub use target::{target_params, Target};
+pub use target::{find_params, target_params};
 
 use serde_json::{json, Value};
 

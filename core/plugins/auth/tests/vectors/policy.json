@@ -60,8 +60,6 @@
    "/status": "the operator's report, behind the same bearer",
    "/room": "opens a room behind the same bearer"
   },
-  "board_max_body": 1048576,
-  "board_max_file_body": 16777216,
   "vault_manifest": {
    "name": "Trilium",
    "short_name": "Trilium",
@@ -101,9 +99,7 @@
    "slices_upstream": "/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/"
   },
   {
    "path": "",
@@ -128,9 +124,7 @@
    "slices_upstream": "",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": ""
   },
   {
    "path": "/p/trilium/trilium",
@@ -155,9 +149,7 @@
    "slices_upstream": "/p/trilium/trilium",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium"
   },
   {
    "path": "/p/trilium/trilium/",
@@ -182,9 +174,7 @@
    "slices_upstream": "/p/trilium/trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium/"
   },
   {
    "path": "/p/trilium/trilium/assets/index.js",
@@ -209,9 +199,7 @@
    "slices_upstream": "/p/trilium/trilium/assets/index.js",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium/assets/index.js",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium/assets/index.js"
   },
   {
    "path": "/p/trilium/trilium//x",
@@ -236,9 +224,7 @@
    "slices_upstream": "/p/trilium/trilium//x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium//x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium//x"
   },
   {
    "path": "/p/trilium/trilium/../../hub/plugins",
@@ -263,9 +249,7 @@
    "slices_upstream": "/p/trilium/trilium/../../hub/plugins",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium/../../hub/plugins",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium/../../hub/plugins"
   },
   {
    "path": "/p/trilium/triliumXYZ",
@@ -290,9 +274,7 @@
    "slices_upstream": "/p/trilium/triliumXYZ",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/triliumXYZ",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/triliumXYZ"
   },
   {
    "path": "/p/trilium/trilium-admin/x",
@@ -317,9 +299,7 @@
    "slices_upstream": "/p/trilium/trilium-admin/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium-admin/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium-admin/x"
   },
   {
    "path": "/p/trilium/",
@@ -344,9 +324,7 @@
    "slices_upstream": "/p/trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/"
   },
   {
    "path": "/p/trilium",
@@ -371,9 +349,7 @@
    "slices_upstream": "/p/trilium",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium"
   },
   {
    "path": "/P/trilium/trilium/",
@@ -398,9 +374,7 @@
    "slices_upstream": "/P/trilium/trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/P/trilium/trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/P/trilium/trilium/"
   },
   {
    "path": "/p/trilium/trilium\n",
@@ -425,9 +399,7 @@
    "slices_upstream": "/p/trilium/trilium\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium\n"
   },
   {
    "path": "//p/trilium/trilium/",
@@ -452,9 +424,7 @@
    "slices_upstream": "//p/trilium/trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "//p/trilium/trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "//p/trilium/trilium/"
   },
   {
    "path": "/p/trilium/trilium?x=1",
@@ -479,9 +449,7 @@
    "slices_upstream": "/p/trilium/trilium?x=1",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium?x=1",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium?x=1"
   },
   {
    "path": "/p/trilium/trilium/?x=1",
@@ -506,9 +474,7 @@
    "slices_upstream": "/p/trilium/trilium/?x=1",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium/?x=1",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium/?x=1"
   },
   {
    "path": "/p/trilium/trilium%2f",
@@ -533,9 +499,7 @@
    "slices_upstream": "/p/trilium/trilium%2f",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium%2f",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium%2f"
   },
   {
    "path": "/__auth/portal",
@@ -560,9 +524,7 @@
    "slices_upstream": "/__auth/portal",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/portal",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/portal"
   },
   {
    "path": "/__auth/logout",
@@ -587,9 +549,7 @@
    "slices_upstream": "/__auth/logout",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/logout",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/logout"
   },
   {
    "path": "/__auth/whoami",
@@ -614,9 +574,7 @@
    "slices_upstream": "/__auth/whoami",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/whoami",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/whoami"
   },
   {
    "path": "/__auth/portal/",
@@ -641,9 +599,7 @@
    "slices_upstream": "/__auth/portal/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/portal/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/portal/"
   },
   {
    "path": "/__auth/portal\n",
@@ -668,9 +624,7 @@
    "slices_upstream": "/__auth/portal\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/portal\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/portal\n"
   },
   {
    "path": "/__auth/login",
@@ -695,9 +649,7 @@
    "slices_upstream": "/__auth/login",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/login",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/login"
   },
   {
    "path": "/__auth/link",
@@ -722,9 +674,7 @@
    "slices_upstream": "/__auth/link",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/link",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/link"
   },
   {
    "path": "/__auth/",
@@ -749,9 +699,7 @@
    "slices_upstream": "/__auth/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/"
   },
   {
    "path": "/__auth",
@@ -776,9 +724,7 @@
    "slices_upstream": "/__auth",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth"
   },
   {
    "path": "/__auth/whoami?x",
@@ -803,9 +749,7 @@
    "slices_upstream": "/__auth/whoami?x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__auth/whoami?x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__auth/whoami?x"
   },
   {
    "path": "/__AUTH/whoami",
@@ -830,9 +774,7 @@
    "slices_upstream": "/__AUTH/whoami",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__AUTH/whoami",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__AUTH/whoami"
   },
   {
    "path": "/invoke",
@@ -857,9 +799,7 @@
    "slices_upstream": "/invoke",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/invoke",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke"
   },
   {
    "path": "/invoke/",
@@ -884,9 +824,7 @@
    "slices_upstream": "/invoke/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/invoke/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke/"
   },
   {
    "path": "/invoke\n",
@@ -911,9 +849,7 @@
    "slices_upstream": "/invoke\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/invoke\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke\n"
   },
   {
    "path": "/INVOKE",
@@ -938,9 +874,7 @@
    "slices_upstream": "/INVOKE",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/INVOKE",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/INVOKE"
   },
   {
    "path": "//invoke",
@@ -965,9 +899,7 @@
    "slices_upstream": "//invoke",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "//invoke",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "//invoke"
   },
   {
    "path": "/invoke?x=1",
@@ -992,9 +924,7 @@
    "slices_upstream": "/invoke?x=1",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/invoke?x=1",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke?x=1"
   },
   {
    "path": "/invoke/x",
@@ -1019,9 +949,7 @@
    "slices_upstream": "/invoke/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/invoke/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke/x"
   },
   {
    "path": "/hub/services",
@@ -1046,9 +974,7 @@
    "slices_upstream": "/hub/services",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/hub/services",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/hub/services"
   },
   {
    "path": "/hub/plugins",
@@ -1073,9 +999,7 @@
    "slices_upstream": "/hub/plugins",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/hub/plugins",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/hub/plugins"
   },
   {
    "path": "/tools",
@@ -1100,9 +1024,7 @@
    "slices_upstream": "/tools",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/tools",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/tools"
   },
   {
    "path": "/svc/scopes/fn/scope_search",
@@ -1127,9 +1049,7 @@
    "slices_upstream": "/svc/scopes/fn/scope_search",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/scopes/fn/scope_search",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/scopes/fn/scope_search"
   },
   {
    "path": "/svc/auth/fn/password",
@@ -1154,9 +1074,7 @@
    "slices_upstream": "/svc/auth/fn/password",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/auth/fn/password",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/auth/fn/password"
   },
   {
    "path": "/svc/auth/fn/verify",
@@ -1181,9 +1099,7 @@
    "slices_upstream": "/svc/auth/fn/verify",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/auth/fn/verify",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/auth/fn/verify"
   },
   {
    "path": "/ca.crt",
@@ -1208,9 +1124,7 @@
    "slices_upstream": "/ca.crt",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ca.crt",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ca.crt"
   },
   {
    "path": "/ca.pem",
@@ -1235,9 +1149,7 @@
    "slices_upstream": "/ca.pem",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ca.pem",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ca.pem"
   },
   {
    "path": "/ui/agents/",
@@ -1262,9 +1174,7 @@
    "slices_upstream": "/ui/agents/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ui/agents/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ui/agents/"
   },
   {
    "path": "/p/dashboard/dashboard/",
@@ -1289,9 +1199,7 @@
    "slices_upstream": "/p/dashboard/dashboard/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/dashboard/dashboard/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/dashboard/dashboard/"
   },
   {
    "path": "/p/httpsfront/login/",
@@ -1316,9 +1224,7 @@
    "slices_upstream": "/p/httpsfront/login/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/httpsfront/login/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/httpsfront/login/"
   },
   {
    "path": "/files/",
@@ -1343,9 +1249,7 @@
    "slices_upstream": "/files/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/files/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/files/"
   },
   {
    "path": "/s/fileviewer/",
@@ -1370,9 +1274,7 @@
    "slices_upstream": "/s/fileviewer/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/"
   },
   {
    "path": "/s/fileviewer/projects/awm/dev/x",
@@ -1397,9 +1299,7 @@
    "slices_upstream": "/s/fileviewer/projects/awm/dev/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/awm/dev/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/awm/dev/x"
   },
   {
    "path": "/s/claude-science/mcp",
@@ -1424,9 +1324,7 @@
    "slices_upstream": "/s/claude-science/mcp",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/claude-science/mcp",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/claude-science/mcp"
   },
   {
    "path": "/__landing/tags",
@@ -1451,9 +1349,7 @@
    "slices_upstream": "/__landing/tags",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__landing/tags",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__landing/tags"
   },
   {
    "path": "/__landing/filter",
@@ -1478,9 +1374,7 @@
    "slices_upstream": "/__landing/filter",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__landing/filter",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__landing/filter"
   },
   {
    "path": "/__landing/name",
@@ -1505,9 +1399,7 @@
    "slices_upstream": "/__landing/name",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/__landing/name",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/__landing/name"
   },
   {
    "path": "/ui/notes/",
@@ -1532,9 +1424,7 @@
    "slices_upstream": "/ui/notes/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ui/notes/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ui/notes/"
   },
   {
    "path": "/svc/notes/fn/list",
@@ -1559,9 +1449,7 @@
    "slices_upstream": "/svc/notes/fn/list",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/notes/fn/list",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/notes/fn/list"
   },
   {
    "path": "/svc/notes/emit/note:tony:1",
@@ -1586,9 +1474,7 @@
    "slices_upstream": "/svc/notes/emit/note:tony:1",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/notes/emit/note:tony:1",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/notes/emit/note:tony:1"
   },
   {
    "path": "/ui/drawio/",
@@ -1613,9 +1499,7 @@
    "slices_upstream": "/ui/drawio/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ui/drawio/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ui/drawio/"
   },
   {
    "path": "/drawio-app/index.html",
@@ -1640,9 +1524,7 @@
    "slices_upstream": "/drawio-app/index.html",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/drawio-app/index.html",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/drawio-app/index.html"
   },
   {
    "path": "/svc/drawio/fn/save",
@@ -1667,9 +1549,7 @@
    "slices_upstream": "/svc/drawio/fn/save",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/drawio/fn/save",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/drawio/fn/save"
   },
   {
    "path": "/svc/drawio/emit/drawio:tony:x.drawio",
@@ -1694,9 +1574,7 @@
    "slices_upstream": "/svc/drawio/emit/drawio:tony:x.drawio",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/drawio/emit/drawio:tony:x.drawio",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/drawio/emit/drawio:tony:x.drawio"
   },
   {
    "path": "/etapi/app-info",
@@ -1721,9 +1599,7 @@
    "slices_upstream": "/etapi/app-info",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/etapi/app-info",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/etapi/app-info"
   },
   {
    "path": "/custom/x",
@@ -1748,9 +1624,7 @@
    "slices_upstream": "/custom/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/custom/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/custom/x"
   },
   {
    "path": "/mcp",
@@ -1775,9 +1649,7 @@
    "slices_upstream": "/mcp",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/mcp",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/mcp"
   },
   {
    "path": "/share/abc",
@@ -1802,9 +1674,7 @@
    "slices_upstream": "/share/abc",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/share/abc",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/share/abc"
   },
   {
    "path": "/login",
@@ -1829,9 +1699,7 @@
    "slices_upstream": "/login",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/login",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/login"
   },
   {
    "path": "/setup",
@@ -1856,9 +1724,7 @@
    "slices_upstream": "/setup",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/setup",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/setup"
   },
   {
    "path": "/set-password",
@@ -1883,9 +1749,7 @@
    "slices_upstream": "/set-password",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/set-password",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/set-password"
   },
   {
    "path": "/robots.txt",
@@ -1910,9 +1774,7 @@
    "slices_upstream": "/robots.txt",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/robots.txt",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/robots.txt"
   },
   {
    "path": "/ui/trilium",
@@ -1937,9 +1799,7 @@
    "slices_upstream": "/ui/trilium",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ui/trilium",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ui/trilium"
   },
   {
    "path": "/ui/trilium/",
@@ -1964,9 +1824,7 @@
    "slices_upstream": "/ui/trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ui/trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ui/trilium/"
   },
   {
    "path": "/svc/trilium/fn/status",
@@ -1991,9 +1849,7 @@
    "slices_upstream": "/svc/trilium/fn/status",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/trilium/fn/status",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/trilium/fn/status"
   },
   {
    "path": "/svc/trilium/fn/restore",
@@ -2018,9 +1874,7 @@
    "slices_upstream": "/svc/trilium/fn/restore",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/svc/trilium/fn/restore",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/svc/trilium/fn/restore"
   },
   {
    "path": "/api/tree",
@@ -2045,9 +1899,7 @@
    "slices_upstream": "/api/tree",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/api/tree",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/api/tree"
   },
   {
    "path": "/src/index.js",
@@ -2072,9 +1924,7 @@
    "slices_upstream": "/src/index.js",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/src/index.js",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/src/index.js"
   },
   {
    "path": "/assets/x.css",
@@ -2099,9 +1949,7 @@
    "slices_upstream": "/assets/x.css",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/assets/x.css",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/assets/x.css"
   },
   {
    "path": "/favicon.ico",
@@ -2126,9 +1974,7 @@
    "slices_upstream": "/favicon.ico",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/favicon.ico",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/favicon.ico"
   },
   {
    "path": "/bootstrap",
@@ -2153,9 +1999,7 @@
    "slices_upstream": "/bootstrap",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/bootstrap",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bootstrap"
   },
   {
    "path": "/icon.png",
@@ -2180,9 +2024,7 @@
    "slices_upstream": "/icon.png",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/icon.png",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/icon.png"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony",
@@ -2207,9 +2049,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony/",
@@ -2234,9 +2074,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony/"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony/notes/a.md",
@@ -2261,9 +2099,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony/notes/a.md",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony/notes/a.md",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony/notes/a.md"
   },
   {
    "path": "/s/fileviewer/projects/userdata/steven/notes/a.md",
@@ -2288,9 +2124,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/steven/notes/a.md",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/steven/notes/a.md",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/steven/notes/a.md"
   },
   {
    "path": "/s/fileviewer/projects/userdata/",
@@ -2315,9 +2149,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/"
   },
   {
    "path": "/s/fileviewer/projects/userdata",
@@ -2342,9 +2174,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata"
   },
   {
    "path": "/s/fileviewer/projects/userdata//x",
@@ -2369,9 +2199,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata//x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata//x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata//x"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony\n",
@@ -2396,9 +2224,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony\n"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony/x\n",
@@ -2423,9 +2249,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony/x\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony/x\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony/x\n"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony/x\ny",
@@ -2450,9 +2274,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony/x\ny",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony/x\ny",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony/x\ny"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony\n/x",
@@ -2477,9 +2299,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony\n/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony\n/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony\n/x"
   },
   {
    "path": "/s/fileviewer/projects/userdata/peer:mira/x",
@@ -2504,9 +2324,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/peer:mira/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/peer:mira/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/peer:mira/x"
   },
   {
    "path": "/s/fileviewer/projects/userdata/operator",
@@ -2531,9 +2349,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/operator",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/operator",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/operator"
   },
   {
    "path": "/s/fileviewer/projects/userdata/..",
@@ -2558,9 +2374,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/..",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/..",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/.."
   },
   {
    "path": "/s/fileviewer/projects/userdata/../awm/x",
@@ -2585,9 +2399,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/../awm/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/../awm/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/../awm/x"
   },
   {
    "path": "/s/fileviewer/projects/userdata/Tony/x",
@@ -2612,9 +2424,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/Tony/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/Tony/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/Tony/x"
   },
   {
    "path": "/s/fileviewer/projects/userdata/töny/x",
@@ -2639,9 +2449,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/töny/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/töny/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/töny/x"
   },
   {
    "path": "/files/projects/userdata/tony/notes/a.md",
@@ -2666,9 +2474,7 @@
    "slices_upstream": "/files/projects/userdata/tony/notes/a.md",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/files/projects/userdata/tony/notes/a.md",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/files/projects/userdata/tony/notes/a.md"
   },
   {
    "path": "/s/fileviewer/projects/userdata/tony/../steven",
@@ -2693,9 +2499,7 @@
    "slices_upstream": "/s/fileviewer/projects/userdata/tony/../steven",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer/projects/userdata/tony/../steven",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer/projects/userdata/tony/../steven"
   },
   {
    "path": "/s/fileviewer//projects/userdata/tony",
@@ -2720,9 +2524,7 @@
    "slices_upstream": "/s/fileviewer//projects/userdata/tony",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/s/fileviewer//projects/userdata/tony",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/s/fileviewer//projects/userdata/tony"
   },
   {
    "path": "/x/s/fileviewer/projects/userdata/tony",
@@ -2747,9 +2549,7 @@
    "slices_upstream": "/x/s/fileviewer/projects/userdata/tony",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/x/s/fileviewer/projects/userdata/tony",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/x/s/fileviewer/projects/userdata/tony"
   },
   {
    "path": "/trilium",
@@ -2774,9 +2574,7 @@
    "slices_upstream": "/trilium",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium"
   },
   {
    "path": "/trilium/",
@@ -2801,9 +2599,7 @@
    "slices_upstream": "/trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/"
   },
   {
    "path": "/trilium/bootstrap",
@@ -2828,9 +2624,7 @@
    "slices_upstream": "/trilium/bootstrap",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/bootstrap",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/bootstrap"
   },
   {
    "path": "/trilium/favicon.ico",
@@ -2855,9 +2649,7 @@
    "slices_upstream": "/trilium/favicon.ico",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/favicon.ico",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/favicon.ico"
   },
   {
    "path": "/trilium/icon.png",
@@ -2882,9 +2674,7 @@
    "slices_upstream": "/trilium/icon.png",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/icon.png",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/icon.png"
   },
   {
    "path": "/trilium/api/tree",
@@ -2909,9 +2699,7 @@
    "slices_upstream": "/trilium/api/tree",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/api/tree",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/api/tree"
   },
   {
    "path": "/trilium/api/notes/abc123",
@@ -2936,9 +2724,7 @@
    "slices_upstream": "/trilium/api/notes/abc123",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/api/notes/abc123",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/api/notes/abc123"
   },
   {
    "path": "/trilium/assets/v0.105.0/src/index.js",
@@ -2963,9 +2749,7 @@
    "slices_upstream": "/trilium/assets/v0.105.0/src/index.js",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/assets/v0.105.0/src/index.js",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/assets/v0.105.0/src/index.js"
   },
   {
    "path": "/trilium/src/index-Dso57yoQ.js",
@@ -2990,9 +2774,7 @@
    "slices_upstream": "/trilium/src/index-Dso57yoQ.js",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/src/index-Dso57yoQ.js",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/src/index-Dso57yoQ.js"
   },
   {
    "path": "/trilium/node_modules/@excalidraw/excalidraw/dist/prod/x.js",
@@ -3017,9 +2799,7 @@
    "slices_upstream": "/trilium/node_modules/@excalidraw/excalidraw/dist/prod/x.js",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/node_modules/@excalidraw/excalidraw/dist/prod/x.js",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/node_modules/@excalidraw/excalidraw/dist/prod/x.js"
   },
   {
    "path": "/trilium/pdfjs/viewer.html",
@@ -3044,9 +2824,7 @@
    "slices_upstream": "/trilium/pdfjs/viewer.html",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/pdfjs/viewer.html",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/pdfjs/viewer.html"
   },
   {
    "path": "/trilium/manifest.webmanifest",
@@ -3071,9 +2849,7 @@
    "slices_upstream": "/trilium/manifest.webmanifest",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/manifest.webmanifest",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/manifest.webmanifest"
   },
   {
    "path": "/trilium/logout",
@@ -3098,9 +2874,7 @@
    "slices_upstream": "/trilium/logout",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/logout",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/logout"
   },
   {
    "path": "/trilium/logout/x",
@@ -3125,9 +2899,7 @@
    "slices_upstream": "/trilium/logout/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/logout/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/logout/x"
   },
   {
    "path": "/trilium/logoutx",
@@ -3152,9 +2924,7 @@
    "slices_upstream": "/trilium/logoutx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/logoutx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/logoutx"
   },
   {
    "path": "/trilium/login",
@@ -3179,9 +2949,7 @@
    "slices_upstream": "/trilium/login",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/login",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/login"
   },
   {
    "path": "/trilium/login/",
@@ -3206,9 +2974,7 @@
    "slices_upstream": "/trilium/login/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/login/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/login/"
   },
   {
    "path": "/trilium/loginx",
@@ -3233,9 +2999,7 @@
    "slices_upstream": "/trilium/loginx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/loginx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/loginx"
   },
   {
    "path": "/trilium/mcp",
@@ -3260,9 +3024,7 @@
    "slices_upstream": "/trilium/mcp",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/mcp",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/mcp"
   },
   {
    "path": "/trilium/mcp/x",
@@ -3287,9 +3049,7 @@
    "slices_upstream": "/trilium/mcp/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/mcp/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/mcp/x"
   },
   {
    "path": "/trilium/mcpx",
@@ -3314,9 +3074,7 @@
    "slices_upstream": "/trilium/mcpx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/mcpx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/mcpx"
   },
   {
    "path": "/trilium/etapi/",
@@ -3341,9 +3099,7 @@
    "slices_upstream": "/trilium/etapi/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/etapi/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/etapi/"
   },
   {
    "path": "/trilium/etapi/app-info",
@@ -3368,9 +3124,7 @@
    "slices_upstream": "/trilium/etapi/app-info",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/etapi/app-info",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/etapi/app-info"
   },
   {
    "path": "/trilium/etapi",
@@ -3395,9 +3149,7 @@
    "slices_upstream": "/trilium/etapi",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/etapi",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/etapi"
   },
   {
    "path": "/trilium/etapix",
@@ -3422,9 +3174,7 @@
    "slices_upstream": "/trilium/etapix",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/etapix",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/etapix"
   },
   {
    "path": "/trilium/custom/x",
@@ -3449,9 +3199,7 @@
    "slices_upstream": "/trilium/custom/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/custom/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/custom/x"
   },
   {
    "path": "/trilium/custom",
@@ -3476,9 +3224,7 @@
    "slices_upstream": "/trilium/custom",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/custom",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/custom"
   },
   {
    "path": "/trilium/share/abc",
@@ -3503,9 +3249,7 @@
    "slices_upstream": "/trilium/share/abc",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/share/abc",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/share/abc"
   },
   {
    "path": "/trilium/share",
@@ -3530,9 +3274,7 @@
    "slices_upstream": "/trilium/share",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/share",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/share"
   },
   {
    "path": "/trilium/setup",
@@ -3557,9 +3299,7 @@
    "slices_upstream": "/trilium/setup",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/setup",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/setup"
   },
   {
    "path": "/trilium/set-password",
@@ -3584,9 +3324,7 @@
    "slices_upstream": "/trilium/set-password",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/set-password",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/set-password"
   },
   {
    "path": "/trilium/set-password/x",
@@ -3611,9 +3349,7 @@
    "slices_upstream": "/trilium/set-password/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/set-password/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/set-password/x"
   },
   {
    "path": "/trilium//etapi/x",
@@ -3638,9 +3374,7 @@
    "slices_upstream": "/trilium//etapi/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium//etapi/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium//etapi/x"
   },
   {
    "path": "/trilium/./etapi/x",
@@ -3665,9 +3399,7 @@
    "slices_upstream": "/trilium/./etapi/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/./etapi/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/./etapi/x"
   },
   {
    "path": "/trilium/../hub/plugins",
@@ -3692,9 +3424,7 @@
    "slices_upstream": "/trilium/../hub/plugins",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/../hub/plugins",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/../hub/plugins"
   },
   {
    "path": "/trilium\n",
@@ -3719,9 +3449,7 @@
    "slices_upstream": "/trilium\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium\n"
   },
   {
    "path": "/trilium/\n",
@@ -3746,9 +3474,7 @@
    "slices_upstream": "/trilium/\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/\n"
   },
   {
    "path": "/Trilium/",
@@ -3773,9 +3499,7 @@
    "slices_upstream": "/Trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/Trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/Trilium/"
   },
   {
    "path": "/triliumx",
@@ -3800,9 +3524,7 @@
    "slices_upstream": "/triliumx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/triliumx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/triliumx"
   },
   {
    "path": "/trilium-admin",
@@ -3827,9 +3549,7 @@
    "slices_upstream": "/trilium-admin",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium-admin",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium-admin"
   },
   {
    "path": "//trilium/",
@@ -3854,9 +3574,7 @@
    "slices_upstream": "//trilium/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "//trilium/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "//trilium/"
   },
   {
    "path": "/trilium/robots.txt",
@@ -3881,9 +3599,7 @@
    "slices_upstream": "/trilium/robots.txt",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/robots.txt",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/robots.txt"
   },
   {
    "path": "/trilium/%2e%2e/x",
@@ -3908,9 +3624,7 @@
    "slices_upstream": "/trilium/%2e%2e/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/%2e%2e/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/%2e%2e/x"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678",
@@ -3935,9 +3649,7 @@
    "slices_upstream": "/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/",
@@ -3962,9 +3674,7 @@
    "slices_upstream": "/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/api/tree",
@@ -3989,9 +3699,7 @@
    "slices_upstream": "/api/tree",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/api/tree",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/api/tree"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/icon.png",
@@ -4016,9 +3724,7 @@
    "slices_upstream": "/icon.png",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/icon.png",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/icon.png"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/etapi/app-info",
@@ -4043,9 +3749,7 @@
    "slices_upstream": "/etapi/app-info",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/etapi/app-info",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/etapi/app-info"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/etapi",
@@ -4070,9 +3774,7 @@
    "slices_upstream": "/etapi",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/etapi",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/etapi"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/manifest.webmanifest",
@@ -4097,9 +3799,7 @@
    "slices_upstream": "/manifest.webmanifest",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/manifest.webmanifest",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/manifest.webmanifest"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/robots.txt",
@@ -4124,9 +3824,7 @@
    "slices_upstream": "/robots.txt",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/robots.txt",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/robots.txt"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/robots.txt/x",
@@ -4151,9 +3849,7 @@
    "slices_upstream": "/robots.txt/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/robots.txt/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/robots.txt/x"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/login",
@@ -4178,9 +3874,7 @@
    "slices_upstream": "/login",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/login",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/login"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/logout",
@@ -4205,9 +3899,7 @@
    "slices_upstream": "/logout",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/logout",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/logout"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/custom/x",
@@ -4232,9 +3924,7 @@
    "slices_upstream": "/custom/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/custom/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/custom/x"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678/share/x",
@@ -4259,9 +3949,7 @@
    "slices_upstream": "/share/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/share/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678/share/x"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678\n",
@@ -4286,9 +3974,7 @@
    "slices_upstream": "/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678\n"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678\n/api",
@@ -4313,9 +3999,7 @@
    "slices_upstream": "/api",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678\n/api",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678\n/api"
   },
   {
    "path": "/slice/Ab3-_9xYzQw012345678//api",
@@ -4340,9 +4024,7 @@
    "slices_upstream": "//api",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Ab3-_9xYzQw012345678//api",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Ab3-_9xYzQw012345678//api"
   },
   {
    "path": "/slice/",
@@ -4367,9 +4049,7 @@
    "slices_upstream": "/slice/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/"
   },
   {
    "path": "/slice",
@@ -4394,9 +4074,7 @@
    "slices_upstream": "/slice",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice"
   },
   {
    "path": "/slice/short",
@@ -4421,9 +4099,7 @@
    "slices_upstream": "/slice/short",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/short",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/short"
   },
   {
    "path": "/slice/has.a.dot0123456789",
@@ -4448,9 +4124,7 @@
    "slices_upstream": "/slice/has.a.dot0123456789",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/has.a.dot0123456789",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/has.a.dot0123456789"
   },
   {
    "path": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -4475,9 +4149,7 @@
    "slices_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   },
   {
    "path": "/slice/xxxxxxxxxxxxxxxx",
@@ -4502,9 +4174,7 @@
    "slices_upstream": "/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/xxxxxxxxxxxxxxxx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/xxxxxxxxxxxxxxxx"
   },
   {
    "path": "/slice/xxxxxxxxxxxxxxx",
@@ -4529,9 +4199,7 @@
    "slices_upstream": "/slice/xxxxxxxxxxxxxxx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/xxxxxxxxxxxxxxx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/xxxxxxxxxxxxxxx"
   },
   {
    "path": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -4556,9 +4224,7 @@
    "slices_upstream": "/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   },
   {
    "path": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -4583,9 +4249,7 @@
    "slices_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   },
   {
    "path": "/slices/Ab3-_9xYzQw012345678",
@@ -4610,9 +4274,7 @@
    "slices_upstream": "/slices/Ab3-_9xYzQw012345678",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slices/Ab3-_9xYzQw012345678",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slices/Ab3-_9xYzQw012345678"
   },
   {
    "path": "/Slice/Ab3-_9xYzQw012345678",
@@ -4637,9 +4299,7 @@
    "slices_upstream": "/Slice/Ab3-_9xYzQw012345678",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/Slice/Ab3-_9xYzQw012345678",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/Slice/Ab3-_9xYzQw012345678"
   },
   {
    "path": "/slice/Äb3-_9xYzQw012345678",
@@ -4664,9 +4324,7 @@
    "slices_upstream": "/slice/Äb3-_9xYzQw012345678",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/slice/Äb3-_9xYzQw012345678",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/slice/Äb3-_9xYzQw012345678"
   },
   {
    "path": "/tether",
@@ -4691,9 +4349,7 @@
    "slices_upstream": "/tether",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/"
   },
   {
    "path": "/tether/win",
@@ -4718,9 +4374,7 @@
    "slices_upstream": "/tether/win",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/win",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/win"
   },
   {
    "path": "/tether/bin/tether",
@@ -4745,9 +4399,7 @@
    "slices_upstream": "/tether/bin/tether",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/bin/tether",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/tether"
   },
   {
    "path": "/tether/bin/tether-windows-x86_64.exe",
@@ -4772,9 +4424,7 @@
    "slices_upstream": "/tether/bin/tether-windows-x86_64.exe",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/bin/tether-windows-x86_64.exe",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/tether-windows-x86_64.exe"
   },
   {
    "path": "/tether/bin/tether-macos-arm64",
@@ -4799,9 +4449,7 @@
    "slices_upstream": "/tether/bin/tether-macos-arm64",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/bin/tether-macos-arm64",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/tether-macos-arm64"
   },
   {
    "path": "/tether/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -4826,9 +4474,7 @@
    "slices_upstream": "/tether/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   {
    "path": "/tether/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -4853,9 +4499,7 @@
    "slices_upstream": "/tether/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   {
    "path": "/tether/bin/.x",
@@ -4880,9 +4524,7 @@
    "slices_upstream": "/tether/bin/.x",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/bin/.x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/.x"
   },
   {
    "path": "/tether/claim/1",
@@ -4907,9 +4549,7 @@
    "slices_upstream": "/tether/claim/1",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/claim/1",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/1"
   },
   {
    "path": "/tether/claim/999",
@@ -4934,9 +4574,7 @@
    "slices_upstream": "/tether/claim/999",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/claim/999",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/999"
   },
   {
    "path": "/tether/join/7/0123456789abcdef0123456789abcdef",
@@ -4961,9 +4599,7 @@
    "slices_upstream": "/tether/join/7/0123456789abcdef0123456789abcdef",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/join/7/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/join/7/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/release/7/0123456789abcdef0123456789abcdef",
@@ -4988,9 +4624,7 @@
    "slices_upstream": "/tether/release/7/0123456789abcdef0123456789abcdef",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/release/7/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/release/7/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/hold/7/0123456789abcdef0123456789abcdef",
@@ -5015,9 +4649,7 @@
    "slices_upstream": "/tether/hold/7/0123456789abcdef0123456789abcdef",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/hold/7/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/hold/7/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/poll/7/0123456789abcdef0123456789abcdef",
@@ -5042,9 +4674,7 @@
    "slices_upstream": "/tether/poll/7/0123456789abcdef0123456789abcdef",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/poll/7/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/poll/7/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/seat/0123456789abcdef0123456789abcdef/recv",
@@ -5069,9 +4699,7 @@
    "slices_upstream": "/tether/seat/0123456789abcdef0123456789abcdef/recv",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/recv",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/recv"
   },
   {
    "path": "/tether/seat/0123456789abcdef0123456789abcdef/send",
@@ -5096,9 +4724,7 @@
    "slices_upstream": "/tether/seat/0123456789abcdef0123456789abcdef/send",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/send",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/send"
   },
   {
    "path": "/tether/seat/0123456789abcdef0123456789abcdef/close",
@@ -5123,9 +4749,7 @@
    "slices_upstream": "/tether/seat/0123456789abcdef0123456789abcdef/close",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/close",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/close"
   },
   {
    "path": "/room/acre-anchor-kettle",
@@ -5150,9 +4774,7 @@
    "slices_upstream": "/room/acre-anchor-kettle",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle"
   },
   {
    "path": "/room/acre-anchor-kettle/send",
@@ -5177,9 +4799,7 @@
    "slices_upstream": "/room/acre-anchor-kettle/send",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle/send",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle/send"
   },
   {
    "path": "/room/acre-anchor-kettle/recv",
@@ -5204,9 +4824,7 @@
    "slices_upstream": "/room/acre-anchor-kettle/recv",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle/recv",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle/recv"
   },
   {
    "path": "/room/acre-anchor-kettle/ws",
@@ -5231,9 +4849,7 @@
    "slices_upstream": "/room/acre-anchor-kettle/ws",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle/ws",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle/ws"
   },
   {
    "path": "/room/acre-anchor-kettle/leave",
@@ -5258,9 +4874,7 @@
    "slices_upstream": "/room/acre-anchor-kettle/leave",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle/leave",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle/leave"
   },
   {
    "path": "/room/acre-anchor-kettle-abbey-otter-lamp",
@@ -5285,9 +4899,7 @@
    "slices_upstream": "/room/acre-anchor-kettle-abbey-otter-lamp",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle-abbey-otter-lamp",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle-abbey-otter-lamp"
   },
   {
    "path": "/room/acre-anchor-kettle-abbey-otter-lamp/recv",
@@ -5312,9 +4924,7 @@
    "slices_upstream": "/room/acre-anchor-kettle-abbey-otter-lamp/recv",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle-abbey-otter-lamp/recv",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle-abbey-otter-lamp/recv"
   },
   {
    "path": "/tether\n",
@@ -5339,9 +4949,7 @@
    "slices_upstream": "/tether\n",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/tether\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/tether\n"
   },
   {
    "path": "/tether/win\n",
@@ -5366,9 +4974,7 @@
    "slices_upstream": "/tether/win\n",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/win\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/win\n"
   },
   {
    "path": "/tether/claim/7\n",
@@ -5393,9 +4999,7 @@
    "slices_upstream": "/tether/claim/7\n",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/claim/7\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/7\n"
   },
   {
    "path": "/room/acre-anchor-kettle\n",
@@ -5420,9 +5024,7 @@
    "slices_upstream": "/room/acre-anchor-kettle\n",
    "tether_owns": true,
    "tether_refused": false,
-   "tether_upstream": "/room/acre-anchor-kettle\n",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle\n"
   },
   {
    "path": "/tether/health",
@@ -5447,9 +5049,7 @@
    "slices_upstream": "/tether/health",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/health",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/health"
   },
   {
    "path": "/tether/",
@@ -5474,9 +5074,7 @@
    "slices_upstream": "/tether/",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/"
   },
   {
    "path": "/tether/claim/0",
@@ -5501,9 +5099,7 @@
    "slices_upstream": "/tether/claim/0",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/claim/0",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/0"
   },
   {
    "path": "/tether/claim/07",
@@ -5528,9 +5124,7 @@
    "slices_upstream": "/tether/claim/07",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/claim/07",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/07"
   },
   {
    "path": "/tether/claim/1000",
@@ -5555,9 +5149,7 @@
    "slices_upstream": "/tether/claim/1000",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/claim/1000",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/1000"
   },
   {
    "path": "/tether/claim/7/extra",
@@ -5582,9 +5174,7 @@
    "slices_upstream": "/tether/claim/7/extra",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/claim/7/extra",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim/7/extra"
   },
   {
    "path": "/tether/claim",
@@ -5609,9 +5199,7 @@
    "slices_upstream": "/tether/claim",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/claim",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/claim"
   },
   {
    "path": "/tether/join/7/0123456789abcdef0123456789abcde",
@@ -5636,9 +5224,7 @@
    "slices_upstream": "/tether/join/7/0123456789abcdef0123456789abcde",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/join/7/0123456789abcdef0123456789abcde",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/join/7/0123456789abcdef0123456789abcde"
   },
   {
    "path": "/tether/join/7/0123456789ABCDEF0123456789ABCDEF",
@@ -5663,9 +5249,7 @@
    "slices_upstream": "/tether/join/7/0123456789ABCDEF0123456789ABCDEF",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/join/7/0123456789ABCDEF0123456789ABCDEF",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/join/7/0123456789ABCDEF0123456789ABCDEF"
   },
   {
    "path": "/tether/join/7",
@@ -5690,9 +5274,7 @@
    "slices_upstream": "/tether/join/7",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/join/7",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/join/7"
   },
   {
    "path": "/tether/release/7/0123456789abcdef0123456789abcde",
@@ -5717,9 +5299,7 @@
    "slices_upstream": "/tether/release/7/0123456789abcdef0123456789abcde",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/release/7/0123456789abcdef0123456789abcde",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/release/7/0123456789abcdef0123456789abcde"
   },
   {
    "path": "/tether/release/7",
@@ -5744,9 +5324,7 @@
    "slices_upstream": "/tether/release/7",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/release/7",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/release/7"
   },
   {
    "path": "/tether/release/0/0123456789abcdef0123456789abcdef",
@@ -5771,9 +5349,7 @@
    "slices_upstream": "/tether/release/0/0123456789abcdef0123456789abcdef",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/release/0/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/release/0/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/hold/7",
@@ -5798,9 +5374,7 @@
    "slices_upstream": "/tether/hold/7",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/hold/7",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/hold/7"
   },
   {
    "path": "/tether/hold/7/0123456789abcdef0123456789abcdef/extra",
@@ -5825,9 +5399,7 @@
    "slices_upstream": "/tether/hold/7/0123456789abcdef0123456789abcdef/extra",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/hold/7/0123456789abcdef0123456789abcdef/extra",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/hold/7/0123456789abcdef0123456789abcdef/extra"
   },
   {
    "path": "/tether/poll/0/0123456789abcdef0123456789abcdef",
@@ -5852,9 +5424,7 @@
    "slices_upstream": "/tether/poll/0/0123456789abcdef0123456789abcdef",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/poll/0/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/poll/0/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/poll/7/0123456789abcdef0123456789abcde",
@@ -5879,9 +5449,7 @@
    "slices_upstream": "/tether/poll/7/0123456789abcdef0123456789abcde",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/poll/7/0123456789abcdef0123456789abcde",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/poll/7/0123456789abcdef0123456789abcde"
   },
   {
    "path": "/tether/seat/0123456789abcdef0123456789abcdef",
@@ -5906,9 +5474,7 @@
    "slices_upstream": "/tether/seat/0123456789abcdef0123456789abcdef",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef"
   },
   {
    "path": "/tether/seat/0123456789abcdef0123456789abcdef/join",
@@ -5933,9 +5499,7 @@
    "slices_upstream": "/tether/seat/0123456789abcdef0123456789abcdef/join",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/join",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/0123456789abcdef0123456789abcdef/join"
   },
   {
    "path": "/tether/seat/0123456789ABCDEF0123456789ABCDEF/recv",
@@ -5960,9 +5524,7 @@
    "slices_upstream": "/tether/seat/0123456789ABCDEF0123456789ABCDEF/recv",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/seat/0123456789ABCDEF0123456789ABCDEF/recv",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/0123456789ABCDEF0123456789ABCDEF/recv"
   },
   {
    "path": "/tether/seat/7/recv",
@@ -5987,9 +5549,7 @@
    "slices_upstream": "/tether/seat/7/recv",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/seat/7/recv",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/seat/7/recv"
   },
   {
    "path": "/tether/bin/../../etc/passwd",
@@ -6014,9 +5574,7 @@
    "slices_upstream": "/tether/bin/../../etc/passwd",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/bin/../../etc/passwd",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/../../etc/passwd"
   },
   {
    "path": "/tether/bin/",
@@ -6041,9 +5599,7 @@
    "slices_upstream": "/tether/bin/",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/bin/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/bin/"
   },
   {
    "path": "/tether/win/",
@@ -6068,9 +5624,7 @@
    "slices_upstream": "/tether/win/",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/win/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/win/"
   },
   {
    "path": "/tether/windows",
@@ -6095,9 +5649,7 @@
    "slices_upstream": "/tether/windows",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/windows",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/windows"
   },
   {
    "path": "/tether/invoke",
@@ -6122,9 +5674,7 @@
    "slices_upstream": "/tether/invoke",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/invoke",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke"
   },
   {
    "path": "/tether/issue",
@@ -6149,9 +5699,7 @@
    "slices_upstream": "/tether/issue",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/issue",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/issue"
   },
   {
    "path": "/tether/status",
@@ -6176,9 +5724,7 @@
    "slices_upstream": "/tether/status",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/status",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/status"
   },
   {
    "path": "/room",
@@ -6203,9 +5749,7 @@
    "slices_upstream": "/room",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room"
   },
   {
    "path": "/room/",
@@ -6230,9 +5774,7 @@
    "slices_upstream": "/room/",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/"
   },
   {
    "path": "/room/acre-anchor",
@@ -6257,9 +5799,7 @@
    "slices_upstream": "/room/acre-anchor",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre-anchor",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor"
   },
   {
    "path": "/room/acre-anchor-kettle-acre",
@@ -6284,9 +5824,7 @@
    "slices_upstream": "/room/acre-anchor-kettle-acre",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre-anchor-kettle-acre",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle-acre"
   },
   {
    "path": "/room/acre-anchor-kettle-acre-anchor",
@@ -6311,9 +5849,7 @@
    "slices_upstream": "/room/acre-anchor-kettle-acre-anchor",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre-anchor-kettle-acre-anchor",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle-acre-anchor"
   },
   {
    "path": "/room/acre-anchor-kettle-acre-anchor-kettle-acre",
@@ -6338,9 +5874,7 @@
    "slices_upstream": "/room/acre-anchor-kettle-acre-anchor-kettle-acre",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre-anchor-kettle-acre-anchor-kettle-acre",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle-acre-anchor-kettle-acre"
   },
   {
    "path": "/room/Acre-anchor-kettle",
@@ -6365,9 +5899,7 @@
    "slices_upstream": "/room/Acre-anchor-kettle",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/Acre-anchor-kettle",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/Acre-anchor-kettle"
   },
   {
    "path": "/room/acre_anchor_kettle",
@@ -6392,9 +5924,7 @@
    "slices_upstream": "/room/acre_anchor_kettle",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre_anchor_kettle",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre_anchor_kettle"
   },
   {
    "path": "/room/ab-anchor-kettle",
@@ -6419,9 +5949,7 @@
    "slices_upstream": "/room/ab-anchor-kettle",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/ab-anchor-kettle",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/ab-anchor-kettle"
   },
   {
    "path": "/room/acre-anchor-kettle/",
@@ -6446,9 +5974,7 @@
    "slices_upstream": "/room/acre-anchor-kettle/",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre-anchor-kettle/",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle/"
   },
   {
    "path": "/room/acre-anchor-kettle/close",
@@ -6473,9 +5999,7 @@
    "slices_upstream": "/room/acre-anchor-kettle/close",
    "tether_owns": false,
    "tether_refused": true,
-   "tether_upstream": "/room/acre-anchor-kettle/close",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/room/acre-anchor-kettle/close"
   },
   {
    "path": "/tether-admin",
@@ -6500,9 +6024,7 @@
    "slices_upstream": "/tether-admin",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/tether-admin",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/tether-admin"
   },
   {
    "path": "/tetherfoo",
@@ -6527,9 +6049,7 @@
    "slices_upstream": "/tetherfoo",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/tetherfoo",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/tetherfoo"
   },
   {
    "path": "/p/tether/tether",
@@ -6554,9 +6074,7 @@
    "slices_upstream": "/p/tether/tether",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/tether/tether",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/tether/tether"
   },
   {
    "path": "/rooms",
@@ -6581,9 +6099,7 @@
    "slices_upstream": "/rooms",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/rooms",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/rooms"
   },
   {
    "path": "/roomy",
@@ -6608,9 +6124,7 @@
    "slices_upstream": "/roomy",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/roomy",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/roomy"
   },
   {
    "path": "/p/room/room",
@@ -6635,9 +6149,7 @@
    "slices_upstream": "/p/room/room",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/room/room",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/room/room"
   },
   {
    "path": "//tether",
@@ -6662,333 +6174,7 @@
    "slices_upstream": "//tether",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "//tether",
-   "board_owns": false,
-   "board_in_mount": false
-  },
-  {
-   "path": "/board/cards",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "board_owns": true,
-   "board_in_mount": true
-  },
-  {
-   "path": "/board/stream",
-   "verdict": "board",
-   "allows": [
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true,
-    true
-   ],
-   "vault_owns": false,
-   "vault_upstream": "/board/stream",
-   "slices_token": null,
-   "slices_owns": false,
-   "slices_refused": false,
-   "slices_upstream": "/board/stream",
-   "tether_owns": false,
-   "tether_refused": false,
-   "tether_upstream": "/board/stream",
-   "board_owns": true,
-   "board_in_mount": true
+   "tether_upstream": "//tether"
   },
   {
    "path": "/board",
@@ -7013,9 +6199,7 @@
    "slices_upstream": "/board",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board"
   },
   {
    "path": "/board/",
@@ -7040,9 +6224,7 @@
    "slices_upstream": "/board/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/"
   },
   {
    "path": "/board/cards/",
@@ -7067,9 +6249,7 @@
    "slices_upstream": "/board/cards/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/"
   },
   {
    "path": "/board/stream/",
@@ -7094,9 +6274,7 @@
    "slices_upstream": "/board/stream/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/stream/",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/stream/"
   },
   {
    "path": "/board/health",
@@ -7121,9 +6299,7 @@
    "slices_upstream": "/board/health",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/health",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/health"
   },
   {
    "path": "/board/parties",
@@ -7148,9 +6324,7 @@
    "slices_upstream": "/board/parties",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/parties",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/parties"
   },
   {
    "path": "/board/cards/short",
@@ -7175,9 +6349,7 @@
    "slices_upstream": "/board/cards/short",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/short",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/short"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcde",
@@ -7202,9 +6374,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcde",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcde",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcde"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef0",
@@ -7229,9 +6399,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef0",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef0"
   },
   {
    "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
@@ -7256,9 +6424,7 @@
    "slices_upstream": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789ABCDEF0123456789ABCDEF"
   },
   {
    "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
@@ -7283,9 +6449,7 @@
    "slices_upstream": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/01234567-89ab-cdef-0123-456789abcdef"
   },
   {
    "path": "/board/cards/gggggggggggggggggggggggggggggggg",
@@ -7310,9 +6474,7 @@
    "slices_upstream": "/board/cards/gggggggggggggggggggggggggggggggg",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/gggggggggggggggggggggggggggggggg"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
@@ -7337,9 +6499,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/release",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/release"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
@@ -7364,9 +6524,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
@@ -7391,9 +6549,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/messages/1"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef/",
@@ -7418,9 +6574,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/"
   },
   {
    "path": "/board/cards/../stream",
@@ -7445,9 +6599,7 @@
    "slices_upstream": "/board/cards/../stream",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/../stream",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/../stream"
   },
   {
    "path": "/board//cards",
@@ -7472,9 +6624,7 @@
    "slices_upstream": "/board//cards",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board//cards",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board//cards"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
@@ -7499,9 +6649,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef\n"
   },
   {
    "path": "/board/cards\n",
@@ -7526,9 +6674,7 @@
    "slices_upstream": "/board/cards\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards\n",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards\n"
   },
   {
    "path": "/board/stream\n",
@@ -7553,9 +6699,7 @@
    "slices_upstream": "/board/stream\n",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/stream\n",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/stream\n"
   },
   {
    "path": "/boards/cards",
@@ -7580,9 +6724,7 @@
    "slices_upstream": "/boards/cards",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/boards/cards",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/boards/cards"
   },
   {
    "path": "/boarding/x",
@@ -7607,9 +6749,7 @@
    "slices_upstream": "/boarding/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/boarding/x",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/boarding/x"
   },
   {
    "path": "/boards",
@@ -7634,9 +6774,7 @@
    "slices_upstream": "/boards",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/boards",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/boards"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
@@ -7661,9 +6799,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream"
   },
   {
    "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
@@ -7688,9 +6824,7 @@
    "slices_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "board_owns": false,
-   "board_in_mount": true
+   "tether_upstream": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x"
   },
   {
    "path": "/é",
@@ -7715,9 +6849,7 @@
    "slices_upstream": "/é",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/é",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/é"
   },
   {
    "path": "/trilium/é",
@@ -7742,9 +6874,7 @@
    "slices_upstream": "/trilium/é",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/é",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/é"
   },
   {
    "path": "/p/trilium/trilium/é",
@@ -7769,9 +6899,7 @@
    "slices_upstream": "/p/trilium/trilium/é",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/p/trilium/trilium/é",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/p/trilium/trilium/é"
   },
   {
    "path": "/\u0000",
@@ -7796,9 +6924,7 @@
    "slices_upstream": "/\u0000",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/\u0000",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/\u0000"
   },
   {
    "path": "/trilium/\u0000",
@@ -7823,9 +6949,7 @@
    "slices_upstream": "/trilium/\u0000",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/trilium/\u0000",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/trilium/\u0000"
   },
   {
    "path": "/ invoke",
@@ -7850,9 +6974,7 @@
    "slices_upstream": "/ invoke",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/ invoke",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/ invoke"
   },
   {
    "path": "/invoke ",
@@ -7877,9 +6999,7 @@
    "slices_upstream": "/invoke ",
    "tether_owns": false,
    "tether_refused": false,
-   "tether_upstream": "/invoke ",
-   "board_owns": false,
-   "board_in_mount": false
+   "tether_upstream": "/invoke "
   }
  ],
  "raw": [
@@ -7887,2454 +7007,199 @@
    "raw": "2f7472696c69756d",
    "vault": "2f",
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f7472696c69756d2f",
    "vault": "2f",
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f7472696c69756d2f6170692f7365617263682f25323378",
    "vault": "2f6170692f7365617263682f25323378",
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f25373472696c69756d2f6170692f74726565",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f7472696c69756d78",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f7472696c69756d253266",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652f4162332d5f3978597a5177303132333435363738",
    "vault": null,
    "slices": "2f",
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652f4162332d5f3978597a51773031323334353637382f",
    "vault": null,
    "slices": "2f",
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652f4162332d5f3978597a51773031323334353637382f6170692f7365617263682f253233666f6f",
    "vault": null,
    "slices": "2f6170692f7365617263682f253233666f6f",
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f2537336c6963652f4162332d5f3978597a5177303132333435363738",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652f73686f72742f78",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652f4162332d5f3978597a51773031323334353637380a2f78",
    "vault": null,
    "slices": "2f78",
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652fc462332d5f3978597a51773031323334353637382f78",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f736c6963652fffffffffffffffffffffffffffffffff",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f746574686572",
    "vault": null,
    "slices": null,
-   "tether": "2f",
-   "board": null
+   "tether": "2f"
   },
   {
    "raw": "2f7465746865722f",
    "vault": null,
    "slices": null,
-   "tether": "2f",
-   "board": null
+   "tether": "2f"
   },
   {
    "raw": "2f7465746865722f636c61696d2f37",
    "vault": null,
    "slices": null,
-   "tether": "2f636c61696d2f37",
-   "board": null
+   "tether": "2f636c61696d2f37"
   },
   {
    "raw": "2f25373465746865722f636c61696d2f37",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f74657468657278",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f726f6f6d",
    "vault": null,
    "slices": null,
-   "tether": "2f726f6f6d",
-   "board": null
+   "tether": "2f726f6f6d"
   },
   {
    "raw": "2f726f6f6d2f616372652d616e63686f722d6b6574746c652f72656376",
    "vault": null,
    "slices": null,
-   "tether": "2f726f6f6d2f616372652d616e63686f722d6b6574746c652f72656376",
-   "board": null
+   "tether": "2f726f6f6d2f616372652d616e63686f722d6b6574746c652f72656376"
   },
   {
    "raw": "2f726f6f6d78",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f726f6f6d2f",
    "vault": null,
    "slices": null,
-   "tether": "2f726f6f6d2f",
-   "board": null
+   "tether": "2f726f6f6d2f"
   },
   {
    "raw": "2f626f6172642f6361726473",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": "2f626f6172642f6361726473"
+   "tether": null
   },
   {
    "raw": "2f626f6172642f63253631726473",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f626f6172642f63617264732f3031323334353637383961626364656630313233343536373839616263646566",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": "2f626f6172642f63617264732f3031323334353637383961626364656630313233343536373839616263646566"
+   "tether": null
   },
   {
    "raw": "2f626f6172642f63617264732f30313233343536373839616263646566303132333435363738396162636465660a",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f626f6172642fff",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f626f6172642f73747265616d",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": "2f626f6172642f73747265616d"
+   "tether": null
   },
   {
    "raw": "2f626f617264",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": null
+   "tether": null
   },
   {
    "raw": "2f626f6172642f63617264732f30313233343536373839616263646566303132333435363738396162636465662f66696c65732f3031323334353637383961626364656630313233343536373839616263646566",
    "vault": null,
    "slices": null,
-   "tether": null,
-   "board": "2f626f6172642f63617264732f30313233343536373839616263646566303132333435363738396162636465662f66696c65732f3031323334353637383961626364656630313233343536373839616263646566"
-  }
- ],
- "board": [
-  {
-   "method": "GET",
-   "path": "/board/cards",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/complete",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/fail",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/status",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/reject",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/events",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": true,
-   "body_cap": 16777216
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": true,
-   "body_cap": 16777216
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files",
-   "allows": true,
-   "body_cap": 16777216
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/stream",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/stream",
-   "allows": true,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/stream/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/health",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/parties",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/short",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcde",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef0",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789ABCDEF0123456789ABCDEF",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/01234567-89ab-cdef-0123-456789abcdef",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/gggggggggggggggggggggggggggggggg",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/release",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/claim/extra",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/messages/1",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board//cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/stream\n",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/boards/cards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/boards",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/../../stream",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "GET",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "POST",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PUT",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "DELETE",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "PATCH",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "HEAD",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "OPTIONS",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "get",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
-  },
-  {
-   "method": "Post",
-   "path": "/board/cards/0123456789abcdef0123456789abcdef/files/0123456789abcdef0123456789abcdef/x",
-   "allows": false,
-   "body_cap": 1048576
+   "tether": null
   }
  ],
  "invoke": [

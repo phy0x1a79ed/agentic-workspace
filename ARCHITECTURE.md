@@ -33,7 +33,7 @@ A plugin keeps its state in SQLite, so the gateway's respawn brings it back whol
 
 1. `cch`'s keep unit holds the daemon in its own user unit, outside awm's control group and outside every terminal (`core/plugins/cch/src/keeper.rs`).
 2. `cch`'s session layer ensures the daemon before a start, resume or stop. It refuses with `code: "daemon_down"` only when that fails. It revives pinned jobs once per boot.
-3. `social`'s seat keeper holds the keeper policy: the restart record, the decision (wait, resume, start fresh, give up) and the breaker.
+3. The `seats` plugin on each seat host holds the keeper policy: the restart record, the decision (wait, resume, start fresh, give up) and the breaker.
 
 **CAUTION** A keeper must read `daemon_down` and `daemon.state` as "wait", never as "the session is gone". Stopping a pinned job runs `claude rm` and loses its conversation. That reading is what destroyed a seat on 2026-10-20.
 
@@ -131,7 +131,7 @@ A manifest function may carry these keys:
 
 `GET /tools` lists one entry per verb. `GET /tools?view=domains` folds the same catalog into one `{verb, args, peer}` tool per published tool, which `awm mcp` lists. Every MCP client therefore carries the small surface, while the CLI and HTTP reach every verb. A tool with `tier = "off"` leaves the folded view and stays in the flat one.
 
-- **describe.** `describe` is reserved on every tool and answered from the catalog with no service round trip. `awm(verb="describe")` returns every tool with its verbs, a one-line summary and the required arguments. `describe` on a tool lists its verbs and params, and takes `verbs` as a filter.
+- **describe.** `describe` is reserved on every tool and answered from the catalog with no service round trip. `awm(verb="describe")` returns every tool with its verbs, each verb's first sentence, and its `required` and `optional` arguments. The MCP description lists the same arguments, with `?` on an optional one. `describe` on a tool lists its verbs and params, and takes `verbs` as a filter.
 - **Strict arguments.** The gateway refuses an argument the verb's `params` do not declare, with 400 and the verb's schema. Names that start with an underscore belong to the gateway.
 - **The `peer` key.** Its enum lists `local` and the nodes across this node's edges, and its description names this node as the default. A call with no `peer` to a tool no local plugin serves runs where `/hub/table` says it lives.
 
@@ -158,7 +158,7 @@ A cancel travels one hop at a time. When the gateway drops a call, it sends `{ki
 
 The native writes (`reload`, `install`, `uninstall`, the service lifecycle and `config_set`) also need a trusted caller on this node.
 
-The gateway finds the caller through a pid: `X-Awm-Session-Pid` from `awm mcp`, a stdio child of the session, or `X-Awm-Caller-Pid` from the CLI. `caller.rs` walks up to eight ancestors and asks `reflection session_of` for each. The first session found is the caller, with its level, mode, scope and R9 id. A chain no harness claims is a user's shell and passes as trusted. A lookup that fails runs as untrusted with mode `unknown`. A positive answer is cached for 5 s.
+The gateway finds the caller through a pid: `X-Awm-Session-Pid` from `awm mcp`, a stdio child of the session, or `X-Awm-Caller-Pid` from the CLI. `caller.rs` walks up to eight ancestors and asks `reflection session_of` for each. The first session found is the caller, with its level, mode, scope and R9 id. A chain no harness claims is a shell of the gateway's own account and passes as trusted. Every other account is refused before this lookup (`loopback.rs`). A lookup that fails runs as untrusted with mode `unknown`. A positive answer is cached for 5 s.
 
 **CAUTION** The mode gate is a guardrail on the agent-facing doors, not a trust boundary. The loopback gateway is open, and a request with no pid header carries no mode. A new restricted mode holds only while its session cannot make a raw HTTP request, so its launch must withhold Bash and WebFetch. The gate cannot cover Claude's built-in tools either.
 
@@ -195,9 +195,9 @@ The gateway appends each event to `<AWM_DIR>/usage/<YYYY-MM-DD>.jsonl` and prune
 
 The `kb` plugin serves the `search` tool (`core/crates/awm-kb-search`). Agents get one search over everything the swarm knows, on this node and across its edges. search is a federator with no content store, because a second copy of each source drifted from the first. `core/plugins/kb/INSTALL.md` covers a node's install. `docs/search-opt/` holds the engine's decisions. This section holds the reasons.
 
-- **kb's sources.** journals, guide and transcripts answer in-process through `awm_kb_source::Source`. Each owns its LanceDB store under `services/kb/lance/<source>`, through `awm-index`, and applies the caller's veil itself. No caller sees a row a mark covers.
-- **Plug-ins.** Another plugin joins with one `[[service.archive]]` table per source in its manifest, with `mode = "live"`. The table names the verb search calls at query time, so a new source needs no change to search. A caller names the source as `name`, or `name@node` on another node. A source marked `optin` runs only when a caller names it. `awm services` lists the tables under `archive` in each row. An `index` table stays listed with an error, because search no longer reads change feeds.
-- **Declared fields.** Each table declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in search.
+- **kb's sources.** journals, guide, transcripts and papers answer in-process through `awm_kb_source::Source`. Each owns its LanceDB store under `services/kb/lance/<source>`, through `awm-index`, and applies the caller's veil itself. No caller sees a row a mark covers.
+- **Declared fields.** Each source declares its fields with a class and the fields a hit shows. The declaration is the query schema, so a new field needs no code in search. kb hands search the declaration of every source it is built with, open or not, so a node without papers still checks a `papers@altair` filter before it asks altair.
+- **Sources on peers.** A bare kind this node does not serve goes to the first peer, in edge-list order, whose `search sources` lists it. Search keeps one snapshot of every peer's kinds for five minutes, failures included, so a down peer costs one timeout per period, not one per query. `FEDERATION.md` § *Search across nodes* covers the wire.
 - **The guide source.** It indexes this node's tools, one entry per verb, so an agent finds a verb by what it does. It follows the gateway's `plugins` and `services` topics, so a new plugin's verbs appear with no timer.
 - **One store per source.** Each source answers apart, so no score has to compare across sources. A source's `$about` ranking fuses its own vector and keyword lists by score.
 - **Maintenance.** Each write counts the rows it leaves outside the indexes. The count starts maintenance, not a clock.
@@ -303,7 +303,7 @@ A page reaches the gateway through `@awm/client`: `tool(name).call(verb, args)` 
 
 ## Federation
 
-Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway stays open and unauthenticated. A call to another node goes from the local gateway down an ssh channel to that node's loopback gateway (`core/crates/awm-edge`). The edge list (`awm.config.edges`, `awm_trust::edges`) is the only record of who reaches whom.
+Read `FEDERATION.md` before you touch anything cross-node. The loopback gateway admits only its own Unix account and the services that send a token (`docs/redux/drafts/plugin-contract.md` § Who reaches the gateway). Within that account it authenticates nothing. A call to another node goes from the local gateway down an ssh channel to that node's loopback gateway (`core/crates/awm-edge`). The edge list (`awm.config.edges`, `awm_trust::edges`) is the only record of who reaches whom.
 
 - This is not the retired federations: neither the v0 one (cr-sqlite replication, leader election, a `peers` registry) nor the peer book with node tokens and a private CA. The git history of their deletion is not a guide to the current system.
 - The gateway trusts `X-Awm-Caller` from `awm edge-serve` only beside the edge token in `<AWM_DIR>/edge.token`, which it rewrites at each start. It trusts `X-Awm-As` because the edge (`auth`) strips every inbound caller header (`X-Awm-As`, `X-Awm-Caller-Pid`, `X-Awm-Session-Pid`) and stamps its own. A new edge mount must do the same.
@@ -323,7 +323,7 @@ Paths are under `core/crates/`.
 - **Edges** — `awm-trust/src/edges.rs` reads the edge list, `awm-gateway/src/peer.rs` routes a call to another node, `awm-edge` carries it, and `awm-cli/src/edge.rs` serves `awm edge-serve` and `awm port`.
 - **CLI and MCP** — `awm-cli/src/lib.rs`, `deploy.rs`, `bootstrap.rs`. `awm-mcp/src/lib.rs`.
 - **Wire and manifest types** — `awm-proto`.
-- **Search archive** — `awm-kb-search`. `registry.rs` reads the plug-in tables, `merge.rs` fuses and `federation.rs` asks each other node across its edge. `awm-index` is the engine each source links.
+- **Search archive** — `awm-kb-search`. `request.rs` places each source on a node and `federation.rs` asks each other node across its edge. `awm-index` is the engine each source links.
 - **Frontend** — `awm/vite.config.ts`, `awm/scripts/build.sh`, `awm/package.json`.
 
 ## The editable install
@@ -351,4 +351,4 @@ It reports pass or fail per dist and exits non-zero if any failed. The `contract
 - Make cross-dist imports in a test lazy, inside a fixture or function. A top-level cross-dist import brings back the namespace shadowing the runner avoids.
 - Add a new plugin with tests to both `DISTS` and `ORDER` in the runner. A dist missing from `DISTS` reports `unknown dist` and never runs. `reflection` sat that way for months.
 
-Run the Rust tests with `scripts/rust-build.sh test --workspace`, which runs cargo in a container. Its build output goes to `~/.cache/awm-target/<worktree>`, outside the worktree, because each target holds 4 to 5 GB. Run `scripts/rust-build.sh --gc` to list the target dirs of worktrees with no live session, and add `--yes` to delete them. `test/install/run.sh` installs awm in a rootless container and joins it to a fleet. Run it when a change touches install, reload or the isolated door.
+Run the Rust tests with `scripts/rust-build.sh test --workspace`, which runs cargo in a container. Its build output goes to `~/.cache/awm-target/<worktree>`, outside the worktree. Cargo never deletes a superseded output, so each build first deletes the test binaries and incremental state in its target dir that went three days without a change. Run `scripts/rust-build.sh --gc` to list the target dirs of worktrees with no live session, and add `--yes` to delete them. `test/install/run.sh` installs awm in a rootless container and joins it to a fleet. Run it when a change touches install, reload or the isolated door.

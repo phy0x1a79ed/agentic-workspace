@@ -40,7 +40,7 @@ impl DoorRoute {
 }
 
 /// The door request for one call by `caller`: the node it started from, and the calling
-/// session's id, level, scope, job and name, which the host stamps as the calling node's word.
+/// session's id, level, scope and name, which the host stamps as the calling node's word.
 pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> DoorRequest {
     DoorRequest {
         name: tool,
@@ -49,8 +49,8 @@ pub fn request(tool: String, envelope: Value, caller: &Caller, here: &str) -> Do
         session: caller.session.clone(),
         trust: caller.trust.clone(),
         scope: caller.scope.clone(),
-        job: caller.job.clone(),
         session_name: caller.name.clone(),
+        session_kind: caller.kind.clone(),
     }
 }
 
@@ -135,15 +135,15 @@ mod tests {
         let caller = Caller {
             node: "mizar".into(),
             session: Some("cc12".into()),
-            job: Some("0dcd4e0c".into()),
             name: Some("redux/x".into()),
+            kind: Some("bg".into()),
             ..Caller::default()
         };
         let req = request("operations".into(), json!({"verb": "request_human"}), &caller, "mizar");
-        assert_eq!((req.session.as_deref(), req.job.as_deref(), req.session_name.as_deref()), (Some("cc12"), Some("0dcd4e0c"), Some("redux/x")));
+        assert_eq!((req.session.as_deref(), req.session_name.as_deref()), (Some("cc12"), Some("redux/x")));
         assert_eq!(req.origin, None, "a call from this node names no origin");
         let parsed = awm_trust::port::parse(&serde_json::to_string(&req).unwrap()).unwrap();
-        assert_eq!((parsed.job.as_deref(), parsed.session_name.as_deref()), (Some("0dcd4e0c"), Some("redux/x")));
+        assert_eq!((parsed.session_name.as_deref(), parsed.session_kind.as_deref()), (Some("redux/x"), Some("bg")));
     }
 
     #[test]

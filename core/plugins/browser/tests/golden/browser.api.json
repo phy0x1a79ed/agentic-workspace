@@ -3,7 +3,7 @@
   "functions": [
     {
       "name": "seat_open",
-      "description": "Attach this session to its own browser window. A trusted session gets Tony's profile unless it asks for a blank one. A cooperative session always gets a blank one. Returns the seat id.",
+      "description": "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. Any other session gets a blank one. Returns the seat id.",
       "params": [
         {
           "name": "profile",
@@ -211,9 +211,47 @@
     },
     {
       "name": "viewer",
-      "description": "The one viewer that shows every window.",
+      "description": "The one viewer that shows every window. Starts the shared Chrome when it is stopped.",
       "params": [],
       "tool": "browser_viewer"
+    },
+    {
+      "name": "service_cdp",
+      "description": "Run a page-level DevTools method on the site's tab in the service window, opening the tab first. Only the productivity service may call it.",
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "A site the browser config names, such as slack, teams or discord."
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "params",
+          "type": "object",
+          "required": false,
+          "description": ""
+        }
+      ],
+      "tool": "browser_service_cdp"
+    },
+    {
+      "name": "service_close",
+      "description": "Close the site's tab in the service window. Only the productivity service may call it.",
+      "params": [
+        {
+          "name": "site",
+          "type": "string",
+          "required": true,
+          "description": "A site the browser config names, such as slack, teams or discord."
+        }
+      ],
+      "tool": "browser_service_close"
     }
   ],
   "emitters": [],

@@ -63,7 +63,7 @@ async fn list(app: &App<Fake>, as_: Option<&str>) -> Value {
 }
 
 fn jobs(out: &Value) -> Vec<&str> {
-    out["sessions"].as_array().unwrap().iter().filter_map(|r| r["job"].as_str()).collect()
+    out["sessions"].as_array().unwrap().iter().filter_map(|r| r["session_id"].as_str()).collect()
 }
 
 #[tokio::test]
@@ -84,12 +84,12 @@ async fn test_the_list_verb_hides_private_sessions_from_a_peer() {
         let demo = projects.join("awm").join("demo").display().to_string();
         Fake {
             rows: vec![
-                json!({"job": CHILD_JOB, "project": "awm", "scope": "demo", "cwd": demo}),
-                json!({"job": "cccc0003", "project": null, "scope": null, "cwd": "/elsewhere"}),
+                json!({"session_id": CHILD_JOB, "project": "awm", "scope": "demo", "cwd": demo}),
+                json!({"session_id": "cccc0003", "project": null, "scope": null, "cwd": "/elsewhere"}),
             ],
             pool_status: json!({
                 "warm": [PARENT_JOB, "dddd0004"], "want": 1, "daemon_pid": null, "loop": "running",
-                "sessions": [{"session": PARENT_JOB, "cwd": demo}, {"session": "dddd0004", "cwd": "/elsewhere"}],
+                "sessions": [{"session_id": PARENT_JOB, "cwd": demo}, {"session_id": "dddd0004", "cwd": "/elsewhere"}],
             }),
             ..f
         }
@@ -97,7 +97,7 @@ async fn test_the_list_verb_hides_private_sessions_from_a_peer() {
     mark("awm", &r.projects.join("awm"));
     let peer = list(&r.app, Some("peer:capella")).await;
     assert_eq!(jobs(&peer), ["cccc0003"]);
-    let pool: Vec<&str> = peer["pool"]["sessions"].as_array().unwrap().iter().map(|s| s["session"].as_str().unwrap()).collect();
+    let pool: Vec<&str> = peer["pool"]["sessions"].as_array().unwrap().iter().map(|s| s["session_id"].as_str().unwrap()).collect();
     assert_eq!(pool, ["dddd0004"]);
     assert_eq!(peer["pool"]["warm"], json!(["dddd0004"]));
     let local = list(&r.app, None).await;
@@ -125,7 +125,7 @@ async fn a_peer_list_hides_a_private_isolated_row() {
 #[tokio::test]
 async fn a_peer_list_leaves_out_the_transcript() {
     let _turn = turn().await;
-    let r = rig(|_, f| Fake { rows: vec![json!({"job": CHILD_JOB, "transcript": "/t/made-up.jsonl"})], ..f });
+    let r = rig(|_, f| Fake { rows: vec![json!({"session_id": CHILD_JOB, "transcript": "/t/made-up.jsonl"})], ..f });
     let peer = list(&r.app, Some("peer:capella")).await;
     assert!(peer["sessions"][0].get("transcript").is_none(), "{peer}");
     assert_eq!(list(&r.app, None).await["sessions"][0]["transcript"], "/t/made-up.jsonl");

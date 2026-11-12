@@ -20,11 +20,3 @@ platform = ["linux"]
 name = "2fa"
 major = 1
 
-[[needs.tool]]
-name = "social"
-major = 1
-
-[[needs.tool]]
-name = "vpn"
-major = 1
-

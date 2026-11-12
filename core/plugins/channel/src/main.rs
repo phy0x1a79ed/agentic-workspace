@@ -83,10 +83,9 @@ async fn holder(call: &Call) -> Result<Holder, VerbError> {
     Ok(Holder {
         node: h.node,
         session: h.session,
-        job: h.job,
         name: h.name,
         level: call.caller_trust().filter(|t| !t.is_empty()).unwrap_or("untrusted").to_string(),
-        isolated: awm_plugin_sdk::ids::to_r9(call.caller_session_id()).is_some(),
+        isolated: call.caller_session_id().is_some_and(|s| awm_plugin_sdk::ids::SessionId::parse(s).is_ok()),
     })
 }
 
@@ -108,6 +107,7 @@ async fn channel_verb(ch: Arc<Channels>, call: Call) -> Result<Value, VerbError>
             };
             ch.write(&who, &text, name_arg(&call), w).await
         }
+        "send" => ch.send(&who, &channel::text(&call.args, "path"), &text, name_arg(&call), call.str_arg("filename")).await,
         "drain" => {
             let wait = number(&call, "wait")?.unwrap_or(0) as f64;
             ch.drain(&who, name_arg(&call), wait, number(&call, "until")?, number(&call, "task")?, yes(&call, "raw")).await
@@ -160,9 +160,9 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             Box::pin(async move { hub.call_with("relay", verb, args, &CallOpts { timeout, ..CallOpts::default() }).await.map_err(relay_error) })
         }),
         machines,
-        send: Arc::new(move |node, job, text| {
+        send: Arc::new(move |node, session, text| {
             let hub = h2.clone();
-            Box::pin(async move { awm_plugin_sdk::push::reflect(&hub, &node, &job, &text).await })
+            Box::pin(async move { awm_plugin_sdk::push::reflect(&hub, &node, &session, &text).await })
         }),
         transcripts: channel::lines::Transcripts { root: dir.join("transcripts") },
         list_sessions: Arc::new(move || {
@@ -179,15 +179,13 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             tokio::spawn(stream.clone().watch_forever(socket));
             ready.resume();
             tokio::spawn(ready.clone().feed_forever());
-            let prune = ready.clone();
-            let watch = awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
-                let prune = prune.clone();
+            awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
+                let ready = ready.clone();
                 async move {
-                    prune.prune().await;
+                    ready.prune().await;
                 }
-            });
-            watch.ensure(&awm_plugin_sdk::config::node_name());
-
+            })
+            .ensure(&awm_plugin_sdk::config::node_name());
         })
         .on_shutdown(async move {
             down.stop();
@@ -338,7 +336,7 @@ async fn main() -> anyhow::Result<()> {
     awm_plugin_sdk::telemetry::init();
     let awm_dir = awm_plugin_sdk::config::awm_dir();
     awm_statecheck::cli::state_subcommand("channel", include_str!("../state.toml"), &awm_plugin_sdk::config::service_dir("channel"), &awm_dir)?;
-    let svc = Service::from_env()?.state(include_str!("../state.toml"));
+    let svc = Service::from_env()?;
     let service = svc.context().env().service.clone();
     match service.as_str() {
         "relay" => run_relay(svc).await,

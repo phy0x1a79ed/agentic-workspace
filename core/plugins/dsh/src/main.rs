@@ -118,7 +118,6 @@ async fn main() -> anyhow::Result<()> {
         let cli = StateCli::parse_from(std::iter::once("dsh state".to_string()).chain(args.into_iter().skip(1)));
         std::process::exit(awm_statecheck::cli::run(&cli.cmd, "dsh", &snapshot::decl(&awm_dir)?)?);
     }
-    snapshot::take(&awm_dir)?;
     let svc = Service::from_env()?;
     let paths = Paths::from_env();
     let (lc, session_events) = Lifecycle::new();
@@ -226,7 +225,7 @@ mod tests {
         let target_verbs = ["compact", "interrupt", "resume", "send", "set", "status", "stop"];
         let mut want: Vec<(String, String, String)> = target_verbs
             .iter()
-            .flat_map(|v| ["session_id", "ref", "pid"].map(|p| (HARNESS_TOOL.to_string(), v.to_string(), format!("{p} description added"))))
+            .flat_map(|v| ["session_id", "pid"].map(|p| (HARNESS_TOOL.to_string(), v.to_string(), format!("{p} description added"))))
             .collect();
         let mut got = differences();
         want.sort();

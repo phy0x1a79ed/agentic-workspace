@@ -1,4 +1,4 @@
-"""Open the board, Ops and a note in the dev vault and assert what a person would see.
+"""Open the Control panel and a note in the dev vault and assert what a person would see.
 
 Env awm-queue (playwright). Needs the dev server on 37750, alcor_stub on 37751 and seed.py run.
 """
@@ -62,8 +62,9 @@ def main() -> int:
                 page.reload()
                 settle(page)
         page.locator(".awm-card").locator("visible=true").first.wait_for(timeout=30000)
-        heads = [s.inner_text().strip() for s in page.query_selector_all(".awm-sections summary")]
-        check("four sections, no Proposed", [h.split(" (")[0] for h in heads] == ["Needs you", "Working", "Stale", "History"], str(heads))
+        heads = [s.inner_text().strip() for s in page.query_selector_all(".awm-sections > details > summary")]
+        check("the cards' sections, then the fleet's", [h.split(" (")[0] for h in heads]
+              == ["Needs you", "Working", "History", "Nodes", "Seats", "Plugins", "Services", "Notices"], str(heads))
         try:
             urllib.request.urlopen(f"{VAULT}/etapi/notes/awmSwarmColTriage")
             gone = False
@@ -96,22 +97,30 @@ def main() -> int:
         after = page.eval_on_selector(".awm-sections", "e => e.getBoundingClientRect().width")
         check("the divider resizes rows and panel", after < before - 150, f"{before:.0f} -> {after:.0f}")
 
-        opts = page.eval_on_selector_all(".awm-node option", "o => o.map(x => x.textContent)")
-        check("New agent dropdown: fewest 7-day sessions first, no stations, no deneb",
-              [o.split(" ")[0] for o in opts] == ["lyra", "altair", "mizar"], str(opts))
+        opts = page.eval_on_selector_all(".awm-spawn-node label", "o => o.map(x => x.textContent)")
+        check("New agent nodes: fewest 7-day sessions first, no stations, no deneb",
+              opts == ["lyra", "altair", "mizar"], str(opts))
+        chosen = page.eval_on_selector_all(".awm-spawn input:checked", "e => e.map(x => x.value)")
+        check("New agent defaults: least-used node, Opus, high", chosen == ["lyra", "opus", "high"], str(chosen))
+        page.locator(".awm-spawn").screenshot(path=str(SHOTS / "new-agent.png"))
 
         # History: open, scroll the sentinel into view, more than one page arrives.
         page.click(".awm-sections details[data-section='history'] summary")
         page.wait_for_timeout(1500)
         page.screenshot(path=str(SHOTS / "history.png"))
-        page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 50")
-        # The sentinel is in view as soon as History opens, so the second page follows the first.
-        page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 72")
+        page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 30")
+        first = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")
+        check("History shows one page until scrolled", first < 72, str(first))
+        page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
+        page.wait_for_timeout(500)
+        page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
+        page.wait_for_function("document.querySelectorAll('details[data-section=history] .awm-card').length >= 60")
         n = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")
-        check("History pages in older cards as the sentinel shows (50 per page, 72 cards)", n == 72, str(n))
+        check("History pages in older cards as the sentinel shows (30 per page)", n > first, f"{first} -> {n}")
 
         # New agent: first press has no cookie -> 401 -> sign-in frame -> retry.
-        page.select_option(".awm-node", "lyra")
+        for value in ("altair", "sonnet", "medium"):
+            page.check(f".awm-spawn input[value={value}]", force=True)
         seen_frames: list[str] = []
         page.on("framenavigated", lambda f: seen_frames.append(f.url))
         page.click(".awm-newbtn")
@@ -119,7 +128,8 @@ def main() -> int:
         check("a 401 opens the sign-in frame, then the call is repeated",
               any("/signin?frame=1" in u for u in seen_frames), str(seen_frames))
         agent = [c for c in calls() if c.get("path") == "/api/agent"]
-        check("New agent posts {node} to alcor", agent and agent[-1]["body"] == {"node": "lyra"}, str(agent))
+        check("New agent posts node, model and effort to alcor",
+              agent and agent[-1]["body"] == {"node": "altair", "model": "sonnet", "effort": "medium"}, str(agent))
 
         # Approve opens the modal frame; the modal tells the page.
         page.click(".awm-appr button:text-is('Approve')")
@@ -148,25 +158,43 @@ def main() -> int:
         page.frame_locator(".awm-shade iframe").locator("#go").click()
         page.wait_for_function("!document.querySelector('.awm-shade')")
 
-        # -- Ops --------------------------------------------------------------------------
-        page.goto(f"{VAULT}/#root/iF0A3SWEGqUx/awmSwarmOps")
-        settle(page)
-        page.wait_for_selector(".awm-ops .awm-node", timeout=30000)
-        nodes = page.eval_on_selector_all(".awm-ops .awm-node", "e => e.map(x => x.dataset.node)")
-        check("Ops: one card per node", sorted(nodes) == ["altair", "capella", "deneb", "lyra", "mizar"], str(nodes))
-        check("Ops: node cards show sessions with claude.ai links",
+        # -- the fleet, on the same page --------------------------------------------------
+        for key in ("seats", "services"):
+            page.click(f".awm-sections details[data-section='{key}'] > summary")
+        page.wait_for_selector(".awm-sections .awm-node", timeout=30000)
+        nodes = page.eval_on_selector_all(".awm-node", "e => e.map(x => x.dataset.node)")
+        check("Nodes: one card per node", sorted(nodes) == ["altair", "capella", "deneb", "lyra", "mizar"], str(nodes))
+        check("Nodes: sessions link to claude.ai",
               page.eval_on_selector_all(".awm-node[data-node=mizar] a", "a => a.some(x => x.href.startsWith('https://claude.ai/'))"))
-        check("Ops: seats and services sections",
-              page.query_selector_all(".awm-seats tr[data-seat]") and page.inner_text(".awm-services").count("down") >= 1)
-        page.fill(".awm-ops .search", "mizr")
-        shown = page.eval_on_selector_all(".awm-ops .awm-node", "e => e.map(x => x.dataset.node)")
-        check("Ops: the fuzzy search forgives a typo", shown == ["mizar"], str(shown))
-        page.fill(".awm-ops .search", "")
-        page.check("tr[data-seat='acct/222'] input")
+        check("Seats and Services render",
+              page.query_selector_all(".awm-seats tr[data-seat]") and page.query_selector_all(".awm-services td .awm-state.unreachable"))
+        cards_before = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")
+        page.fill(".awm-search", "mizr")
+        page.wait_for_timeout(300)
+        shown = page.eval_on_selector_all(".awm-node", "e => e.map(x => x.dataset.node)")
+        check("the search forgives a typo in Nodes", shown == ["mizar"], str(shown))
+        heads = page.eval_on_selector_all(".awm-sections > details > summary", "e => e.length")
+        check("the search keeps every section header", heads == 8, str(heads))
+        check("the search leaves History alone",
+              page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length") == cards_before)
+        page.fill(".awm-search", "")
+        page.click("tr[data-seat='acct/222'] input")
         page.wait_for_timeout(800)
         seat = [c for c in calls() if c.get("path") == "/api/seat/remote_control"]
-        check("Ops: the seat switch posts {seat, on}", seat and seat[-1]["body"] == {"seat": "acct/222", "on": True}, str(seat))
-        page.screenshot(path=str(SHOTS / "ops.png"), full_page=True)
+        check("the seat switch posts {seat, on}", seat and seat[-1]["body"] == {"seat": "acct/222", "on": True}, str(seat))
+        picked = page.eval_on_selector_all("tr[data-seat='acct/111'] select", "e => e.map(x => x.value)")
+        check("the seat row presets its model and effort", picked == ["opus", "high"], str(picked))
+        page.select_option("tr[data-seat='acct/111'] select[aria-label=model]", "sonnet")
+        page.click("tr[data-seat='acct/111'] button >> text=Refresh")
+        page.wait_for_timeout(800)
+        ref = [c for c in calls() if c.get("path") == "/api/seat/refresh"]
+        check("Refresh posts {seat, model, effort}",
+              ref and ref[-1]["body"] == {"seat": "acct/111", "model": "sonnet", "effort": "high"}, str(ref))
+        page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
+        page.wait_for_timeout(800)
+        n2 = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")
+        check("reading the fleet pages no History", n2 == cards_before, f"{cards_before} -> {n2}")
+        page.screenshot(path=str(SHOTS / "control-panel.png"), full_page=True)
 
         # -- the bot button ----------------------------------------------------------------------
         page.goto(f"{VAULT}/#root/iF0A3SWEGqUx/qUFGgLTobIn8/QisB6tefNykl")

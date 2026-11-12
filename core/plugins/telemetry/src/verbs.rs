@@ -11,7 +11,7 @@ pub const SEATS: &str = "Every seat on social's roster, as social last reported 
 pub const REPORT: &str = "Take a batch of facts from one node's telemetry-node part: a hello with its whole state, or session, service, usage and tool changes. Answers resync true when the roster needs a hello first. Only that node may report for itself.";
 
 pub const ROSTER_TOPIC: &str = "Each change of the roster: {rev, node, changed, ts}, where changed names the parts that changed (nodes, sessions, services, usage, seats).";
-pub const SESSIONS_TOPIC: &str = "Each session that goes live or goes: {event: live | gone, session_id, job, task_id?, node, ts}.";
+pub const SESSIONS_TOPIC: &str = "Each session that goes live, goes, is renamed or changes state: {event: live | gone | renamed | state, session_id, task_id?, node, ts, name?, state?, needs?, retired?}. state is working, blocked or done, needs is why while blocked, and retired marks a gone that was a retire.";
 
 pub fn params(verb: &str) -> Value {
     match verb {

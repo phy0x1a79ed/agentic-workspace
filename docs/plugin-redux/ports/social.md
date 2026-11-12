@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file holds the approved port plan for social and its seats component, from the comms group's plan (task CWPYAtyb), approved by Tony on 2026-11-06. The Remote Control switch comes from the port-comms items of `docs/trilium-design/CONTRACT.md`, approved by plugin-redux/interview on 2026-11-07. It names only what the Python does not make obvious. The Python at release 49232bf9 is the reference for everything kept. The rules every comms port follows are in `comms.md`.
+This file holds the approved port plan for social and its seats component, from the comms group's plan (task CWPYAtyb), approved by Tony on 2026-11-06. The Remote Control switch comes from the port-comms items of `docs/trilium-design/CONTRACT.md`, approved by plugin-redux/interview on 2026-11-07. The model, effort and Refresh controls come from the plan of awm/seat-refresh, approved by Tony on 2026-11-10. It names only what the Python does not make obvious. The Python at release 49232bf9 is the reference for everything kept. The rules every comms port follows are in `comms.md`.
 
 ## Plan
 
@@ -15,7 +15,7 @@ Replaces `awm/services/social/` (11,283 lines). It runs on alcor as `awm-plugin@
 Surface changes, listed:
 - Removed `keepers`, `keep_reset` and `keep_adopt`, the seven OneDrive-only bucket verbs, and `bucket_get`'s `version` (Drive keeps none).
 - `bucket_rm` refuses the bucket root.
-- Added `mark_seat_done`, `forward`, `seat_reset`, `seat_adopt` (on CLI and HTTP) and `seat_admit`.
+- Added `forward`, `seat_reset`, `seat_adopt` (on CLI and HTTP) and `seat_admit`.
 - `seats` shows each seat's state.
 - `send` and `react` ids default to the caller's latest pushed line.
 - `send` refuses a DM to someone who never wrote, on Discord too.
@@ -46,24 +46,24 @@ Gotchas:
 
 One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queue`, `seat_routed` for dedupe, and `seat_lines` for the send/react defaults. Each seat's transitions run in one task per seat, and each transition writes the database before it acts.
 
-**Config.** `[seats]` holds `project = "agentic-commons"`, opus and high, `paused`, and `notice`, which defaults to Tony's Discord DM. One `[[seats.rule]]` makes every slack-bot DM a cooperative seat on altair at `seats/{slug}`, except Slackbot. `[[seats.chat]]` overrides name Tony's two DMs (trusted; altair and mizar) and Hallam Hive #general (cooperative, altair).
+**Config.** `[seats]` holds `project = "agentic-commons"`, opus and high, `paused`, and `notice`, which defaults to Tony's Discord DM. One `[[seats.rule]]` makes every slack-bot DM a cooperative seat on altair at `seats/{slug}`, except Slackbot. `[[seats.chat]]` overrides name Tony's two DMs (trusted; altair and mizar) and Hallam Hive #general (cooperative, altair). A `[[seats.rule]]` or `[[seats.chat]]` can name its own `model` and `effort`, both or neither, with the values `start_other` takes. A seat that names neither uses `[seats]`. The pair applies at the seat's next agent start.
 
 **Transitions.**
 1. **empty**, message: queue it, react 👀, run `ensure_seat` (`scopes create` on the seat's node), then `start_other {project, scope: "seats/<slug>"}` with `peer`. → starting. The rows go into the brief but stay undelivered.
-2. **starting**: the agent's first live `list_other` row or social call marks the briefed rows delivered. → occupied. If the agent is not up within 3 min, requeue the rows and count one breaker attempt: 4 per hour, backoff 60, 120, 300 and 600 s, then a 6 h hold and a down notice.
+2. **starting**: the agent's first live `list_other` row or social call marks the briefed rows delivered. → occupied. If the agent is not up within 3 min, requeue the rows and count one breaker attempt: 4 per hour, backoff 60, 120, 300 and 600 s, then a 6 h hold. The first failure of a streak and the hold each send a notice. An agent that comes up ends the streak.
 3. **occupied**: each message is pushed. A Gone or exhausted push returns its rows → empty, then step 1.
-4. `mark_seat_done`, then 4 h with no message: send the retire line → retiring. An agent is started unpinned and never with `replaces`.
-5. **retiring**: reply once "agent is changing shift, will respond within 5 mins" and queue. When the agent is gone → empty. After 4 min, start the next agent beside it with the previous job's transcript path, without `replaces`, and unbind the old agent.
-6. An agent that dies before done gets a down notice and no restart. Its undelivered rows start the next agent.
+4. **occupied**, 4 h with no message and no running turn: `stop_other` the agent → empty, with the job marked stopped. The clock starts at the later of the last message and the job's `active_at` in `list_other`. Only an agent the seat started is stopped, never an adopted one. A failed stop retries at the next tick. No notice goes out.
+5. **empty** after an idle stop, message: `resume_other` the stopped job with the waiting lines as its prompt, so the agent keeps its conversation, then apply the seat's switch to it. → starting. A refused resume falls back to step 1 with the previous job's transcript in the brief and no `replaces`. A resume that does not come up is not tried again.
+6. An agent the seat started that ends, or stops taking pushes, gets a notice and no restart. Its undelivered rows start the next agent. An adopted session ends with no notice.
 7. **After a restart**: undelivered rows go to a live agent, or cold-start. Slack resync routes only messages after `synced_ts` that are not in `seat_routed`. Discord gets a per-chat cursor. Nothing older starts an agent.
 
 **Trust.**
-- `mark_seat_done` and `forward` join `SEAT_CHAT_VERBS` (`core/crates/awm-trust/src/trust.rs:122`).
+- `forward` joins `SEAT_CHAT_VERBS` (`core/crates/awm-trust/src/trust.rs:122`).
 - `_mount_refusal` (`hub_adapter.py:623`) carries over for `mount` and `seat_adopt`, so `force` never takes a trusted seat.
 - An adopted job's level must be at least its seat's level.
 
 **Edges.**
-- A hand mount on a declared seat adopts it, as with Kalen and Patrik.
+- A hand mount on a declared seat is refused. It names `seats adopt` on the seat's host, the one way to hand a session a declared seat.
 - On the first Rust start, every live `social_mounts` row (20 today) becomes an adopted seat, keeper-started or not.
 - Hand mounts on chats that no rule declares keep routing to their holder.
 - The `social_quiet_threads` gate (`send quiet=`) carries over.
@@ -75,9 +75,15 @@ One module owns every seat in `social.db`: `seat_registry`, a durable `seat_queu
 - "Cannot tell", including any `errors[]` for the node, never empties a seat.
 
 **Line, brief, names.**
-- The pushed line is `[<server>/<chat>/<sender>, <level>] ↳<thread> text`, cut at 1500 characters.
+- The pushed line is `[<server>/<chat>/<sender>, <level>, msg <id>] ↳<thread> text`, cut at 1500 characters. The id lets `seats react` and `seats download` name a message other than the latest.
+- A Discord line shows each mention by name, and the bot as `@you`. A channel message that mentions only others is stored and kept off the seat.
 - The brief gives absolute paths under `<workspace>/projects/agentic-commons/main/docs/` (`seat-sop.md`, then `briefs/<platform>-<server-slug>.md`, or `discord-dm.md` for Tony), plus the seat facts.
-- Sessions are named `seat:<platform>/<server>/<chat>`, with slugs in lowercase-hyphen form.
+- Sessions are named `seat:<platform>/<server>/<chat>`, or `seat:<platform>/dm/<person>` for a DM, with slugs in lowercase-hyphen form. Social derives the name from the stored row on each read and stores none. `social seats` gives it as `label`, which telemetry shows on Ops.
+
+**Roster.** A seat lives while `social.toml` declares it. At startup social forgets each stored row the config no longer declares, re-sends each kept seat's declaration, then sends each host its roster. A host forgets any seat its roster lacks, and a live agent of that seat keeps running. `social seats` lists every stored seat, also one whose chat the platform has not listed yet, such as a Discord channel before the gateway is ready.
+- **CAUTION** Social checks a stored row at startup with no sender, so a sender exception alone never drops a DM seat. Put the DM's channel id in the rule's `except` too, as for Slackbot.
+- **CAUTION** A rollout restarts social before the seat hosts. A host on the older build acks a row kind it does not know and loses it. Restart social once more after a rollout that adds a row kind.
+- **CAUTION** Telemetry reads `social seats` only when it connects. Restart telemetry after a change to the roster's shape.
 
 Tests:
 - one test per transition and edge;
@@ -93,11 +99,26 @@ Ops on the vault shows each seat with a Remote Control switch (`fleet.md` R147 i
 
 - **State.** Schema v10 adds `remote_control` and `rc_url` to `seat_registry`. Python social stops at v8 and never read the seat tables, so a rollback is unchanged.
 - **Seat id.** `<account>/<channel_id>`, the table's key. The session name is the seat's `label`, because a chat rename changes it.
-- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). A failed live call keeps the switch, and the next start carries it.
-- **Start.** `start_other` passes the seat's switch.
+- **Verb.** `seat_remote_control {seat, on}` has no MCP tool. Only operations on this node may call it. On a seat whose agent was started or is up, it also calls reflection `remote_control` with the session name, each `/` written as `-` (`sessions.md` R146). The row then holds what the session really is, read back from `list_other`. A failed live call keeps the new switch for the seat's next start, and the seat event carries `rc_live: failed: <why>`.
+- **Start.** `start_other` passes the seat's switch. A resume after an idle stop applies it.
+- **Persistence.** cch records each switch on the job's lineage record. A daemon relaunch or a resume of the session brings the recorded switch back (`sessions.md` R146).
 - **Adoption.** Adoption leaves the live session alone. An occupied seat records its switch as on, because every seat session before the switch started with Remote Control on.
-- **Link.** `rc_url` comes from reflection's answer or the job's `list_other` row. It is empty until harness adds `rc_url` to those rows.
-- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. No event goes out at boot, so a subscriber reads `social seats` once when it connects.
+- **Link.** `remote_control` and `rc_url` of an occupied seat follow the job's `list_other` row on every tick, so a switch made outside the seat shows on Ops.
+- **Event.** `social/seats` carries `{seat, label, state, remote_control, node, model, effort, refresh, job?, rc_url?, ts}`. The seat's save emits it when one of those fields changed. A switch answer adds `rc_live` (`applied`, `none` or `failed: <why>`) and a Refresh answer adds `refresh_live` (`pending` or `kept`). Either answer always emits, so Ops can settle a pending request. At boot each seats plugin reports every seat, and social emits only for a seat whose evented fields changed. A subscriber reads `social seats` once when it connects.
+
+### Model, effort and Refresh
+
+Ops shows each seat's model and effort beside its switch, with a Refresh button that applies a new pick.
+
+- **Pick.** The pick lives on the seats plugin's row, not on the decl, so a `social.toml` change keeps it. The seat runs on the pick, else the decl's pair, else the node's settings. `model` and `effort` in the event are that resolved pair.
+- **Verb.** `seat_refresh {seat, model, effort}` has no MCP tool. Only operations on this node may call it. It refuses an effort above high. It does not check the model name, because cch takes any model id.
+- **Refresh.** On a seat whose agent the seat started, the refresh stops the agent at the next tick it is not mid-turn, then resumes its conversation on the pick. An empty seat keeps the pick for its next start (`kept`). An adopted seat keeps the pick and is never stopped, because the seat cannot start that session again.
+- **Resume.** The resume takes the pick through `resume_other`'s `model` and `effort`.
+- **Restart line.** The resumed agent gets a `[seat]` line that names its new pair. That line has no message id, so it gets no 👀. The agent's reply target falls back to its predecessor's last line.
+
+**CAUTION** No session event marks the end of a turn. While a refresh waits on a busy agent, the seat looks at it on every tick (15 s).
+
+**CAUTION** cch applies a resume's `model` and `effort` to a retired session only. The seat's stop removes the job, which makes it retired. A stop that kept the job would resume the agent on its old pair.
 
 **CAUTION** A start emits `starting` twice: once before reflection answers, and once with the job id.
 

@@ -71,6 +71,7 @@ impl Settings {
             .map(|m| m.iter().map(|(k, v)| (k.clone(), strings(Some(v)))).collect())
             .unwrap_or_default();
         allowed.entry("agent".into()).or_insert_with(|| vec![home.clone()]);
+        allowed.entry("service".into()).or_insert_with(|| vec!["*".into()]);
         let board_origins = match env("AWM_APPROVER_BOARD_ORIGINS") {
             Some(s) => s.split(',').filter(|o| !o.is_empty()).map(str::to_string).collect(),
             None => strings(cfg.get("board_origins")),

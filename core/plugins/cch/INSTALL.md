@@ -14,6 +14,7 @@ cch keeps no database. It reads Claude Code's own files in place under `$CLAUDE_
 |---|---|
 | `<AWM_DIR>/services/cch/pending/` | the promise store: one record per session that owes a follow-up, and `unsent.jsonl`, the events reflection did not take |
 | `<AWM_DIR>/services/cch/hold.json` | the keeper's holds on the Claude Code daemon |
+| `<AWM_DIR>/services/cch/pool.json` | the pool ledger: each session the warm pool made, by canonical session id, as `spare`, `claimed` or `kept`. A session's name carries none of this, so a lost ledger makes every spare look like a person's session. An entry stays until `claude rm` deletes its job dir. The daemon drops a job from its roster when the job's process dies, so the pool also reads the job dirs the roster no longer lists |
 | `<AWM_DIR>/services/cch/isolated/` | the isolated sessions' tokens, and one Claude home per session |
 | `${AWM_CX_STATE:-~/.claude/cx}/` | lineage records under `starts/`, the warm pool's state and the reboot mark |
 | `~/.claude.json` | trust for an awm worktree that a session moves into |
@@ -23,13 +24,12 @@ cch keeps no database. It reads Claude Code's own files in place under `$CLAUDE_
 
 ## First start
 
-Before cch answers any verb, it runs the first four steps in order:
+Before cch answers any verb, it runs the first three steps in order:
 
-1. It takes the `.pre-rust/` snapshot once. A failed snapshot stops the start, so nothing writes unsnapshotted state.
-2. It copies reflection's old `pending/` and the keep service's `hold.json` into its own folder, and drops a `MIGRATED` marker in each source. The sources stay for 7 days.
-3. It replays the promises it owes.
-4. It replaces the four awm hook entries in `settings.json` with `cch hook <name>`, and keeps a backup as `~/.claude/backups/settings.json.<ts>.cch`. It touches no other entry. Set `AWM_CCH_HOOKS=off` to skip this step.
-5. In the background, it disables the old `awm-isolated-login-sync` user unit when one exists.
+1. It copies reflection's old `pending/` and the keep service's `hold.json` into its own folder, and drops a `MIGRATED` marker in each source. The sources stay for 7 days.
+2. It replays the promises it owes.
+3. It replaces the four awm hook entries in `settings.json` with `cch hook <name>`, and keeps a backup as `~/.claude/backups/settings.json.<ts>.cch`. It touches no other entry. Set `AWM_CCH_HOOKS=off` to skip this step.
+4. In the background, it disables the old `awm-isolated-login-sync` user unit when one exists.
 
 **CAUTION** `awm/scripts/deploy-hooks.sh` no longer carries cch's hooks. An older copy of that script adds the Python entries back beside cch's, and every hook then fires twice.
 

@@ -16,7 +16,7 @@
 //! Outside awm the user answers the trust prompt themselves. [`grant_awm_worktree`] is the
 //! exception: a worktree of an awm project under the workspace's projects directory is a directory
 //! awm created, so the agent moving into it records the trust a person would only have
-//! rubber-stamped. A shape of `~/.claude.json` this module does not recognise reads as untrusted.
+//! rubber-stamped. A repository inside an awm project, such as a seat's folder, is one too. A shape of `~/.claude.json` this module does not recognise reads as untrusted.
 //!
 //! A grant rewrites the file the way Claude Code does, through a temporary file and a rename, and
 //! byte for byte as Python's `json.dump(data, fh, indent=2)` would: key order kept, two-space
@@ -117,8 +117,8 @@ async fn workspace_key_in(
     }
 }
 
-/// The trust entries an awm worktree needs — its project's `.bare` repository, then itself — or
-/// none for a directory that is not a worktree under `<projects_root>/<project>/`.
+/// The trust entries a directory awm created needs: a worktree's `.bare` repository and itself,
+/// or a repository inside a project and the directory itself. None for anything else.
 pub async fn awm_worktree_keys(
     path: impl AsRef<Path>,
     projects_root: impl AsRef<Path>,
@@ -131,10 +131,17 @@ pub async fn awm_worktree_keys(
     let Some(key) = workspace_key(&p).await else {
         return Vec::new();
     };
+    if key.file_name().is_none_or(|n| n != ".bare") {
+        let project = key.strip_prefix(&root).ok().and_then(|rel| rel.components().next());
+        if !project.is_some_and(|c| root.join(c).join(".bare").is_dir()) {
+            return Vec::new();
+        }
+        return if key == p { vec![key] } else { vec![key, p] };
+    }
     let Some(project) = key.parent() else {
         return Vec::new();
     };
-    if key.file_name().is_none_or(|n| n != ".bare") || project.parent() != Some(root.as_path()) {
+    if project.parent() != Some(root.as_path()) {
         return Vec::new();
     }
     if !p.starts_with(project) || p.starts_with(&key) {
@@ -507,7 +514,15 @@ mod tests {
         grant_awm_worktree(&r.wt, &t.path, &declined).await;
         assert_eq!(read(&declined)["projects"][s(&r.bare)], json!({ ACCEPTED: true, "mcpServers": { "a": 1 } }));
 
-        // Refused: outside the root, a plain repository, the project dir, the bare repo, a non-repo,
+        // A repository inside a project, as a seat's folder is, is its own entry.
+        let seat = r.bare.parent().unwrap().join("seats").join("ana");
+        std::fs::create_dir_all(&seat).unwrap();
+        git(&seat, &["init", "-q"]);
+        let seated = trust_file(&t.path, json!({}));
+        assert_eq!(grant_awm_worktree(&seat, &t.path, &seated).await, vec![s(&seat)]);
+        assert_eq!(start_refusal(&seat, &seated).await, None);
+
+        // Refused: outside the root, a plain repository outside any project, the project dir, the bare repo, a non-repo,
         // and a worktree of another project's repository.
         let h = trust_file(&t.path, json!({}));
         let stray = t.path.join("proj-b").join("scope");

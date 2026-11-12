@@ -326,7 +326,6 @@ pub struct Service {
     on_start: Option<BoxFut<anyhow::Result<()>>>,
     on_ready: Option<BoxFut<()>>,
     on_shutdown: Option<BoxFut<()>>,
-    state_toml: Option<&'static str>,
 }
 
 /// The init gate: None while `on_start` runs, then its outcome.
@@ -354,7 +353,7 @@ impl Service {
     }
 
     pub fn new(env: Env) -> Self {
-        Self { ctx: Context::new(env), verbs: vec![], sessions: BTreeMap::new(), api: serde_json::Map::new(), mount: None, on_start: None, on_ready: None, on_shutdown: None, state_toml: None }
+        Self { ctx: Context::new(env), verbs: vec![], sessions: BTreeMap::new(), api: serde_json::Map::new(), mount: None, on_start: None, on_ready: None, on_shutdown: None }
     }
 
     /// The handle handlers and background tasks emit and count through.
@@ -479,13 +478,6 @@ impl Service {
         self
     }
 
-    /// The plugin's `state.toml` (statecheck's declaration), usually `include_str!("../state.toml")`.
-    /// [`Service::run`] takes its snapshot before anything else. Without one, nothing is copied.
-    pub fn state(mut self, toml: &'static str) -> Self {
-        self.state_toml = Some(toml);
-        self
-    }
-
     /// Run `init` once, beside registration: the service is ready at once, and calls wait for
     /// `init` up to `AWM_INIT_WAIT_S` (60 s). A failed `init` ends [`Service::run`] with its error.
     pub fn on_start(mut self, init: impl Future<Output = anyhow::Result<()>> + Send + 'static) -> Self {
@@ -507,8 +499,6 @@ impl Service {
     /// Register, send `ready` and serve until the gateway stands the service down. A lost
     /// connection reconnects with backoff, and gives up after `AWM_RECONNECT_DEADLINE_S` (10 s).
     pub async fn run(mut self) -> anyhow::Result<()> {
-        let (env, toml) = (self.ctx.env().clone(), self.state_toml);
-        tokio::task::spawn_blocking(move || snapshot_state(&env, toml)).await??;
         let manifest = self.manifest();
         let mount = match self.mount.take() {
             Some((port, router)) => Some(serve_mount(port, router).await?),
@@ -552,22 +542,6 @@ impl Service {
             }
         }
     }
-}
-
-/// Take the pre-redux snapshot of what the plugin declares, before its first Rust write. A failure
-/// refuses the start. Only a declaration is copied: a service dir can hold data that is not
-/// pre-redux state, such as kb's LanceDB.
-fn snapshot_state(env: &Env, toml: Option<&str>) -> anyhow::Result<()> {
-    let Some(text) = toml else { return Ok(()) };
-    let decl = awm_statecheck::decl::Decl::parse(text, &env.state_dir(), &env.awm_dir, |k| std::env::var(k).ok())?;
-    let out = awm_statecheck::snapshot_once(&env.plugin, &decl).map_err(|e| anyhow::anyhow!("{}: pre-redux snapshot: {e}", env.service))?;
-    for p in &out.taken {
-        tracing::info!("{}: took the pre-redux snapshot {}", env.service, p.display());
-    }
-    for n in &out.notes {
-        tracing::info!("{}: snapshot: {n}", env.service);
-    }
-    Ok(())
 }
 
 fn env_secs(name: &str, default: f64) -> f64 {
@@ -944,19 +918,6 @@ mod tests {
             awm_dir: PathBuf::from("/tmp"),
             token_file: None,
         }
-    }
-
-    #[test]
-    fn the_snapshot_copies_only_what_the_plugin_declares() {
-        let tmp = tempfile::tempdir().unwrap();
-        let env = Env { awm_dir: tmp.path().to_path_buf(), ..env() };
-        std::fs::create_dir_all(env.state_dir()).unwrap();
-        std::fs::write(env.state_dir().join("data.json"), "{}").unwrap();
-        snapshot_state(&env, None).unwrap();
-        assert!(!env.state_dir().join(".pre-rust").exists());
-        snapshot_state(&env, Some("")).unwrap();
-        assert!(env.state_dir().join(".pre-rust/state/data.json").exists());
-        snapshot_state(&env, Some("")).unwrap();
     }
 
     #[test]

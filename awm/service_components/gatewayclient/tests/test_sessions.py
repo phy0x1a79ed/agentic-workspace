@@ -6,12 +6,14 @@ import pytest
 import awm.gatewayclient as gc
 from awm.gatewayclient import sessions
 
+SID = "cc" + "a" * 32
+
 
 def test_session_of_asks_reflection_with_the_pid(monkeypatch):
     seen = []
     monkeypatch.setattr(gc, "call_sync", lambda svc, fn, args, **kw: seen.append(
-        (svc, fn, args)) or {"ok": True, "session_id": "cc1", "job": "abcd1234"})
-    assert sessions.session_of(42)["job"] == "abcd1234"
+        (svc, fn, args)) or {"ok": True, "session_id": "cc1", "name": "worker"})
+    assert sessions.session_of(42)["name"] == "worker"
     assert seen == [("reflection", "session_of", {"pid": 42})]
 
 
@@ -38,12 +40,12 @@ def test_reflection_down_reads_as_none(monkeypatch):
 def test_tell_raises_when_the_line_was_not_delivered(monkeypatch):
     monkeypatch.setattr(gc, "call_sync", lambda *a, **kw: {"ok": False, "reason": "a modal is open"})
     with pytest.raises(RuntimeError, match="a modal is open"):
-        sessions.tell("abcd1234", "hi")
+        sessions.tell(SID, "hi")
 
 
-def test_tell_messages_the_job(monkeypatch):
+def test_tell_messages_the_session(monkeypatch):
     seen = []
     monkeypatch.setattr(gc, "call_sync", lambda svc, fn, args, **kw: seen.append(
         (svc, fn, args)) or {"ok": True})
-    sessions.tell("abcd1234", "hi")
-    assert seen == [("reflection", "message", {"to": "abcd1234", "text": "hi"})]
+    sessions.tell(SID, "hi")
+    assert seen == [("reflection", "message", {"to": {"id": SID}, "text": "hi"})]

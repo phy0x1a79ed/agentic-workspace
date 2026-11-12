@@ -29,7 +29,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.zotero import orders, source, stream as stream_mod, sync, vault
+from awm.zotero import add, orders, source, stream as stream_mod, sync, vault
 
 log = logging.getLogger("awm.zotero.hub_adapter")
 
@@ -72,6 +72,8 @@ MAY_CREATE_ROOT = os.environ.get(
 
 ITEMS_PAGE = 200
 ITEMS_MAX = 1000
+#: The longest `items` holds a call open, under the singleton door's 130 s.
+WAIT_MAX_S = 100
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -96,8 +98,9 @@ API_MANIFEST: dict[str, Any] = {
                 "The mirrored references, a page at a time: key, library, title, "
                 "creators, year, DOI, URL, publication, abstract, tags and stored "
                 "file names. Pass `since` to get only the items that moved after "
-                "a cursor. Read the reply's `versions` as the next cursor. Open "
-                "to the operator and to peers with an edge to this node."
+                "a cursor. Read the reply's `versions` as the next cursor. Pass "
+                "`wait` to hold the call until something moves past `since`. "
+                "Open to the operator and to peers with an edge to this node."
             ),
             "params": [
                 {"name": "since", "type": "object",
@@ -106,6 +109,30 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "offset", "type": "integer", "description": "Skip this many items. Default 0."},
                 {"name": "limit", "type": "integer",
                  "description": f"Items per page, 1-{ITEMS_MAX}. Default {ITEMS_PAGE}."},
+                {"name": "wait", "type": "integer",
+                 "description": "When nothing moved past `since`, wait up to "
+                                f"this many seconds, at most {WAIT_MAX_S}, for "
+                                "a sync that moves something. Default 0."},
+            ],
+            "timeout": WAIT_MAX_S + 20,
+        },
+        {
+            "name": "add",
+            "tool": "zotero_add",
+            "description": (
+                "File one paper in Tony's personal Zotero library, in the "
+                "`Agent adds` collection. Call this only when the user "
+                "explicitly asks to add a specific paper; never add papers on "
+                "your own initiative. Give a DOI, a URL, or fields with a "
+                "title. A DOI the library already holds is not added twice."
+            ),
+            "params": [
+                {"name": "doi", "description": "The paper's DOI. Its metadata comes from Crossref."},
+                {"name": "url", "description": "A web page to file when there is no DOI."},
+                {"name": "fields", "type": "object",
+                 "description": "Zotero item fields, such as title, itemType "
+                                "or creators. They override what the DOI or "
+                                "URL gave."},
             ],
             "timeout": 60,
         },
@@ -250,6 +277,10 @@ def _peer_or_operator(as_: str | None, verb: str) -> None:
         raise PermissionError(f"{verb} is open to the operator and to peers only")
 
 
+def _held_library() -> dict[str, Any]:
+    return sync.held(vault.Vault()).read()
+
+
 def items_page(library: dict[str, Any], since: dict[str, int], offset: int, limit: int) -> dict[str, Any]:
     """One page of ``library``'s items that moved past ``since``, oldest version first."""
     moved = [i for i in library.get("items") or []
@@ -268,15 +299,44 @@ async def _h_items(args: dict, as_: str | None = None) -> dict:
         raise ValueError("since must be an object of {library: version}")
     offset = max(0, int(args.get("offset") or 0))
     limit = max(1, min(int(args.get("limit") or ITEMS_PAGE), ITEMS_MAX))
-    library = await asyncio.to_thread(lambda: sync.held(vault.Vault()).read())
-    return items_page(library, {str(k): int(v) for k, v in since.items()}, offset, limit)
+    since = {str(k): int(v) for k, v in since.items()}
+    wait = max(0, min(int(args.get("wait") or 0), WAIT_MAX_S))
+    moved = MOVED
+
+    async def _page() -> dict:
+        return items_page(await asyncio.to_thread(_held_library), since, offset, limit)
+    page = await _page()
+    if page["total"] or not wait:
+        return page
+    try:
+        await asyncio.wait_for(moved.wait(), wait)
+    except TimeoutError:
+        return page
+    return await _page()
+
+
+async def _h_add(args: dict, as_: str | None = None) -> dict:
+    _peer_or_operator(as_, "add")
+    fields = args.get("fields") or {}
+    if not isinstance(fields, dict):
+        raise ValueError("fields must be an object of Zotero item fields")
+
+    def _add() -> dict:
+        held = _held_library().get("items") or []
+        return add.add(doi=(args.get("doi") or "").strip(),
+                       url=(args.get("url") or "").strip(),
+                       fields=fields, held=held)
+    return await asyncio.to_thread(_add)
 
 
 async def _h_pull(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "pull")
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         sync.pull, vault.Vault(), force=bool(args.get("force")),
         may_create=MAY_CREATE_ROOT)
+    if (result or {}).get("changed"):
+        _bundle_moved()
+    return result
 
 
 async def _h_apply(args: dict, as_: str | None = None) -> dict:
@@ -289,9 +349,20 @@ async def _h_apply(args: dict, as_: str | None = None) -> dict:
         dry_run=bool(args.get("dry_run")))
 
 
+#: Set, then replaced, each time a sync changes the bundle. A waiting `items`
+#: call holds the event it found, so each wake reaches every waiter once.
+MOVED = asyncio.Event()
+
+
+def _bundle_moved() -> None:
+    global MOVED
+    MOVED.set()
+    MOVED = asyncio.Event()
+
+
 async def _h_sync(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "sync")
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         sync.run, vault.Vault(), force=bool(args.get("force")),
         parent=(args.get("parent") or "").strip() or "root",
         may_create=MAY_CREATE_ROOT,
@@ -301,6 +372,9 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
         # Which libraries the stream named. Absent means look at all of them,
         # which is what the floor tick and a hand invocation both want.
         only=(args.get("only") or None))
+    if ((result or {}).get("pull") or {}).get("changed"):
+        _bundle_moved()
+    return result
 
 
 #: Sync now orders, once the config names alcor's public key.
@@ -332,6 +406,7 @@ async def _h_order(args: dict, as_: str | None = None) -> dict:
 HANDLERS = {
     "status": _h_status,
     "items": _h_items,
+    "add": _h_add,
     "pull": _h_pull,
     "apply": _h_apply,
     "sync": _h_sync,

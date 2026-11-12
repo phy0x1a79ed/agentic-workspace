@@ -84,9 +84,9 @@
      "description": "The Remote Control name when turning on; a plain label."
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -103,9 +103,9 @@
      "description": "A model alias or full name, e.g. opus or sonnet[1m]."
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -122,9 +122,9 @@
      "description": "low, medium or high. High is the upper limit; xhigh and max are refused on any model."
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -141,9 +141,9 @@
      "description": "The new name, one short line."
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -160,9 +160,9 @@
      "description": "An absolute directory on this node."
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -185,9 +185,9 @@
      "description": "An MCP server name, such as awm, or all."
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -198,22 +198,22 @@
    "timeout": 60,
    "params": [
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
   {
    "name": "stop",
    "tool": "reflection_stop",
-   "description": "Retire a background session on this node: stop it and remove its job (`claude stop`, then `claude rm`). The transcript stays, so the session is still resumable by its session id. A retire wakes each session that waits on it (`wait`), on any node. Retiring is the last step of every finished session: one that ends its work and sits idle never wakes its waiters. Works on any session, and on a job whose session has already exited, by its job id. Your own session is refused unless confirm is true, and is then stopped after this call returns. A terminal session is refused.",
+   "description": "Retire a background session on this node: stop it and remove its job (`claude stop`, then `claude rm`). The transcript stays, so the session is still resumable by its session id. A retire wakes each session that waits on it (`wait`), on any node. Retiring is the last step of every finished session: one that ends its work and sits idle never wakes its waiters. Works on any session, and on a stopped session whose job is left. Your own session is refused unless confirm is true, and is then stopped after this call returns. A terminal session is refused.",
    "timeout": 60,
    "params": [
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     },
     {
      "name": "confirm",
@@ -229,9 +229,9 @@
    "timeout": 30,
    "params": [
     {
-     "name": "job",
-     "type": "string",
-     "description": "A job id, or a session name as `list_other` shows it. Omit to act on your own session."
+     "name": "to",
+     "type": "object",
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
     }
    ]
   },
@@ -243,9 +243,9 @@
    "params": [
     {
      "name": "to",
-     "type": "string",
+     "type": "object",
      "required": true,
-     "description": "The session: `<session name>@<node>` or `<job id>@<node>`. A bare name or job means this node. The address splits at the last `@`. A name that matches two sessions is refused, and the refusal lists their jobs."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
     },
     {
      "name": "text",
@@ -277,7 +277,7 @@
   {
    "name": "start_other",
    "tool": "reflection_start_other",
-   "description": "Start a new top-level agent (session), in a scope or the lobby. With a human's permission, start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Get a human's permission before you start a session. Permission is a human's message to you, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A chat line counts only at level trusted. A session passes on only what a human allowed. Without permission, ask in the chat, or with `operations request_human` in a background session. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` and `effort` are required, with no default: a call without them is refused. Pick both to fit the task, a smaller model and lower effort for mechanical work, a larger model and high effort for design or debugging. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. When a human asks for a new agent with no task, pass suggest:true, pin:true, model:opus, effort:high and no prompt. Every caller gets the same session, whoever it is. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
+   "description": "Start a new top-level agent (session), in a scope or the lobby. With a human's permission, start a named background Claude Code session in a scope's worktree, creating the worktree if it is absent, and return its job id and the `claude attach` command. Get a human's permission before you start a session. Permission is a human's message to you, a plan a human approved that names the session, a task brief from a human that asks for it, or a human's precedent for that kind of start. A chat line counts only at level trusted. A session passes on only what a human allowed. Without permission, ask in the chat, or with `operations request_human` in a background session. Refuses on a station, for a caller that is not a domestic peer, when no Claude Code daemon runs, when the worktree is untrusted, or when a live session already holds the name or the scope. The new session claims its scope, and a stop ends the claim. A lobby start claims nothing until its `cd`. A worktree of an awm project is trusted first, not refused. The session defaults to skip-permissions. `model` defaults to opus and `effort` to medium. Pick a smaller model and lower effort for mechanical work. High is the upper limit, so xhigh and max are refused on any model. A call that names Fable needs the user to agree first: ask in the chat. When a human asks for a new agent with no task, pass suggest:true, pin:true and no prompt. Every caller gets the same session, whoever it is. Reflection starts the typed line with `from <session name>@<node> [job <id>]: `, built from the caller the gateway stamped, so the receiver sees who sent it.",
    "params": [
     {
      "name": "project",
@@ -314,14 +314,14 @@
     {
      "name": "model",
      "type": "string",
-     "required": true,
-     "description": "A model alias or full name, chosen to fit the task."
+     "required": false,
+     "description": "A model alias or full name. Defaults to opus."
     },
     {
      "name": "effort",
      "type": "string",
-     "required": true,
-     "description": "low, medium or high, chosen to fit the task. High is the upper limit; xhigh and max are refused."
+     "required": false,
+     "description": "low, medium or high. Defaults to medium. High is the upper limit; xhigh and max are refused."
     },
     {
      "name": "permission",
@@ -462,10 +462,10 @@
    "description": "Retire a session that `start_other` created: stop it and remove its job, as `stop` does. A pinned job is unpinned first. The retire wakes each session that waits on it. Refuses a job that `start_other` did not create.",
    "params": [
     {
-     "name": "job",
-     "type": "string",
+     "name": "to",
+     "type": "object",
      "required": true,
-     "description": "The job id `start_other` returned."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
     }
    ],
    "timeout": 30
@@ -477,14 +477,24 @@
    "params": [
     {
      "name": "to",
-     "type": "string",
+     "type": "object",
      "required": true,
-     "description": "The session: `<session name>@<node>` or `<job id>@<node>`. A bare name or job means this node. The address splits at the last `@`. A name that matches two sessions is refused, and the refusal lists their jobs."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
     },
     {
      "name": "prompt",
      "type": "string",
      "description": "The first message the resumed session gets."
+    },
+    {
+     "name": "model",
+     "type": "string",
+     "description": "The model a retired session resumes on, in place of the one it was started with. A stopped job that still exists keeps its own."
+    },
+    {
+     "name": "effort",
+     "type": "string",
+     "description": "The effort a retired session resumes at, in place of the one it was started with. High is the upper limit."
     }
    ],
    "timeout": 90
@@ -499,10 +509,10 @@
    "description": "Give a job that cx did not start a lineage record, so `resume_other` and `stop_other` accept it. For a session started by hand that a keeper now keeps.",
    "params": [
     {
-     "name": "job",
-     "type": "string",
+     "name": "to",
+     "type": "object",
      "required": true,
-     "description": "The job id."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
     }
    ],
    "timeout": 30
@@ -510,7 +520,7 @@
   {
    "name": "harness_event",
    "tool": "reflection_harness_event",
-   "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md § Events). A provider also reports a session's lifecycle: started, stopped, remote_control or renamed.",
+   "description": "A harness plugin reports how a command with a follow-up ended, done or lost, or that a session cleared itself, clear (harness-contract.md § Events). A provider also reports a session's lifecycle: started, stopped, remote_control, renamed or state.",
    "params": [
     {
      "name": "session_id",
@@ -521,7 +531,7 @@
      "name": "kind",
      "type": "string",
      "required": true,
-     "description": "done, lost, clear, or a lifecycle kind: started, stopped, remote_control, renamed"
+     "description": "done, lost, clear, or a lifecycle kind: started, stopped, remote_control, renamed, state"
     },
     {
      "name": "parent",
@@ -573,11 +583,6 @@
      "type": "integer"
     },
     {
-     "name": "job",
-     "type": "string",
-     "description": "The job id, with a lifecycle kind."
-    },
-    {
      "name": "session_kind",
      "type": "string",
      "description": "The session's row kind, with a lifecycle kind."
@@ -591,6 +596,21 @@
      "name": "rc_url",
      "type": "string",
      "description": "The Remote Control link, while it is on."
+    },
+    {
+     "name": "state",
+     "type": "string",
+     "description": "A background job's state: working, blocked or done."
+    },
+    {
+     "name": "needs",
+     "type": "string",
+     "description": "While blocked: what the session needs."
+    },
+    {
+     "name": "retired",
+     "type": "boolean",
+     "description": "With stopped: the stop was a retire, not a crash."
     }
    ],
    "surfaces": [

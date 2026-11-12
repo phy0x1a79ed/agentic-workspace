@@ -25,12 +25,12 @@ use crate::tether::stream::{Mark, SessionLogs, Stream};
 const BEARER: &str = "a-test-bearer-nothing-guards";
 const NODE: &str = "testnode";
 
-fn holder(c: char, job: &str, name: &str, level: &str) -> Holder {
-    Holder { node: NODE.into(), session: format!("cc{}", c.to_string().repeat(32)), job: job.into(), name: name.into(), level: level.into(), isolated: false }
+fn holder(c: char, name: &str, level: &str) -> Holder {
+    Holder { node: NODE.into(), session: format!("cc{}", c.to_string().repeat(32)), name: name.into(), level: level.into(), isolated: false }
 }
 
 fn tester() -> Holder {
-    holder('a', "job-aaaa", "tester", "trusted")
+    holder('a', "tester", "trusted")
 }
 
 async fn eventually<F: Fn() -> bool>(what: &str, f: F) {
@@ -111,13 +111,13 @@ impl Captured {
     }
     fn send(&self) -> awm_plugin_sdk::push::SendFn {
         let me = self.clone();
-        Arc::new(move |node, job, text| {
+        Arc::new(move |node, session, text| {
             let me = me.clone();
             Box::pin(async move {
-                if me.gone.lock().unwrap().contains(&job) {
+                if me.gone.lock().unwrap().contains(&session) {
                     return Outcome::Gone;
                 }
-                me.lines.lock().unwrap().push((node, job, text));
+                me.lines.lock().unwrap().push((node, session, text));
                 Outcome::Delivered
             })
         })
@@ -398,13 +398,96 @@ impl Guest {
     async fn leave(&self) {
         assert!(self.http.post(format!("{}/leave", self.link)).send().await.unwrap().status().is_success());
     }
+
+    /// The how-to's FILES steps: the bytes up, and the id back.
+    async fn upload(&self, bytes: Vec<u8>) -> String {
+        let r = self.http.post(format!("{}/file", self.link)).body(bytes).send().await.unwrap();
+        assert!(r.status().is_success(), "{}", r.status());
+        r.json::<Value>().await.unwrap()["id"].as_str().unwrap().to_string()
+    }
+
+    async fn fetch(&self, id: &str) -> Vec<u8> {
+        self.http.get(format!("{}/file/{id}", self.link)).send().await.unwrap().bytes().await.unwrap().to_vec()
+    }
+}
+
+/// The path a pushed line says a file was saved at.
+fn saved_at(pushed: &Captured) -> Option<PathBuf> {
+    pushed.texts().iter().find_map(|t| Some(PathBuf::from(t.split("saved at ").nth(1)?.trim_end_matches(')'))))
+}
+
+#[tokio::test]
+async fn files_cross_a_room_both_ways_beside_the_messages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
+    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
+    let mut guest = Guest::new(opened["link"].as_str().unwrap());
+
+    let theirs: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let id = guest.upload(theirs.clone()).await;
+    guest.post(json!({"text": "the log", "file": {"id": id, "name": "../run log.txt", "size": theirs.len()}})).await;
+    eventually("the guest's file is saved", || saved_at(&pushed).is_some()).await;
+    let line = pushed.texts().into_iter().find(|t| t.contains("saved at")).unwrap();
+    assert!(line.contains("[untrusted] from visitor: the log ⏎ (file \"../run log.txt\", 300000 bytes"), "{line}");
+    let path = saved_at(&pushed).unwrap();
+    assert!(path.to_string_lossy().ends_with(".files/1-run_log.txt") && path.starts_with(tmp.path()), "{path:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), theirs);
+
+    let ours = tmp.path().join("ours.bin");
+    std::fs::write(&ours, b"from the host").unwrap();
+    let sent = node.ch.send(&tester(), ours.to_str().unwrap(), "here", None, Some("report.bin")).await.unwrap();
+    assert_eq!((sent["file"]["name"].as_str(), sent["file"]["size"].as_u64(), sent["sealed"].as_bool()), (Some("report.bin"), Some(13), Some(false)));
+    let heard = guest.hear().await;
+    let m = &heard["messages"][0];
+    assert_eq!((m["text"].as_str(), m["file"]["name"].as_str()), (Some("here"), Some("report.bin")));
+    assert_eq!(guest.fetch(m["file"]["id"].as_str().unwrap()).await, b"from the host");
+    assert!(node.ch.send(&tester(), "relative.txt", "", None, None).await.is_err());
+}
+
+#[tokio::test]
+async fn an_encrypted_room_seals_its_files_and_refuses_a_plain_one() {
+    use crate::channel::crypto::{open_chunk, seal_chunk};
+    let tmp = tempfile::tempdir().unwrap();
+    let Some((_host, node, pushed, _)) = setup(tmp.path()).await else { return };
+    let opened = node.ch.open(&tester(), "room", None, false).await.unwrap();
+    let mut guest = Guest::new(opened["link"].as_str().unwrap());
+    let offer = node.ch.encrypt(&tester(), None).await.unwrap();
+    let theirs = guest.offer().await;
+    guest.answer_offer(&theirs, offer["password"].as_str().unwrap()).await;
+    eventually("the room is encrypted", || pushed.any("is encrypted now")).await;
+
+    let ours = tmp.path().join("secret.txt");
+    let plain: Vec<u8> = b"top secret ".repeat(7000);
+    std::fs::write(&ours, &plain).unwrap();
+    assert_eq!(node.ch.send(&tester(), ours.to_str().unwrap(), "", None, None).await.unwrap()["sealed"], true);
+    let heard = guest.hear().await;
+    let sent: Value = serde_json::from_str(&guest.unseal(&heard["messages"][0])).unwrap();
+    assert_eq!((sent["kind"].as_str(), sent["file"]["size"].as_u64()), (Some("file"), Some(plain.len() as u64)));
+    let key: [u8; 32] = crate::channel::crypto::unb64(sent["file"]["key"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let held = guest.fetch(sent["file"]["id"].as_str().unwrap()).await;
+    let chunk = crate::channel::files::CHUNK + 16;
+    assert_eq!(held.len(), plain.len() + 32, "two chunks, each with its tag");
+    let mut opened_back = open_chunk(&key, 0, false, &held[..chunk]).unwrap();
+    opened_back.extend(open_chunk(&key, 1, true, &held[chunk..]).unwrap());
+    assert_eq!(opened_back, plain);
+
+    let id = guest.upload(b"clear bytes".to_vec()).await;
+    guest.post(json!({"file": {"id": id, "name": "clear.txt", "size": 11}})).await;
+    eventually("refused", || pushed.any("refused a plaintext file")).await;
+
+    let key = [9u8; 32];
+    let id = guest.upload(seal_chunk(&key, 0, true, b"sealed bytes")).await;
+    let file = json!({"kind": "file", "file": {"id": id, "name": "s.txt", "size": 12, "key": crate::channel::crypto::b64(&key)}});
+    guest.say_sealed(&file.to_string()).await;
+    eventually("the sealed file is saved", || saved_at(&pushed).is_some()).await;
+    assert_eq!(std::fs::read(saved_at(&pushed).unwrap()).unwrap(), b"sealed bytes");
 }
 
 /// A host and one member node, `testnode`, whose sessions are the tester and one other.
 async fn setup(tmp: &Path) -> Option<(Host, MemberNode, Captured, Sessions)> {
     let host = Host::start(tmp, 180.0)?;
     let pushed = Captured::default();
-    let sessions = Sessions::of(&[&tester(), &holder('b', "job-bbbb", "someone-else", "cooperative")]);
+    let sessions = Sessions::of(&[&tester(), &holder('b', "someone-else", "cooperative")]);
     let node = MemberNode::new(tmp, NODE, host.door(NODE), pushed.clone(), sessions.clone());
     Some((host, node, pushed, sessions))
 }
@@ -423,13 +506,13 @@ async fn a_guest_with_only_the_link_talks_and_our_writes_are_not_pushed_back() {
     eventually("the guest's line is pushed", || pushed.any("from visitor: hello from outside")).await;
     let line = pushed.texts().into_iter().find(|t| t.contains("hello from outside")).unwrap();
     assert_eq!(line, format!("room {name} [untrusted] from visitor: hello from outside"));
-    assert_eq!(pushed.lines.lock().unwrap()[0].1, "job-aaaa");
+    assert_eq!(pushed.lines.lock().unwrap()[0].1, tester().session);
 
     let sent = node.ch.write(&tester(), "and hello back", None, Write { target: "say".into(), ..Write::default() }).await.unwrap();
     assert_eq!(sent["sealed"], false);
     let heard = guest.hear().await;
     assert_eq!(heard["messages"][0]["text"], "and hello back");
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!pushed.any("and hello back"), "our own write is not pushed back");
     let transcript = std::fs::read_to_string(node.ch.transcripts.path(&name)).unwrap();
     assert!(transcript.contains("hello from outside") && transcript.contains("and hello back"));
@@ -457,7 +540,7 @@ async fn either_side_leaving_ends_the_room_on_the_other() {
 async fn who_may_hold_a_channel() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((_host, node, _pushed, _)) = setup(tmp.path()).await else { return };
-    let untrusted = holder('d', "job-dddd", "u", "untrusted");
+    let untrusted = holder('d', "u", "untrusted");
     assert!(node.ch.open(&untrusted, "room", None, false).await.unwrap_err().message.contains("only when it is isolated"));
     let isolated = Holder { isolated: true, ..untrusted.clone() };
     assert!(node.ch.open(&isolated, "room", None, false).await.is_ok());
@@ -482,10 +565,10 @@ async fn a_room_and_its_unread_messages_survive_a_host_restart() {
 #[tokio::test]
 async fn a_member_whose_node_stops_renewing_lapses_and_its_room_ends() {
     let tmp = tempfile::tempdir().unwrap();
-    let Some(host) = Host::start(tmp.path(), 0.5) else { return };
+    let Some(host) = Host::start(tmp.path(), 0.05) else { return };
     let m = Member { node: "n".into(), session: "cc1".into(), name: "s".into(), level: "trusted".into(), who: "s@n".into() };
     let opened = host.relay().open(&m, false).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
     assert_eq!(host.relay().prune().await, ["cc1@n"]);
     let room = host.relay().store.room(opened["name"].as_str().unwrap()).unwrap();
     assert!(!room.open && room.token.is_empty(), "the host token is forgotten");
@@ -575,6 +658,9 @@ async fn the_how_to_states_every_constant_the_guest_and_our_side_use() {
         "ChaCha20-Poly1305".into(),
         "standard alphabet with padding".into(),
         "KEYS FOR NEXT TIME".into(),
+        format!("chunks of {} bytes", crate::channel::files::CHUNK),
+        "1 for the last chunk".into(),
+        "parts of at most\n  32 MiB".into(),
     ] {
         assert!(text.contains(&needle), "{needle}");
     }
@@ -611,6 +697,7 @@ impl FakeDaemon {
                         json!({"ok": true, "task": id})
                     }
                     "tasks" => json!({"tasks": me.tasks.lock().unwrap().iter().map(|t| json!({"task": t})).collect::<Vec<_>>()}),
+                    "file" => json!({"ok": true, "path": format!("/tmp/tether-1/{}", args["name"].as_str().unwrap()), "bytes": 3}),
                     _ => json!({"ok": true}),
                 })
             })
@@ -658,12 +745,15 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let node = machine_node(tmp.path(), &daemon, &pushed);
     let name = open_machine(&node).await;
     event(&node.stream, 1, json!({"type": "session.phase", "phase": "open"}));
-    event(&node.stream, 2, json!({"type": "owner.said", "text": "hi there"}));
+    // A reconnect, as the daemon writes it: silent.
+    event(&node.stream, 2, json!({"type": "session.phase", "phase": "reconnecting", "why": "the connection closed"}));
+    event(&node.stream, 3, json!({"type": "session.phase", "phase": "open", "resumed": {"gap_s": 9, "resent": 0}}));
+    event(&node.stream, 4, json!({"type": "owner.said", "text": "hi there"}));
     let b64 = base64::engine::general_purpose::STANDARD;
-    event(&node.stream, 3, json!({"type": "task.output", "task": 1, "stream": "stdout", "bytes": 3, "data": b64.encode("out")}));
-    event(&node.stream, 4, json!({"type": "task.exited", "task": 1, "code": 0}));
+    event(&node.stream, 5, json!({"type": "task.output", "task": 1, "stream": "stdout", "bytes": 3, "data": b64.encode("out")}));
+    event(&node.stream, 6, json!({"type": "task.exited", "task": 1, "code": 0}));
     eventually("the owner's line", || pushed.any(&format!("machine {name} [untrusted] from the owner: hi there"))).await;
-    assert!(pushed.any("the owner connected."));
+    assert_eq!(pushed.texts().iter().filter(|t| t.contains("the owner connected.")).count(), 1, "a reconnect is silent");
     assert!(!pushed.any("out"), "output is never pushed");
 
     let w = |target: &str| Write { target: target.into(), ..Write::default() };
@@ -672,6 +762,12 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let ran = node.ch.write(&tester(), "ls", None, w("shell")).await.unwrap();
     assert_eq!(ran["task"], 1);
     assert_eq!(daemon.last("run").unwrap(), json!({"code": "4", "command": "ls"}));
+    let local = tmp.path().join("notes.txt");
+    std::fs::write(&local, "abc").unwrap();
+    let local = local.display().to_string();
+    let sent = node.ch.send(&tester(), &local, "", None, Some("n.txt")).await.unwrap();
+    assert_eq!(sent, json!({"name": name, "path": "/tmp/tether-1/n.txt", "bytes": 3}));
+    assert_eq!(daemon.last("file").unwrap(), json!({"code": "4", "path": local, "name": "n.txt"}));
 
     let drained = node.ch.drain(&tester(), None, 0.0, None, None, false).await.unwrap();
     let kinds: Vec<&str> = drained["events"].as_array().unwrap().iter().map(|e| e["type"].as_str().unwrap()).collect();
@@ -684,9 +780,9 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let stream = node.stream.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        event(&stream, 5, json!({"type": "task.output", "task": 2, "stream": "stdout", "bytes": 1, "data": b64.encode("z")}));
+        event(&stream, 7, json!({"type": "task.output", "task": 2, "stream": "stdout", "bytes": 1, "data": b64.encode("z")}));
         tokio::time::sleep(Duration::from_millis(200)).await;
-        event(&stream, 6, json!({"type": "task.exited", "task": 2}));
+        event(&stream, 8, json!({"type": "task.exited", "task": 2}));
     });
     let waited = node.ch.drain(&tester(), None, 5.0, Some(2), None, false).await.unwrap();
     assert_eq!(waited["events"].as_array().unwrap().last().unwrap()["type"], "task.exited", "until waits for its task");
@@ -754,13 +850,14 @@ impl Fake {
     }
 
     fn adopted(&self, issuer: &str) -> Arc<Adopted> {
+        self.adopted_via(issuer, None)
+    }
+
+    fn adopted_via(&self, issuer: &str, proxy: Option<&str>) -> Arc<Adopted> {
         let argv = vec![issuer.to_string(), "issue".to_string()];
-        let launch = Launch {
-            env: vec![("PATH".into(), "/usr/bin:/bin".into()), ("MARK".into(), self.mark.display().to_string()), ("TETHER_ISSUER".into(), serde_json::to_string(&argv).unwrap())],
-            secrets: vec![],
-            issuer: Some(argv),
-            use_manager: false,
-        };
+        let mut env = vec![("PATH".into(), "/usr/bin:/bin".into()), ("MARK".into(), self.mark.display().to_string()), ("TETHER_ISSUER".into(), serde_json::to_string(&argv).unwrap())];
+        env.extend(proxy.map(|p| ("https_proxy".to_string(), p.to_string())));
+        let launch = Launch { env, secrets: vec![], use_manager: false };
         Adopted::new(self.paths.clone(), fake_probe(self.mark.clone()), launch)
     }
 
@@ -799,14 +896,20 @@ async fn a_stale_binary_waits_for_its_sessions_then_is_replaced() {
 }
 
 #[tokio::test]
-async fn a_daemon_with_the_python_issuer_is_replaced_once_idle() {
-    let fake = Fake::new(RUNS);
-    assert_eq!(fake.adopted("/usr/bin/python").reconcile().await["action"], "started");
-    let pid = fake.pid();
-    let rust = fake.adopted("/bin/channel");
-    let out = rust.reconcile().await;
-    assert_eq!(out["action"], "replaced", "{out}");
-    assert!(out["reason"].as_str().unwrap().contains("issuer"));
-    assert_ne!(fake.pid(), pid);
-    assert_eq!(rust.reconcile().await["action"], "none");
+async fn a_daemon_launched_another_way_is_replaced_once_idle() {
+    let rows: [(&str, Option<&str>, &str, Option<&str>, &str); 2] = [
+        ("/usr/bin/python", None, "/bin/channel", None, "TETHER_ISSUER"),
+        ("/bin/channel", Some("http://127.0.0.1:1111"), "/bin/channel", Some("http://127.0.0.1:2222"), "it was launched with another https_proxy"),
+    ];
+    for (issuer, proxy, next_issuer, next_proxy, reason) in rows {
+        let fake = Fake::new(RUNS);
+        assert_eq!(fake.adopted_via(issuer, proxy).reconcile().await["action"], "started");
+        let pid = fake.pid();
+        let next = fake.adopted_via(next_issuer, next_proxy);
+        let out = next.reconcile().await;
+        assert_eq!(out["action"], "replaced", "{out}");
+        assert!(out["reason"].as_str().unwrap().contains(reason), "{out}");
+        assert_ne!(fake.pid(), pid);
+        assert_eq!(next.reconcile().await["action"], "none");
+    }
 }

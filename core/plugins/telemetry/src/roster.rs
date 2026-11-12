@@ -26,9 +26,7 @@ pub fn parse_ts(v: Option<&Value>) -> Option<Ts> {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
-    pub job: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,13 +44,18 @@ pub struct Session {
     pub remote_control: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<Ts>,
-}
-
-impl Session {
-    /// The id `telemetry/sessions` names: the harness session id, else the job.
-    pub fn id(&self) -> &str {
-        self.session_id.as_deref().unwrap_or(&self.job)
-    }
+    /// A background job's state: `working`, `blocked` or `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// What a blocked session needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<String>,
+    /// On a `stopped` event: cch's own stop ended it, not a crash.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
+    /// The warm pool's ledger stage: `spare`, `claimed` or `kept`. None for a session the pool did not make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
 }
 
 /// One service of a node's gateway.
@@ -65,6 +68,19 @@ pub struct ServiceRow {
     pub tools: Vec<String>,
     #[serde(default)]
     pub up: bool,
+    /// None from a node that predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// One plugin a node has loaded.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginRow {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub core: bool,
 }
 
 /// One tool a node can use: its own, or a singleton behind another host's door.
@@ -92,6 +108,8 @@ pub enum Item {
         services: Vec<ServiceRow>,
         #[serde(default)]
         tools: Vec<ToolRow>,
+        #[serde(default)]
+        plugins: Vec<PluginRow>,
     },
     /// One `reflection/sessions` event.
     Session { event: String, session: Session, #[serde(default)] ts: Option<Ts> },
@@ -100,7 +118,7 @@ pub enum Item {
     /// The newest use of one tool on the node, coalesced from `awm/usage`.
     Usage { tool: String, #[serde(default)] last_used: Option<Ts>, #[serde(default)] last_ok: Option<Ts> },
     /// The node's services and tools again, after an `awm/plugins` change.
-    Tools { services: Vec<ServiceRow>, tools: Vec<ToolRow> },
+    Tools { services: Vec<ServiceRow>, tools: Vec<ToolRow>, #[serde(default)] plugins: Vec<PluginRow> },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -112,6 +130,8 @@ pub struct ServiceState {
     pub up: bool,
     #[serde(default)]
     pub since: Option<Ts>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -119,7 +139,8 @@ pub struct ToolUse {
     #[serde(default)]
     pub host: Option<String>,
     /// Whether the node's last check listed the tool. A tool it no longer lists keeps its history.
-    pub available: bool,
+    #[serde(alias = "available")]
+    pub listed: bool,
     #[serde(default)]
     pub last_checked: Option<Ts>,
     #[serde(default)]
@@ -127,6 +148,17 @@ pub struct ToolUse {
     /// The newest call that succeeded: for a tool the node hosts, its last response.
     #[serde(default)]
     pub last_ok: Option<Ts>,
+}
+
+impl ToolUse {
+    /// Whether the node's calls get through: `failing` when its newest call is newer than its newest success.
+    fn reach(&self) -> &'static str {
+        match (self.last_used, self.last_ok) {
+            (None, _) => "untried",
+            (Some(used), Some(ok)) if ok >= used => "ok",
+            _ => "failing",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -139,25 +171,36 @@ pub struct NodeState {
     pub last_seen: Option<Ts>,
     #[serde(default)]
     pub sessions: BTreeMap<String, Session>,
-    /// Each session seen live in the usage window, by job, with when it started.
+    /// Each session seen live in the usage window, by session id, with when it started.
     #[serde(default)]
     pub starts: BTreeMap<String, Ts>,
     #[serde(default)]
     pub services: BTreeMap<String, ServiceState>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolUse>,
+    #[serde(default)]
+    pub plugins: Vec<PluginRow>,
 }
 
-/// A session that went live or went, for `telemetry/sessions`.
+/// A session that went live, went, was renamed or changed state, for `telemetry/sessions`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SessionEvent {
     pub event: &'static str,
     pub session_id: String,
-    pub job: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub node: String,
     pub ts: Ts,
+    /// The new name, on a `renamed` event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs: Option<String>,
+    /// On `gone`: the session was retired, not lost.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retired: bool,
 }
 
 /// What one report changed.
@@ -258,13 +301,14 @@ impl Roster {
                     "portal": n.portal,
                     "last_seen": n.last_seen,
                     "sessions_7d": self.sessions_in_window(name, now),
-                    "sessions": n.sessions.values().collect::<Vec<_>>(),
+                    "sessions": n.sessions.values().filter(|s| s.pool.as_deref() != Some("spare")).collect::<Vec<_>>(),
                     "services": n.services.iter().map(|(s, st)| json!({
-                        "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since,
+                        "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since, "enabled": st.enabled,
                     })).collect::<Vec<_>>(),
+                    "plugins": n.plugins,
                     "uses": n.tools.iter().map(|(t, u)| json!({
-                        "tool": t, "host": u.host, "available": u.available,
-                        "last_checked": u.last_checked, "last_used": u.last_used,
+                        "tool": t, "host": u.host, "listed": u.listed, "reach": u.reach(),
+                        "last_checked": u.last_checked, "last_used": u.last_used, "last_ok": u.last_ok,
                     })).collect::<Vec<_>>(),
                 })
             })
@@ -306,17 +350,19 @@ impl Roster {
 }
 
 /// One seat in one shape, keyed by its id `<account>/<channel>`. Social reports a seat two ways:
-/// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, job,
+/// a `social seats` row `{id, name, kind, holder, seat: {state, node, remote_control, session_id,
 /// rc_url, ..} | null}` (tagged with its `account`), and a `social/seats` event
-/// `{seat: "<account>/<channel>", label, state, node, remote_control, job?, rc_url?, ts}`.
-/// A channel with no seat row is `empty`.
+/// `{seat: "<account>/<channel>", label, state, node, remote_control, session_id?, rc_url?, rc_live?,
+/// model, effort, refresh, refresh_live?, ts}`, where `rc_live` answers a Remote Control flip:
+/// `applied`, `none` or `failed: <why>`, and `refresh_live` a Refresh: `pending` or `kept`.
+/// A channel that social.toml does not declare a seat (`seat: null`) has no row.
 fn seat_row(row: &Value) -> Option<(String, Value)> {
     let m = row.as_object()?;
     let nested = m.get("seat").and_then(Value::as_object);
     let key = match (m.get("seat"), nested) {
         (Some(Value::String(id)), _) => id.clone(),
         (_, Some(n)) => n.get("id").and_then(Value::as_str)?.to_string(),
-        _ => format!("{}/{}", m.get("account")?.as_str()?, m.get("id")?.as_str()?),
+        _ => return None,
     };
     let src = nested.unwrap_or(m);
     let text = |o: &serde_json::Map<String, Value>, k: &str| o.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
@@ -326,8 +372,9 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
         "state": text(src, "state").unwrap_or_else(|| "empty".into()),
         "remote_control": src.get("remote_control").and_then(Value::as_bool).unwrap_or(false),
         "node": text(src, "node").unwrap_or_default(),
+        "refresh": src.get("refresh").and_then(Value::as_bool).unwrap_or(false),
     });
-    for k in ["job", "rc_url"] {
+    for k in ["session_id", "rc_url", "rc_live", "model", "effort", "refresh_live"] {
         if let Some(v) = text(src, k) {
             out[k] = json!(v);
         }
@@ -339,11 +386,35 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
 }
 
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
-    SessionEvent { event: "live", session_id: s.id().into(), job: s.job.clone(), task_id: s.task_id.clone(), node: node.into(), ts }
+    SessionEvent {
+        event: "live",
+        session_id: s.session_id.clone(),
+        task_id: s.task_id.clone(),
+        node: node.into(),
+        ts,
+        name: None,
+        state: s.state.clone(),
+        needs: s.needs.clone(),
+        retired: false,
+    }
+}
+
+/// A `state` event when `new` changed the state or needs that `old` held.
+fn state_change(node: &str, old: &Session, new: &Session, ts: Ts, out: &mut Applied) {
+    if (&old.state, &old.needs) != (&new.state, &new.needs) {
+        out.sessions.push(SessionEvent { event: "state", ..live(node, new, ts) });
+    }
 }
 
 fn gone(node: &str, s: &Session, ts: Ts) -> SessionEvent {
     SessionEvent { event: "gone", ..live(node, s, ts) }
+}
+
+fn set_plugins(state: &mut NodeState, rows: Vec<PluginRow>, out: &mut Applied) {
+    if rows != state.plugins {
+        state.plugins = rows;
+        out.changed.insert("nodes");
+    }
 }
 
 fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut Applied) {
@@ -354,7 +425,7 @@ fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut
                 Some(old) if old.up == r.up => old.since,
                 _ => Some(now),
             };
-            (r.service, ServiceState { plugin: r.plugin, tools: r.tools, up: r.up, since })
+            (r.service, ServiceState { plugin: r.plugin, tools: r.tools, up: r.up, since, enabled: r.enabled })
         })
         .collect();
     if next != state.services {
@@ -366,37 +437,41 @@ fn set_services(state: &mut NodeState, rows: Vec<ServiceRow>, now: Ts, out: &mut
 fn set_tools(state: &mut NodeState, rows: Vec<ToolRow>, now: Ts, out: &mut Applied) {
     let listed: BTreeMap<String, Option<String>> = rows.into_iter().map(|r| (r.tool, r.host)).collect();
     for (tool, u) in state.tools.iter_mut() {
-        if !listed.contains_key(tool) && u.available {
-            u.available = false;
+        if !listed.contains_key(tool) && u.listed {
+            u.listed = false;
             out.changed.insert("services");
         }
     }
     for (tool, host) in listed {
         let u = state.tools.entry(tool).or_default();
-        if !u.available || u.host != host {
+        if !u.listed || u.host != host {
             out.changed.insert("services");
         }
-        (u.available, u.host, u.last_checked) = (true, host, Some(now));
+        (u.listed, u.host, u.last_checked) = (true, host, Some(now));
     }
 }
 
 fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut Applied) {
     match item {
-        Item::Hello { role, portal, sessions, services, tools } => {
+        Item::Hello { role, portal, sessions, services, tools, plugins } => {
+            set_plugins(state, plugins, out);
             if (state.role.as_ref(), state.portal.as_ref()) != (role.as_ref(), portal.as_ref()) {
                 (state.role, state.portal) = (role, portal);
                 out.changed.insert("nodes");
             }
-            let next: BTreeMap<String, Session> = sessions.into_iter().map(|s| (s.job.clone(), s)).collect();
-            for (job, s) in &state.sessions {
-                if !next.contains_key(job) {
+            let next: BTreeMap<String, Session> = sessions.into_iter().map(|s| (s.session_id.clone(), s)).collect();
+            for (id, s) in &state.sessions {
+                if !next.contains_key(id) {
                     out.sessions.push(gone(node, s, now));
                 }
             }
-            for (job, s) in &next {
-                if !state.sessions.contains_key(job) {
-                    out.sessions.push(live(node, s, now));
-                    state.starts.entry(job.clone()).or_insert(s.started.unwrap_or(now));
+            for (id, s) in &next {
+                match state.sessions.get(id) {
+                    Some(old) => state_change(node, old, s, now, out),
+                    None => {
+                        out.sessions.push(live(node, s, now));
+                        state.starts.entry(id.clone()).or_insert(s.started.unwrap_or(now));
+                    }
                 }
             }
             if next != state.sessions {
@@ -410,33 +485,40 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
             let ts = ts.unwrap_or(now);
             match event.as_str() {
                 "stopped" => {
-                    if let Some(s) = state.sessions.remove(&session.job) {
-                        out.sessions.push(gone(node, &s, ts));
+                    if let Some(s) = state.sessions.remove(&session.session_id) {
+                        out.sessions.push(SessionEvent { retired: session.retired, ..gone(node, &s, ts) });
                         out.changed.insert("sessions");
                     }
                 }
-                "started" | "remote_control" | "renamed" => {
-                    let old = state.sessions.get(&session.job).cloned();
+                "started" | "remote_control" | "renamed" | "state" => {
+                    let old = state.sessions.get(&session.session_id).cloned();
                     if let Some(old) = &old {
                         // An update event names only what changed; the rest stays as it was.
-                        session.session_id = session.session_id.or_else(|| old.session_id.clone());
                         session.name = session.name.or_else(|| old.name.clone());
                         session.project = session.project.or_else(|| old.project.clone());
                         session.scope = session.scope.or_else(|| old.scope.clone());
                         session.kind = session.kind.or_else(|| old.kind.clone());
                         session.task_id = session.task_id.or_else(|| old.task_id.clone());
+                        session.pool = session.pool.or_else(|| old.pool.clone());
                         session.started = session.started.or(old.started);
+                        if session.state.is_none() {
+                            (session.state, session.needs) = (old.state.clone(), old.needs.clone());
+                        }
                         if event != "remote_control" {
                             session.link = session.link.or_else(|| old.link.clone());
                             session.remote_control = session.remote_control || old.remote_control;
                         }
+                        if event == "renamed" && session.name.is_some() && session.name != old.name {
+                            out.sessions.push(SessionEvent { event: "renamed", name: session.name.clone(), ..live(node, &session, ts) });
+                        }
+                        state_change(node, old, &session, ts, out);
                     } else {
                         session.started = session.started.or(Some(ts));
                         out.sessions.push(live(node, &session, ts));
-                        state.starts.entry(session.job.clone()).or_insert(session.started.unwrap_or(ts));
+                        state.starts.entry(session.session_id.clone()).or_insert(session.started.unwrap_or(ts));
                     }
                     if old.as_ref() != Some(&session) {
-                        state.sessions.insert(session.job.clone(), session);
+                        state.sessions.insert(session.session_id.clone(), session);
                         out.changed.insert("sessions");
                     }
                 }
@@ -461,7 +543,8 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
                 out.changed.insert("usage");
             }
         }
-        Item::Tools { services, tools } => {
+        Item::Tools { services, tools, plugins } => {
+            set_plugins(state, plugins, out);
             set_services(state, services, now, out);
             set_tools(state, tools, now, out);
         }
@@ -476,8 +559,8 @@ mod tests {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }
 
-    fn sess(job: &str) -> Session {
-        Session { job: job.into(), name: Some(format!("{job}-name")), link: Some(format!("https://claude.ai/code/{job}")), ..Session::default() }
+    fn sess(id: &str) -> Session {
+        Session { session_id: id.into(), name: Some(format!("{id}-name")), link: Some(format!("https://claude.ai/code/{id}")), ..Session::default() }
     }
 
     fn hello(sessions: Vec<Session>) -> Item {
@@ -485,9 +568,21 @@ mod tests {
             role: Some("home".into()),
             portal: Some("https://mizar:8443".into()),
             sessions,
-            services: vec![ServiceRow { service: "social".into(), plugin: Some("social".into()), tools: vec!["social".into()], up: true }],
+            services: vec![ServiceRow { service: "social".into(), plugin: Some("social".into()), tools: vec!["social".into()], up: true, enabled: Some(true) }],
             tools: vec![ToolRow { tool: "journal".into(), host: None }, ToolRow { tool: "social".into(), host: Some("alcor".into()) }],
+            plugins: vec![],
         }
+    }
+
+    #[test]
+    fn a_warm_session_is_not_listed_and_a_claimed_one_is() {
+        let mut r = Roster::default();
+        let now = t("2026-01-01T00:00:00Z");
+        let pooled = |id: &str, pool: &str| Session { session_id: id.into(), pool: Some(pool.into()), ..Session::default() };
+        r.apply("n", vec![hello(vec![pooled("w", "spare"), pooled("c", "claimed")])], now);
+        let v = r.nodes_view(None, now);
+        assert_eq!(v["nodes"][0]["sessions"].as_array().unwrap().iter().map(|s| s["session_id"].as_str().unwrap()).collect::<Vec<_>>(), ["c"]);
+        assert_eq!(v["nodes"][0]["services"][0]["enabled"], true);
     }
 
     #[test]
@@ -495,7 +590,7 @@ mod tests {
         let mut r = Roster::default();
         let now = t("2026-11-07T10:00:00Z");
         let a = r.apply("mizar", vec![hello(vec![sess("a1")])], now);
-        assert_eq!(a.sessions.iter().map(|e| (e.event, e.job.as_str())).collect::<Vec<_>>(), [("live", "a1")]);
+        assert_eq!(a.sessions.iter().map(|e| (e.event, e.session_id.as_str())).collect::<Vec<_>>(), [("live", "a1")]);
         assert!(a.changed.contains("nodes") && a.changed.contains("sessions"));
 
         let started = Item::Session { event: "started".into(), session: Session { task_id: Some("CW".into()), ..sess("b2") }, ts: Some(now) };
@@ -503,7 +598,7 @@ mod tests {
         assert_eq!((a.sessions[0].event, a.sessions[0].task_id.as_deref()), ("live", Some("CW")));
         assert_eq!(r.nodes["mizar"].sessions.len(), 2);
 
-        let stopped = Item::Session { event: "stopped".into(), session: Session { job: "a1".into(), ..Session::default() }, ts: Some(now) };
+        let stopped = Item::Session { event: "stopped".into(), session: Session { session_id: "a1".into(), ..Session::default() }, ts: Some(now) };
         let a = r.apply("mizar", vec![stopped.clone()], now);
         assert_eq!((a.sessions[0].event, a.sessions[0].session_id.as_str()), ("gone", "a1"));
         assert_eq!(r.nodes["mizar"].sessions.keys().collect::<Vec<_>>(), ["b2"]);
@@ -514,12 +609,43 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_is_a_session_event_only_when_the_name_changes() {
+        let mut r = Roster::default();
+        let now = t("2026-11-07T10:00:00Z");
+        r.apply("mizar", vec![hello(vec![Session { name: Some("old".into()), ..sess("a1") }])], now);
+        let renamed = Item::Session { event: "renamed".into(), session: Session { name: Some("new".into()), ..sess("a1") }, ts: Some(now) };
+        let a = r.apply("mizar", vec![renamed.clone()], now);
+        assert_eq!((a.sessions[0].event, a.sessions[0].name.as_deref()), ("renamed", Some("new")));
+        assert!(r.apply("mizar", vec![renamed], now).sessions.is_empty());
+    }
+
+    #[test]
+    fn a_state_change_is_a_session_event_and_a_retire_marks_the_gone() {
+        let mut r = Roster::default();
+        let now = t("2026-11-07T10:00:00Z");
+        let at = |state: &str, needs: Option<&str>| Session { state: Some(state.into()), needs: needs.map(Into::into), ..sess("a1") };
+        r.apply("mizar", vec![hello(vec![at("working", None)])], now);
+        let event = |s: Session| Item::Session { event: "state".into(), session: s, ts: Some(now) };
+        let a = r.apply("mizar", vec![event(at("blocked", Some("pick")))], now);
+        assert_eq!((a.sessions[0].event, a.sessions[0].state.as_deref(), a.sessions[0].needs.as_deref()), ("state", Some("blocked"), Some("pick")));
+        let renamed = Item::Session { event: "renamed".into(), session: Session { name: Some("new".into()), ..sess("a1") }, ts: Some(now) };
+        let a = r.apply("mizar", vec![renamed], now);
+        assert_eq!(a.sessions.iter().map(|e| e.event).collect::<Vec<_>>(), ["renamed"], "an event without a state keeps the old one");
+        assert_eq!(r.nodes["mizar"].sessions["a1"].needs.as_deref(), Some("pick"));
+        let a = r.apply("mizar", vec![hello(vec![at("done", None)])], now);
+        assert_eq!(a.sessions.iter().map(|e| (e.event, e.state.as_deref())).collect::<Vec<_>>(), [("state", Some("done"))], "a hello carries state");
+        let stopped = Item::Session { event: "stopped".into(), session: Session { session_id: "a1".into(), retired: true, ..Session::default() }, ts: Some(now) };
+        let a = r.apply("mizar", vec![stopped], now);
+        assert!(a.sessions[0].event == "gone" && a.sessions[0].retired);
+    }
+
+    #[test]
     fn a_fresh_hello_ends_the_sessions_it_no_longer_lists() {
         let mut r = Roster::default();
         let now = t("2026-11-07T10:00:00Z");
         r.apply("mizar", vec![hello(vec![sess("a1"), sess("a2")])], now);
         let a = r.apply("mizar", vec![hello(vec![sess("a2"), sess("a3")])], now);
-        let mut got: Vec<_> = a.sessions.iter().map(|e| (e.event, e.job.as_str())).collect();
+        let mut got: Vec<_> = a.sessions.iter().map(|e| (e.event, e.session_id.as_str())).collect();
         got.sort();
         assert_eq!(got, [("gone", "a1"), ("live", "a3")]);
     }
@@ -558,6 +684,12 @@ mod tests {
         assert_eq!(row["last_used"], json!(later));
         assert_eq!(v["services"][1]["health"], "unknown", "alcor runs no service with the 2fa tool");
         assert_eq!(v["services"][2]["health"], "unknown", "deneb never reported");
+        let reach = |r: &Roster, at, i: usize| r.nodes_view(Some("mizar"), at)["nodes"][0]["uses"][i]["reach"].clone();
+        assert_eq!(reach(&r, later, 0), "untried", "mizar never called journal");
+        assert_eq!(reach(&r, later, 1), "failing", "mizar's newest call failed");
+        let fixed = t("2026-11-07T10:10:00Z");
+        r.apply("mizar", vec![Item::Usage { tool: "social".into(), last_used: Some(fixed), last_ok: Some(fixed) }], fixed);
+        assert_eq!(reach(&r, fixed, 1), "ok");
 
         let down = Item::Service { service: "social".into(), plugin: None, up: false, ts: Some(later) };
         let a = r.apply("alcor", vec![down], later);
@@ -569,29 +701,34 @@ mod tests {
     #[test]
     fn seats_replace_and_update_by_id() {
         let mut r = Roster::default();
-        let empty = json!({"seat": "slack/C042", "label": "alice", "state": "empty", "remote_control": false, "node": "alcor"});
+        let empty = json!({"seat": "slack/C042", "label": "alice", "state": "empty", "remote_control": false, "node": "alcor", "refresh": false});
         let a = r.set_seats(std::slice::from_ref(&empty));
         assert!(a.changed.contains("seats"));
         assert!(r.set_seats(&[empty]).changed.is_empty());
         r.seat_event(&json!({"seat": "slack/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                             "job": "j1", "rc_url": "https://claude.ai/code/s", "ts": "2026-11-07T10:00:00Z"}));
+                             "session_id": "cc1", "rc_url": "https://claude.ai/code/s", "rc_live": "failed: busy", "ts": "2026-11-07T10:00:00Z",
+                             "model": "sonnet", "effort": "low", "refresh": true, "refresh_live": "pending"}));
         let v = r.seats_view();
         assert_eq!((v["seats"].as_array().unwrap().len(), v["seats"][0]["state"].as_str()), (1, Some("occupied")), "keyed on the seat id, not the label");
+        assert_eq!(v["seats"][0]["rc_live"], json!("failed: busy"), "the answer to a Remote Control flip reaches Ops");
+        let row = &v["seats"][0];
+        assert_eq!((&row["model"], &row["effort"], &row["refresh"], &row["refresh_live"]), (&json!("sonnet"), &json!("low"), &json!(true), &json!("pending")), "and the pick and a Refresh's answer");
         assert!(r.seat_event(&json!({"state": "x", "name": "alice"})).changed.is_empty(), "a row with no seat id is ignored");
 
         // Real-shaped `social seats` rows (account tagged by the catch-up) land on the same key and shape as events.
         let mut r = Roster::default();
         let held = json!({"id": "C042", "name": "alice", "kind": "channel", "holder": null, "account": "slack-bot",
-            "seat": {"state": "occupied", "job": "j1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
-                     "done": false, "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s"}});
+            "seat": {"state": "occupied", "session_id": "cc1", "node": "alcor", "level": "trusted", "scope": null, "adopted": false, "queued": 0,
+                     "held": null, "breaker": null, "id": "slack-bot/C042", "remote_control": true, "rc_url": "https://claude.ai/code/s",
+                     "model": "opus", "effort": "high", "refresh": false}});
         let free = json!({"id": "C043", "name": "bob", "kind": "channel", "holder": null, "seat": null, "account": "slack-bot"});
         r.set_seats(&[held, free]);
         let v = r.seats_view();
+        assert_eq!(v["seats"].as_array().unwrap().len(), 1, "a channel with no declared seat has no row");
         assert_eq!(v["seats"][0], json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                                         "job": "j1", "rc_url": "https://claude.ai/code/s"}));
-        assert_eq!((v["seats"][1]["seat"].as_str(), v["seats"][1]["state"].as_str()), (Some("slack-bot/C043"), Some("empty")));
+                                         "session_id": "cc1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false}));
         let ev = json!({"seat": "slack-bot/C042", "label": "alice", "state": "occupied", "remote_control": true, "node": "alcor",
-                        "job": "j1", "rc_url": "https://claude.ai/code/s"});
+                        "session_id": "cc1", "rc_url": "https://claude.ai/code/s", "model": "opus", "effort": "high", "refresh": false});
         assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");
     }
 

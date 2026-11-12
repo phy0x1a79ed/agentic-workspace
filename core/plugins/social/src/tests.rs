@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 /// The surface changes the port plan lists; every other verb is the Python's byte for byte.
-const REMOVED: [&str; 10] = ["keepers", "keep_reset", "keep_adopt", "bucket_sites", "bucket_versions", "bucket_restore", "bucket_share", "bucket_shares", "bucket_unshare", "bucket_resolve"];
-const ADDED: [&str; 6] = ["mark_seat_done", "forward", "seat_reset", "seat_adopt", "seat_admit", "seat_remote_control"];
-const REWORDED: [&str; 10] = ["send", "react", "seats", "mount", "search", "buckets", "bucket_ls", "bucket_get", "bucket_mv", "bucket_search"];
+const REMOVED: [&str; 3] = ["keepers", "keep_reset", "keep_adopt"];
+const ADDED: [&str; 6] = ["forward", "seat_remote_control", "seat_refresh", "seat_pull", "seat_report", "seat_act"];
+const REWORDED: [&str; 4] = ["send", "react", "seats", "mount"];
 
 #[test]
 fn the_surface_is_the_python_one_but_the_listed_changes() {
@@ -33,9 +33,6 @@ fn the_surface_is_the_python_one_but_the_listed_changes() {
             for p in v["params"].as_array_mut().into_iter().flatten() {
                 p.as_object_mut().unwrap().remove("required");
             }
-            if let Some(ps) = v["params"].as_array_mut() {
-                ps.retain(|p| !(name == "bucket_get" && p["name"] == "version"));
-            }
             v
         };
         assert_eq!(strip(mine), strip(f), "{name} changes only its text and which ids it requires");
@@ -49,17 +46,14 @@ fn test_env() -> awm_plugin_sdk::Env {
 // -- the verbs over a fake connector ---------------------------------------------------
 
 mod verbs {
-    use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use awm_plugin_sdk::push::Outcome;
     use awm_plugin_sdk::{Caller, Level, TestService};
     use serde_json::{json, Value};
 
     use crate::config::{AccountConfig, SeatChat, SeatRule, SeatsConfig};
     use crate::connectors::{self, Channel, Connector, Identity, Inbound, OutFile, Sent};
-    use crate::seats::{Started, World};
 
     #[derive(Default)]
     struct Fake {
@@ -93,6 +87,7 @@ mod verbs {
                 Channel { id: "D0TEST".into(), name: "tester".into(), kind: "dm".into() },
                 Channel { id: "C0TEST".into(), name: "general".into(), kind: "channel".into() },
                 Channel { id: "D0OPER".into(), name: "operator".into(), kind: "dm".into() },
+                Channel { id: "C0OPER".into(), name: "ops".into(), kind: "channel".into() },
             ])
         }
         async fn identity(&self) -> connectors::Result<Identity> {
@@ -101,37 +96,6 @@ mod verbs {
         fn live(&self) -> bool {
             true
         }
-    }
-
-    struct Quiet;
-
-    #[async_trait]
-    impl World for Quiet {
-        fn now(&self) -> f64 {
-            crate::db::now()
-        }
-        async fn sleep(&self, _s: f64) {}
-        async fn start(&self, _n: &str, _s: Value) -> Started {
-            Started::Refused("no starts in this test".into())
-        }
-        async fn push(&self, _n: &str, _j: &str, _l: &str) -> Outcome {
-            Outcome::Delivered
-        }
-        async fn live(&self, _n: &str) -> Option<HashSet<String>> {
-            None
-        }
-        async fn scope_ready(&self, _n: &str, _p: &str, _s: &str) -> Option<bool> {
-            Some(true)
-        }
-        async fn transcript(&self, _n: &str, _j: &str) -> Option<String> {
-            None
-        }
-        async fn react(&self, _a: &str, _c: &str, _m: &str, _e: &str) {}
-        async fn say(&self, _a: &str, _c: &str, _t: Option<&str>, _x: &str) -> bool {
-            true
-        }
-        async fn ask(&self, _k: &str, _t: &str) {}
-        async fn tag(&self, _n: &str, _d: &str) {}
     }
 
     struct Rig {
@@ -144,43 +108,44 @@ mod verbs {
     async fn rig() -> Rig {
         let tmp = tempfile::tempdir().unwrap();
         let db = crate::db::Db::open(&tmp.path().join("social.db")).unwrap();
-        let account = AccountConfig { name: "opal".into(), platform: "slack".into(), token: "xoxb-test".into(), trust: "cooperative".into(), trusted_chats: vec!["D0OPER".into()], enabled: true, ..Default::default() };
+        let account = AccountConfig { name: "opal".into(), platform: "slack".into(), token: "xoxb-test".into(), trust: "cooperative".into(), trusted_chats: vec!["D0OPER".into(), "C0OPER".into()], enabled: true, ..Default::default() };
         let fake = Arc::new(Fake { cfg: account.clone(), ..Default::default() });
         let conns: crate::app::Conns = Default::default();
         conns.write().unwrap().insert("opal".into(), fake.clone());
         let cfg = SeatsConfig {
             paused: true,
-            rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![] }],
-            chats: vec![SeatChat { account: "opal".into(), channel: "D0OPER".into(), node: "altair".into(), level: Level::Trusted, scope: "seats/operator".into() }],
+            rules: vec![SeatRule { account: "opal".into(), kind: "dm".into(), node: "altair".into(), level: Level::Cooperative, scope: "seats/{slug}".into(), except: vec![], agent: None }],
+            chats: vec![SeatChat { account: "opal".into(), channel: "D0OPER".into(), node: "altair".into(), level: Level::Trusted, scope: "seats/operator".into(), agent: None }],
             ..Default::default()
         };
-        let seats = crate::seats::Seats::new(db.clone(), cfg, vec![account.clone()], Arc::new(Quiet));
+        let seats = crate::seats::Seats::new(db.clone(), cfg, vec![account.clone()]);
         let hub = awm_plugin_sdk::Hub::new("http://127.0.0.1:1", None);
-        let app = crate::app::Social::new("alcor".into(), hub, db, vec![account], conns, vec![], seats);
+        let app = crate::app::Social::new("alcor".into(), hub, db, vec![account], conns, seats);
         let svc = crate::service(awm_plugin_sdk::Service::new(super::test_env()), app.clone()).into_test().await.unwrap();
         Rig { svc, app, fake, _tmp: tmp }
     }
 
-    /// A call from job `job` on altair at `level`, as the door stamps it.
-    fn from(job: &str, level: &str, mut args: Value) -> Value {
+    /// A call from session `session` on altair at `level`, as the door stamps it.
+    fn from(session: &str, level: &str, mut args: Value) -> Value {
         args["_caller_trust"] = json!(level);
-        args["_caller_session"] = json!({"kind": "bg", "job": job, "name": format!("seat:{job}")});
+        args["_caller_session"] = json!({"kind": "bg", "session_id": session, "name": format!("seat:{session}")});
         args
     }
 
     impl Rig {
-        async fn call(&self, verb: &str, job: &str, level: &str, args: Value) -> Result<Value, awm_plugin_sdk::VerbError> {
-            self.svc.call_as(verb, from(job, level, args), Caller::default(), Some("peer:altair")).await
+        async fn call(&self, verb: &str, session: &str, level: &str, args: Value) -> Result<Value, awm_plugin_sdk::VerbError> {
+            self.svc.call_as(verb, from(session, level, args), Caller::default(), Some("peer:altair")).await
         }
     }
 
     #[tokio::test]
-    async fn mounting_a_declared_dm_adopts_it_and_send_defaults_to_the_latest_line() {
+    async fn mounting_a_declared_seat_names_seats_adopt_and_its_agent_sends_to_the_latest_line() {
         let r = rig().await;
         let out = r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
-        assert_eq!(out["ok"], true, "{out}");
-        let seat = r.app.seats.store.get("opal", "D0TEST").await.unwrap();
-        assert_eq!((seat.state.as_str(), seat.job.as_str(), seat.node.as_str()), ("occupied", "j1", "altair"));
+        assert!(out["error"].as_str().unwrap().contains("a seat on altair: run `seats adopt account=opal channel=D0TEST session_id=<session id>` there"), "{out}");
+        assert!(r.app.db.holder("opal", "D0TEST").await.is_none());
+        assert!(r.app.seats.store.waiting("altair", 10).await.iter().all(|row| row.kind != "adopt"));
+        bind(&r, "D0TEST", "j1").await;
         assert!(r.call("send", "j1", "cooperative", json!({"text": "hi"})).await.unwrap_err().message.contains("No pushed line"));
         r.app.seats.store.set_line("altair", "j1", "opal", "D0TEST", "5.0", "6.0", 1.0).await;
         r.call("send", "j1", "cooperative", json!({"text": "answer"})).await.unwrap();
@@ -190,16 +155,36 @@ mod verbs {
         assert_eq!(sent[1].0, "D0TEST", "the label DM names the held DM");
     }
 
+    /// Bind `session` on altair to the chat, as the seats host does for the agent it starts.
+    async fn bind(r: &Rig, channel: &str, session: &str) {
+        r.app.db.mount(crate::db::Mount { account: "opal".into(), channel_id: channel.into(), node: "altair".into(), session_id: session.into(), ..Default::default() }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn seats_lists_each_stored_seat_by_its_name_even_before_the_platform_lists_its_chat() {
+        let r = rig().await;
+        r.app.seats.store.save(&crate::seats::store::Seat { account: "opal".into(), channel_id: "C0LATE".into(), channel_name: "general".into(), kind: "channel".into(), server: "Hallam Hive".into(), node: "altair".into(), state: "empty".into(), ..Default::default() }).await;
+        r.app.seats.store.save(&crate::seats::store::Seat { account: "opal".into(), channel_id: "D0TEST".into(), channel_name: "Tester Display".into(), kind: "dm".into(), slug: "tester".into(), node: "altair".into(), state: "empty".into(), ..Default::default() }).await;
+        let out = r.call("seats", "j1", "trusted", json!({"account": "opal"})).await.unwrap();
+        let label = |id: &str| out["seats"].as_array().unwrap().iter().find(|row| row["id"] == id).map(|row| row["label"].clone());
+        assert_eq!(label("C0LATE"), Some(json!("seat:slack/hallam-hive/general")), "{out}");
+        assert_eq!(label("D0TEST"), Some(json!("seat:slack/dm/tester")), "a DM is named by its slug, not its display name");
+        assert_eq!(label("C0TEST"), Some(Value::Null), "a chat that is no seat has no label");
+        let guild = r.app.place("opal", &Channel { id: "1".into(), name: "Hallam Hive#general".into(), kind: "text".into() });
+        assert_eq!(guild.session_name(), "seat:slack/hallam-hive/general", "a listed guild channel names its guild");
+    }
+
     #[tokio::test]
     async fn a_cooperative_session_answers_only_what_it_holds_and_never_a_trusted_chat() {
         let r = rig().await;
-        r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
+        bind(&r, "D0TEST", "j1").await;
         let e = r.call("send", "j1", "cooperative", json!({"account": "opal", "channel": "C0TEST", "text": "x"})).await.unwrap_err();
         assert_eq!(e.error_class, "PermissionError");
-        let out = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "D0OPER", "force": true})).await.unwrap();
+        r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "C0TEST"})).await.unwrap();
+        let held = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "C0TEST"})).await.unwrap();
+        assert!(held["error"].as_str().unwrap().contains("Pass force=true"), "{held}");
+        let out = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "C0OPER"})).await.unwrap();
         assert!(out["error"].as_str().unwrap().contains("cannot hold a trusted chat"), "{out}");
-        let held = r.call("mount", "j2", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
-        assert!(held["error"].as_str().unwrap().contains("Pass force=true"));
     }
 
     #[tokio::test]
@@ -219,6 +204,15 @@ mod verbs {
     }
 
     #[test]
+    fn a_file_without_bytes_or_a_name_is_refused() {
+        for bad in [json!("/abs/path.md"), json!({"filename": "a.md"}), json!({"text": "t"}), json!({"filename": "", "b64": "eA=="})] {
+            assert_eq!(OutFile::from_value(&bad).unwrap_err().error_class, "ValueError", "{bad}");
+        }
+        assert_eq!(OutFile::from_value(&json!({"path": "/d/r.md"})).unwrap().filename, "r.md");
+        assert_eq!(OutFile::from_value(&json!({"filename": "n.txt", "text": ""})).unwrap().bytes().unwrap(), b"");
+    }
+
+    #[test]
     fn only_operations_on_this_node_flips_remote_control() {
         use crate::app::switch_caller;
         assert!(switch_caller(Some("operations"), false));
@@ -233,18 +227,9 @@ mod verbs {
         let args = json!({"seat": "opal/D0OPER", "on": true});
         assert_eq!(r.svc.call("seat_remote_control", args.clone()).await.unwrap_err().error_class, "PermissionError");
         assert_eq!(r.call("seat_remote_control", "op", "trusted", args).await.unwrap_err().error_class, "PermissionError");
-    }
-
-    #[tokio::test]
-    async fn only_a_seats_agent_marks_done_and_only_trusted_resets() {
-        let r = rig().await;
-        let e = r.call("mark_seat_done", "nobody", "cooperative", json!({})).await.unwrap_err();
-        assert_eq!(e.error_class, "HolderError");
-        r.call("mount", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap();
-        assert_eq!(r.call("mark_seat_done", "j1", "cooperative", json!({})).await.unwrap()["ok"], true);
-        assert!(r.app.seats.store.get("opal", "D0TEST").await.unwrap().done_at > 0.0);
-        assert_eq!(r.call("seat_reset", "j1", "cooperative", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap_err().error_class, "PermissionError");
-        assert_eq!(r.call("seat_reset", "op", "trusted", json!({"account": "opal", "channel": "D0TEST"})).await.unwrap()["ok"], true);
+        let args = json!({"seat": "opal/D0OPER", "model": "sonnet", "effort": "low"});
+        assert_eq!(r.svc.call("seat_refresh", args.clone()).await.unwrap_err().error_class, "PermissionError");
+        assert_eq!(r.call("seat_refresh", "op", "trusted", args).await.unwrap_err().error_class, "PermissionError");
     }
 
     #[tokio::test]
@@ -255,13 +240,6 @@ mod verbs {
         assert!(r.app.db.is_quiet("opal", "C0TEST", "9.9").await);
         let reply = Inbound { account: "opal".into(), platform: "slack".into(), channel_id: "C0TEST".into(), thread_id: "9.9".into(), message_id: "10.0".into(), to_holder: true, ..Default::default() };
         r.app.on_message(reply).await;
-        assert_eq!(r.app.seats.queued("opal", "C0TEST").await, 0);
-    }
-
-    #[tokio::test]
-    async fn the_bucket_root_is_never_deleted() {
-        let r = rig().await;
-        let e = r.call("bucket_rm", "op", "trusted", json!({"bucket": "b", "path": "/"})).await.unwrap_err();
-        assert!(e.message.contains("never deleted"));
+        assert!(r.app.seats.store.waiting("altair", 10).await.iter().all(|row| row.kind != "line"));
     }
 }

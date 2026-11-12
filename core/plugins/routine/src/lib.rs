@@ -1,11 +1,11 @@
 //! The routine plugin: routines a project defines in its repo, installed per node, fired by
 //! a systemd user timer, a call or an event, watched to a verdict, and handed to a fixing agent when
-//! they fail. The land queue, `routine land`, ships in the same binary.
+//! they fail. Node rollout, `routine rollout`, ships in the same binary.
 
 pub mod definitions;
 pub mod escalate;
 pub mod events;
-pub mod land;
+pub mod rollout;
 pub mod outbound;
 pub mod proc;
 pub mod runner;

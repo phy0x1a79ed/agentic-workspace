@@ -1,0 +1,25 @@
+[plugin]
+name = "ssh-arbiter"
+version = "0.1.0"
+
+[[service]]
+name = "ssh-arbiter"
+install = "install.sh"
+
+[[tool]]
+name = "ssh-arbiter"
+major = 1
+tier = "off"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]
+
+[[needs.tool]]
+name = "2fa"
+major = 1
+
+[[needs.tool]]
+name = "social"
+major = 1

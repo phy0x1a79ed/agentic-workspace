@@ -13,7 +13,7 @@ use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::roster::{parse_ts, Item, ServiceRow, Session, ToolRow, Ts};
+use crate::roster::{parse_ts, Item, PluginRow, ServiceRow, Session, ToolRow, Ts};
 
 /// The plugins whose own calls the node part does not forward, so a report never reports itself.
 const OWN_PLUGINS: [&str; 2] = ["telemetry", "telemetry-node"];
@@ -85,9 +85,9 @@ pub fn message(service: &str, topic: &str, payload: &Value, here: &str) -> Optio
 pub fn session_of(v: &Value) -> Option<Session> {
     let s = |k: &str| v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_string);
     let link = s("rc_url").or_else(|| s("link"));
+    let state = s("state").filter(|x| ["working", "blocked", "done"].contains(&x.as_str()));
     Some(Session {
-        job: s("job")?,
-        session_id: s("session_id"),
+        session_id: s("session_id")?,
         name: s("name"),
         project: s("project"),
         scope: s("scope"),
@@ -96,10 +96,14 @@ pub fn session_of(v: &Value) -> Option<Session> {
         remote_control: v.get("remote_control").and_then(Value::as_bool).unwrap_or(link.is_some()),
         link,
         started: parse_ts(v.get("started_at")).or_else(|| parse_ts(v.get("started"))),
+        needs: s("needs").filter(|_| state.as_deref() == Some("blocked")),
+        state,
+        retired: v.get("retired").and_then(Value::as_bool).unwrap_or(false),
+        pool: s("pool"),
     })
 }
 
-/// A session in a project or scope this node marks private leaves the node as its job alone
+/// A session in a project or scope this node marks private leaves the node as its session id alone
 /// (contract § Peer calls item 6), so it still counts but says nothing.
 pub fn redact(s: Session) -> Session {
     redact_with(s, privacy::hidden)
@@ -107,7 +111,7 @@ pub fn redact(s: Session) -> Session {
 
 pub fn redact_with(s: Session, hidden: impl Fn(&str, Option<&str>) -> bool) -> Session {
     match &s.project {
-        Some(p) if hidden(p, s.scope.as_deref()) => Session { job: s.job, kind: s.kind, started: s.started, ..Session::default() },
+        Some(p) if hidden(p, s.scope.as_deref()) => Session { session_id: s.session_id, kind: s.kind, started: s.started, ..Session::default() },
         _ => s,
     }
 }
@@ -273,7 +277,7 @@ impl GatewayProbe {
         Ok(resp.json().await?)
     }
 
-    async fn read_tools(&self) -> anyhow::Result<(Vec<ServiceRow>, Vec<ToolRow>)> {
+    async fn read_tools(&self) -> anyhow::Result<(Vec<ServiceRow>, Vec<ToolRow>, Vec<PluginRow>)> {
         let table = self.get("/hub/table").await?;
         let plugins = self.get("/hub/plugins").await?;
         let edges = config::edges().unwrap_or_default();
@@ -283,7 +287,7 @@ impl GatewayProbe {
 
 /// The node's services, up when enabled and in the live table, and the tools it can use: its
 /// own and the singletons behind other hosts' doors.
-pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, String)]) -> (Vec<ServiceRow>, Vec<ToolRow>) {
+pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, String)]) -> (Vec<ServiceRow>, Vec<ToolRow>, Vec<PluginRow>) {
     let rows = table.as_array().cloned().unwrap_or_default();
     let live_plugins: Vec<&str> = rows.iter().filter_map(|t| t.get("plugin").and_then(Value::as_str)).collect();
     let services = plugins
@@ -298,18 +302,21 @@ pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, Stri
             let tools: Vec<String> = s.get("tools").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
             let enabled = s.get("enabled").and_then(Value::as_bool).unwrap_or(true);
             let in_table = tools.is_empty() || plugin.as_deref().is_some_and(|p| live_plugins.contains(&p));
-            Some(ServiceRow { service: name, plugin, tools, up: enabled && in_table })
+            Some(ServiceRow { service: name, plugin, tools, up: enabled && in_table, enabled: Some(enabled) })
         })
         .collect();
     let mut tools: Vec<ToolRow> = rows.iter().filter_map(|t| t.get("name").and_then(Value::as_str)).map(|n| ToolRow { tool: n.into(), host: None }).collect();
     tools.extend(doors.iter().map(|(tool, host)| ToolRow { tool: tool.clone(), host: Some(host.clone()) }));
-    (services, tools)
+    let loaded = plugins.get("plugins").and_then(Value::as_array).into_iter().flatten().filter_map(|p| {
+        Some(PluginRow { name: p.get("name")?.as_str()?.into(), version: p.get("version").and_then(Value::as_str).map(str::to_string), core: p.get("core").and_then(Value::as_bool).unwrap_or(false) })
+    });
+    (services, tools, loaded.collect())
 }
 
 impl Probe for GatewayProbe {
     fn hello(&self) -> BoxFuture<'_, anyhow::Result<Item>> {
         Box::pin(async move {
-            let (services, tools) = self.read_tools().await?;
+            let (services, tools, plugins) = self.read_tools().await?;
             let listed = self.hub.call("reflection", "list_other", json!({}), None).await?;
             let sessions = listed
                 .get("sessions")
@@ -321,14 +328,14 @@ impl Probe for GatewayProbe {
                 .map(redact)
                 .collect();
             let role = config::edges().ok().and_then(|e| e.nodes.get(&self.node).map(|n| n.role.clone()));
-            Ok(Item::Hello { role, portal: config::edge_url(), sessions, services, tools })
+            Ok(Item::Hello { role, portal: config::edge_url(), sessions, services, tools, plugins })
         })
     }
 
     fn tools(&self) -> BoxFuture<'_, anyhow::Result<Item>> {
         Box::pin(async move {
-            let (services, tools) = self.read_tools().await?;
-            Ok(Item::Tools { services, tools })
+            let (services, tools, plugins) = self.read_tools().await?;
+            Ok(Item::Tools { services, tools, plugins })
         })
     }
 }
@@ -339,11 +346,11 @@ mod tests {
 
     #[test]
     fn payloads_map_to_messages() {
-        let ev = json!({"event": "started", "job": "a1", "session_id": "s1", "name": "x", "node": "mizar", "project": "awm",
+        let ev = json!({"event": "started", "session_id": "s1", "name": "x", "node": "mizar", "project": "awm",
                         "scope": "lobby", "kind": "worker", "task_id": "CW", "rc_url": "https://claude.ai/code/s1", "ts": "2026-11-07T10:00:00Z"});
         let Some(Msg::Item(item)) = message("reflection", "sessions", &ev, "mizar") else { panic!() };
         let Item::Session { event, session, ts } = *item else { panic!() };
-        assert_eq!((event.as_str(), session.session_id.as_deref(), session.link.as_deref()), ("started", Some("s1"), Some("https://claude.ai/code/s1")));
+        assert_eq!((event.as_str(), Some(session.session_id.as_str()), session.link.as_deref()), ("started", Some("s1"), Some("https://claude.ai/code/s1")));
         assert!(session.remote_control && ts.is_some());
         assert!(message("reflection", "sessions", &ev, "lyra").is_none(), "another node's session is not ours to report");
 
@@ -358,10 +365,10 @@ mod tests {
     }
 
     #[test]
-    fn a_private_session_leaves_as_its_job_alone() {
-        let s = Session { job: "j".into(), name: Some("n".into()), project: Some("secret".into()), link: Some("l".into()), ..Session::default() };
+    fn a_private_session_leaves_as_its_id_alone() {
+        let s = Session { session_id: "j".into(), name: Some("n".into()), project: Some("secret".into()), link: Some("l".into()), ..Session::default() };
         let r = redact_with(s.clone(), |p, _| p == "secret");
-        assert_eq!(r, Session { job: "j".into(), ..Session::default() });
+        assert_eq!(r, Session { session_id: "j".into(), ..Session::default() });
         assert_eq!(redact_with(s.clone(), |_, _| false), s);
     }
 

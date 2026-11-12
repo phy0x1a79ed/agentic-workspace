@@ -47,14 +47,14 @@ Caller gate:
 - `devices` and `device_revoke` also refuse a session stamp and an `as_`.
 
 Stale:
-- operations follows `telemetry/sessions`. A `gone` ends the row, and a Working or Needs you card with no live session moves to Stale. A `live` moves a Stale card back to Working.
-- At start and at each reconnect it reconciles against `telemetry nodes` (CONTRACT.md d5c3a3f2), matching on session_id, then on job. Nodes the roster omits stay untouched.
+- operations follows `telemetry/sessions`. A `gone` ends the row, and a Working or Needs you card with no live session moves to Stale. A `live` moves a Stale card back to Working. A `renamed` sets the row's name, and the name of a card's main session becomes the card's title.
+- At start and at each reconnect it reconciles against `telemetry nodes` (CONTRACT.md d5c3a3f2), matching on session_id, then on job. A listed name that differs from the row's counts as a `renamed`. Nodes the roster omits stay untouched.
 - With telemetry absent, no card goes stale.
 
 The vault API, on the approver server:
 - `/signin` and `/enrol` set the cookie `__Host-awm_device`, valid 12 hours. `approver.db` keeps only its sha256, in the additive table `device_sessions`. A device revoke ends its sessions.
 - Every `/api/*` route but the key, enrol and sign-in routes needs the cookie. A POST needs an `Origin` that is the approver's or in `board_origins`. CORS answers only `board_origins`, with credentials.
-- The everyday actions take the cookie alone: `/api/agent`, `/api/card/{id}/close|reject`, `/api/seat/remote_control` and `/api/request/{id}/reject`. More than `rate_max` in a minute from one device are refused.
+- The everyday actions take the cookie alone: `/api/agent`, `/api/card/{id}/close|reject`, `/api/seat/remote_control`, `/api/seat/refresh` and `/api/request/{id}/reject`. More than `rate_max` in a minute from one device are refused.
 - The modal approves with a passkey whose challenge is the sha256 of the canonical request, so an assertion fits one request only. The 2fa burst and the device revoke use a single-use server nonce.
 - `/signin?next=` with a live session redirects with a `portal_login` grant. The grant's return path is the bare path, because the edge refuses a query.
 

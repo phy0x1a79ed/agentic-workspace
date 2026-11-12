@@ -9,8 +9,8 @@
 # caller that dies or drops its ssh leaves them running.
 #
 # The result goes to <AWM_DIR>/state/refresh/<sha>.json, the steps' output to <sha>.log
-# beside it. A second call for the same sha waits for the unit that runs, or answers from
-# the result, and never runs the steps twice. Delete the result to run them again.
+# beside it. A second call for the same sha waits for the unit that runs, answers from a
+# result that succeeded, and runs the steps again after one that failed.
 # The last line of output is `AWM-REFRESH-RESULT <result json>`, which the deploy reads.
 #
 # The body is one function, called on the last line: sync rewrites this file while
@@ -22,9 +22,9 @@ main() {
     root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     export AWM_DIR=${AWM_DIR:-$root/.awm}
     local conda cand
-    # Nodes keep conda in different places. Take the first root that holds the awm env.
+    # Nodes keep conda in different places. Take the first root that holds mamba.
     for cand in ${MAMBA_ROOT_PREFIX:-} "$HOME/miniforge3" "$HOME/lib/miniforge3" /opt/miniforge3; do
-        [[ -d $cand/envs/awm ]] && { conda=$cand; break; }
+        [[ -x $cand/bin/mamba ]] && { conda=$cand; break; }
     done
     if [[ -n ${conda:-} ]]; then
         export MAMBA_ROOT_PREFIX=$conda
@@ -46,8 +46,8 @@ main() {
 
 launch() {
     local to=$1
-    if [[ ! -s $result ]] && ! running; then
-        rm -f "$log"
+    if ! succeeded && ! running; then
+        rm -f "$log" "$result"
         local env=(AWM_REFRESH_IN_UNIT=1 PATH="$PATH" AWM_DIR="$AWM_DIR" HOME="$HOME")
         local v
         for v in AWM_WORKSPACE AWM_NODE_NAME MAMBA_ROOT_PREFIX MAMBA_EXE AWM_REFRESH_RESTART; do
@@ -74,8 +74,10 @@ launch() {
     [[ -s $result ]] || fail_launch "$to" "$unit ended without a result"
     [[ -f $log ]] && tail -n 40 "$log"
     printf 'AWM-REFRESH-RESULT %s\n' "$(tr -d '\n' < "$result")"
-    grep -q '"ok": true' "$result"
+    succeeded
 }
+
+succeeded() { grep -qs '"ok": true' "$result"; }
 
 running() { systemctl --user is-active --quiet "$unit" 2>/dev/null; }
 
@@ -104,7 +106,7 @@ steps() {
 
 step_sync() { (cd "$root" && AWM_REFRESH_TO=$1 sh scripts/refresh-checkout.sh); }
 
-# The landing agents name what restarts ($AWM_REFRESH_RESTART, comma separated):
+# The ship skill names what restarts ($AWM_REFRESH_RESTART, comma separated):
 # `gateway` restarts the unit, and plugin names restart those plugins.
 step_deploy() {
     local args=() names=() name restart

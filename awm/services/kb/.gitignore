@@ -1,4 +1,0 @@
-# install.sh sidecars: host-specific absolute paths
-.runtime-env
-kb-python
-kb-env-stamp

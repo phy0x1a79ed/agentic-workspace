@@ -60,14 +60,7 @@ impl<G: Gateway> App<G> {
 
 /// Python's truthiness of an argument or a field.
 pub fn truthy(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(m)) => !m.is_empty(),
-    }
+    v.is_some_and(awm_pycompat::repr::truthy)
 }
 
 /// `out.get("ok")`: false unless the answer says ok.

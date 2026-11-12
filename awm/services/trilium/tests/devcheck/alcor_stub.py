@@ -70,6 +70,9 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/seat/remote_control":
             return self._send(200, json.dumps({"ok": True, "seat": body["seat"],
                                                "remote_control": body["on"], "live": "none"}))
+        if path == "/api/seat/refresh":
+            return self._send(200, json.dumps({"ok": True, "seat": body["seat"], "model": body["model"],
+                                               "effort": body["effort"], "live": "pending"}))
         self._send(200, json.dumps({"ok": True}))
 
 

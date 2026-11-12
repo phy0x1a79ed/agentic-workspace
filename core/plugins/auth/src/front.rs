@@ -1,34 +1,31 @@
 //! What the node's edge does with a request before the gateway leg (the port of
-//! `awm.httpsfront.proxy`): the landing page, the vault, slice, tether and board mounts, and the
+//! `awm.httpsfront.proxy`): the landing page, the vault, slice and tether mounts, and the
 //! public profile's allow-list.
 //!
-//! The slice, tether and board mounts are answered before authentication. Each decides by the
+//! The slice and tether mounts are answered before authentication. Each decides by the
 //! shape of the path alone and is claimed on every node, wired or not, so a path under one never
 //! reaches the gateway.
 
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use awm_plugin_sdk::{CallOpts, Hub};
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
-use hyper::body::{Body as HttpBody, Frame, Incoming};
+use hyper::body::Incoming;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue};
 use hyper::Method;
 use serde_json::{json, Map, Value};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::edge::{
-    self, add_cookie, client, consumed_edge_token, cookie_of, full, json_reply, not_found, query_param, redirect, refuse, reply, set_cookie, target, text, with_header, Body, BoxError, BoxFut,
-    Dispatch, Edge, Forward, Req, Response, Upstream, CALLER_HEADERS, HOP,
+    self, add_cookie, cookie_of, json_reply, not_found, query_param, redirect, refuse, reply, set_cookie, target, text, with_header, BoxFut,
+    Dispatch, Edge, Forward, Req, Response, CALLER_HEADERS, HOP,
 };
 use crate::gate::is_machine_sub;
 use crate::landing::Landing;
 use crate::pages::{self, LandingView};
-use crate::policy::{self, board, slices, tether, vault, Verdict};
+use crate::policy::{self, slices, tether, vault, viewer, Verdict};
 use crate::tokens::{py_str, truthy};
 
 /// How long a resolved slice token is reused. A page load is hundreds of asset requests, and a
@@ -36,21 +33,14 @@ use crate::tokens::{py_str, truthy};
 const SLICE_RESOLVE_TTL: Duration = Duration::from_secs(5);
 const SLICE_CACHE_SWEEP: usize = 4096;
 
-/// The board leg's own pool, so open `/board/stream` connections cannot fill the one every other
-/// leg of the edge waits on. A request that cannot get a slot in `BOARD_POOL_WAIT` is answered 503.
-const BOARD_MAX_CONNECTIONS: usize = 64;
-const BOARD_MAX_IDLE: usize = 16;
-const BOARD_POOL_WAIT: Duration = Duration::from_secs(2);
-const BOARD_CONNECT: Duration = Duration::from_secs(5);
-
 const PLUGINS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The loopback origins of the three upstreams other than the gateway, each `None` when off.
+/// The loopback origins of the upstreams other than the gateway, each `None` when off.
 #[derive(Debug, Clone, Default)]
 pub struct Upstreams {
     pub vault: Option<String>,
     pub tether: Option<String>,
-    pub board: Option<String>,
+    pub viewer: Option<String>,
 }
 
 impl Upstreams {
@@ -59,28 +49,12 @@ impl Upstreams {
         let enabled = |name: &str, default: &str| !matches!(env(name, default).as_str(), "0" | "false" | "no");
         let port = |name: &str, default: u16| std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default);
         let origin = |port: u16| format!("http://127.0.0.1:{port}");
-        let board = matches!(env("AWM_EDGE_BOARD", "").as_str(), "1" | "true" | "yes" | "on").then(|| {
-            let raw = std::env::var("AWM_BOARD_PORT").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "12521".into());
-            match raw.trim().parse::<u16>() {
-                Ok(p) if p >= 1 => Some(origin(p)),
-                _ => {
-                    tracing::error!("AWM_BOARD_PORT={raw:?} is not a port; the board door stays off");
-                    None
-                }
-            }
-        });
         Upstreams {
             vault: enabled("AWM_EDGE_VAULT", "1").then(|| origin(port("AWM_VAULT_PORT", 12511))),
             tether: enabled("AWM_EDGE_TETHER", "0").then(|| origin(port("AWM_TETHER_PORT", 12520))),
-            board: board.flatten(),
+            viewer: enabled("AWM_EDGE_VIEWER", "0").then(|| origin(port("AWM_VIEWER_PORT", 6080))),
         }
     }
-}
-
-struct BoardDoor {
-    up: String,
-    client: Upstream,
-    pool: Arc<Semaphore>,
 }
 
 /// A slice token's meaning, as the trilium service resolved it.
@@ -98,7 +72,7 @@ pub struct Front {
     public: bool,
     vault: Option<String>,
     tether: Option<String>,
-    board: Option<BoardDoor>,
+    viewer: Option<String>,
     hub: Hub,
     plugins: reqwest::Client,
     landing: Landing,
@@ -126,12 +100,11 @@ enum Op {
 
 impl Front {
     pub fn new(public: bool, upstreams: Upstreams, hub: Hub, landing: Landing) -> Front {
-        let board = upstreams.board.map(|up| BoardDoor { up, client: client(Some(BOARD_CONNECT), BOARD_MAX_IDLE), pool: Arc::new(Semaphore::new(BOARD_MAX_CONNECTIONS)) });
         Front {
             public,
             vault: upstreams.vault,
             tether: upstreams.tether,
-            board,
+            viewer: if public { None } else { upstreams.viewer },
             hub,
             plugins: reqwest::Client::builder().no_proxy().timeout(PLUGINS_TIMEOUT).build().expect("reqwest client builds"),
             landing,
@@ -324,12 +297,6 @@ impl Front {
                 None => not_found(),
             };
         }
-        if board::in_mount(&req.path) {
-            return match &self.board {
-                Some(door) if board::allows(req.parts.method.as_str(), &req.path) => self.board_http(edge, req, door).await,
-                _ => not_found(),
-            };
-        }
 
         let decision = edge.authenticate(&req, Some(&req.shape(false)));
         let Some(sub) = decision.sub().map(str::to_string) else {
@@ -359,6 +326,13 @@ impl Front {
             let html = wants_html(&req);
             let unavailable = || vault_unavailable(html, "not listening yet");
             return edge.forward(req, vault_up, &inner, &sub, refreshed.as_deref(), Forward { unreachable: Some(&unavailable), ..Forward::default() }).await;
+        }
+        if let Some(viewer_up) = self.viewer.as_deref().filter(|_| viewer::owns(&req.path)) {
+            if is_machine_sub(Some(&sub)) {
+                return not_found();
+            }
+            let Some(inner) = viewer::upstream_raw_path(&raw) else { return not_found() };
+            return edge.forward(req, viewer_up, &inner, &sub, refreshed.as_deref(), Forward::default()).await;
         }
         edge.forward(req, &edge.config.upstream, &raw, &sub, refreshed.as_deref(), Forward::default()).await
     }
@@ -459,58 +433,17 @@ impl Front {
         edge.send(&method, uri, headers, body).await.unwrap_or_else(|_| not_found())
     }
 
-    // -- the board mount -----------------------------------------------------------------
-
-    /// Forward one request to the board: no session, and no opinion. The board's answers pass
-    /// through as sent. Bodies stream both ways, and the response is relayed as it arrives with
-    /// no read timeout, because the board speaks on a stream only every 30 s.
-    ///
-    /// `Authorization` is the board's own party bearer, checked as a set: more than one header is
-    /// refused, because the device-token test and the forwarded value could otherwise read
-    /// different ones.
-    async fn board_http(&self, edge: &Edge, mut req: Req, door: &BoardDoor) -> Response {
-        let Some(inner) = board::upstream_raw_path(&req.raw) else { return not_found() };
-        let mut auths = req.parts.headers.get_all("authorization").iter();
-        let first = auths.next();
-        if auths.next().is_some() {
-            return not_found();
-        }
-        let drop_auth = first.is_some_and(|v| consumed_edge_token(Some(&v.as_bytes().iter().map(|&b| b as char).collect::<String>())));
-        let Some(uri) = target(&door.up, &inner, &req.query) else { return not_found() };
-        let headers = board_headers(edge, &req, drop_auth);
-        let too_large = || text(413, "request body too large");
-        let cap = board::body_cap(req.parts.method.as_str(), &req.path);
-        // A body of known length streams: the cap is checked against the declared length, which
-        // the connection then enforces.
-        let body: Body = match declared_length(&req.parts.headers) {
-            Some(n) if n > cap as u128 => return too_large(),
-            Some(n) if n > 0 => req.body.map_err(Into::into).boxed(),
-            _ => match capped_body(&req.parts.headers, &mut req.body, cap).await {
-                Some(read) => full(read),
-                None => return too_large(),
-            },
-        };
-        let permit = match tokio::time::timeout(BOARD_POOL_WAIT, door.pool.clone().acquire_owned()).await {
-            Ok(Ok(permit)) => permit,
-            _ => return text(503, "board busy"),
-        };
-        match edge::relay(&door.client, &req.parts.method, uri, headers, body).await {
-            Ok(resp) => resp.map(|inner| Held { inner, _permit: permit }.boxed()),
-            // The same answer the board gives for everything it declines.
-            Err(_) => not_found(),
-        }
-    }
-
     // -- sockets -------------------------------------------------------------------------
 
     async fn handle_ws(&self, edge: &Edge, req: Req) -> Response {
         let (path, raw) = (req.path.clone(), req.raw.clone());
-        if edge::re_segments(&raw, &path) || board::in_mount(&path) {
+        if edge::re_segments(&raw, &path) {
             return refuse(403);
         }
         let is_vault = self.vault.is_some() && vault::owns(&path);
         let is_slice = self.vault.is_some() && slices::owns(&path);
         let is_tether = tether::owns(&path);
+        let is_viewer = self.viewer.is_some() && viewer::owns(&path);
         // The tether name is claimed whether or not a relay is wired.
         if tether::refused(&path) || (is_tether && self.tether.is_none()) {
             return refuse(403);
@@ -523,6 +456,10 @@ impl Front {
             let inner = if is_vault { vault::upstream_raw_path(&raw) } else if is_slice { slices::upstream_raw_path(&raw) } else { tether::upstream_raw_path(&raw) };
             let Some(inner) = inner else { return refuse(403) };
             up = if is_tether { self.tether.as_deref() } else { self.vault.as_deref() }.unwrap_or_default();
+            target_raw = inner;
+        } else if is_viewer {
+            let Some(inner) = viewer::upstream_raw_path(&raw) else { return refuse(403) };
+            up = self.viewer.as_deref().unwrap_or_default();
             target_raw = inner;
         }
         // `/invoke` is a POST; on the public door it has no socket form.
@@ -552,7 +489,7 @@ impl Front {
         } else {
             let Some(sub) = edge.authenticate(&req, Some(&req.shape(true))).sub().map(str::to_string) else { return refuse(403) };
             // The operator session has the gateway's socket, never the vault's.
-            if (self.public && !policy::allows(&path, Some(&sub))) || (is_vault && is_machine_sub(Some(&sub))) {
+            if (self.public && !policy::allows(&path, Some(&sub))) || ((is_vault || is_viewer) && is_machine_sub(Some(&sub))) {
                 return refuse(403);
             }
             fwd.insert("x-awm-as", edge::as_header(&sub));
@@ -622,58 +559,6 @@ async fn capped_body(headers: &HeaderMap, body: &mut Incoming, cap: usize) -> Op
         }
     }
     Some(out.freeze())
-}
-
-/// The headers the board is sent: the caller's, less every claim of identity. Every `X-Awm-*`
-/// goes, not only the ones the gateway reads, and so does the edge's session cookie.
-/// `Content-Length` is restated from the body. `drop_auth` removes a device token, so the board
-/// never holds a credential that is live elsewhere.
-fn board_headers(edge: &Edge, req: &Req, drop_auth: bool) -> HeaderMap {
-    let mut out = HeaderMap::new();
-    for (k, v) in &req.parts.headers {
-        let low = k.as_str();
-        if !HOP.contains(&low) && !CALLER_HEADERS.contains(&low) && !low.starts_with("x-awm-") && !low.starts_with("x-forwarded-") && low != "cookie" && low != "content-length" {
-            out.append(k.clone(), v.clone());
-        }
-    }
-    if drop_auth {
-        out.remove("authorization");
-    }
-    out.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-    if let Some(host) = req.parts.headers.get("host") {
-        out.insert("x-forwarded-host", host.clone());
-    }
-    if let Ok(ip) = HeaderValue::from_str(&edge.client_ip(req)) {
-        out.insert("x-forwarded-for", ip);
-    }
-    out
-}
-
-/// A response body that holds its pool slot until the body ends, however the client leaves, and
-/// ends quietly when the upstream goes away mid-stream, as a closed socket would.
-struct Held {
-    inner: Body,
-    _permit: OwnedSemaphorePermit,
-}
-
-impl HttpBody for Held {
-    type Data = Bytes;
-    type Error = BoxError;
-
-    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
-        match Pin::new(&mut self.inner).poll_frame(cx) {
-            Poll::Ready(Some(Err(_))) => Poll::Ready(None),
-            other => other,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
-    }
-
-    fn size_hint(&self) -> hyper::body::SizeHint {
-        self.inner.size_hint()
-    }
 }
 
 fn slice_of(result: &Value) -> Option<Slice> {

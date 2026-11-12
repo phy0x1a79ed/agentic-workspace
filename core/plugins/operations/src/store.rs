@@ -26,6 +26,8 @@ const PROPOSED: &str = "proposed";
 pub const ROLES: [&str; 3] = ["main", "worker", "joined"];
 pub const APPROVAL_OUTCOMES: [&str; 4] = ["approved", "denied", "expired", "cancelled"];
 pub const PAGE: i64 = 50;
+/// The meta key that marks a Needs-you card its session's block put there.
+const BLOCKED_BY_STATE: &str = "blocked_by_state";
 pub const PLAN_CHARS: usize = 20_000;
 pub const TODO_ITEMS: usize = 200;
 pub const MESSAGE_CHARS: usize = 20_000;
@@ -113,7 +115,6 @@ CREATE TABLE IF NOT EXISTS ops_notes (
     ts REAL NOT NULL,
     PRIMARY KEY (kind, node)
 );
-CREATE INDEX IF NOT EXISTS sessions_job ON sessions(node, job);
 ";
 
 #[derive(Debug, thiserror::Error)]
@@ -144,11 +145,17 @@ pub type NoticeHook = Arc<dyn Fn() + Send + Sync>;
 pub type ApprovalsOf = Arc<dyn Fn(&str) -> Vec<Value> + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
 
-/// A live session as telemetry lists it: matched on `session_id`, else on `job` at its node.
+/// A live session as telemetry lists it, matched on `session_id`.
 #[derive(Debug, Clone, Default)]
 pub struct LiveSession {
     pub session_id: Option<String>,
-    pub job: Option<String>,
+    pub name: Option<String>,
+    pub link: Option<String>,
+    pub project: Option<String>,
+    pub scope: Option<String>,
+    /// `working`, `blocked` or `done`, from the session's own record.
+    pub state: Option<String>,
+    pub needs: Option<String>,
 }
 
 /// A new card's fields beyond its title.
@@ -164,8 +171,6 @@ pub struct Open {
     pub tags: Option<Vec<String>>,
     pub meta: Option<Map<String, Value>>,
     pub name: Option<String>,
-    pub rc_url: Option<String>,
-    pub job: Option<String>,
     pub source_note: Option<String>,
 }
 
@@ -174,8 +179,6 @@ pub struct Open {
 pub struct Seat {
     pub node: Option<String>,
     pub name: Option<String>,
-    pub rc_url: Option<String>,
-    pub job: Option<String>,
 }
 
 pub struct Store {
@@ -281,15 +284,16 @@ fn raw_task(db: &Connection, task_id: &str) -> Result<Option<TaskRow>> {
 
 fn sessions_of(db: &Connection, task_id: &str) -> Result<Vec<Value>> {
     let mut st = db.prepare(
-        "SELECT session_id, job, name, role, active, node, rc_url, started, ended FROM sessions WHERE task_id=? ORDER BY started",
+        "SELECT session_id, name, role, active, node, rc_url, started, ended, project, scope FROM sessions WHERE task_id=? ORDER BY started",
     )?;
     let rows = st.query_map([task_id], |r| {
         Ok(json!({
-            "session_id": r.get::<_, String>(0)?, "job": r.get::<_, Option<String>>(1)?,
-            "name": r.get::<_, Option<String>>(2)?, "role": r.get::<_, String>(3)?,
-            "active": r.get::<_, i64>(4)? != 0, "node": r.get::<_, Option<String>>(5)?,
-            "rc_url": r.get::<_, Option<String>>(6)?, "started": r.get::<_, f64>(7)?,
-            "ended": r.get::<_, Option<f64>>(8)?,
+            "session_id": r.get::<_, String>(0)?,
+            "name": r.get::<_, Option<String>>(1)?, "role": r.get::<_, String>(2)?,
+            "active": r.get::<_, i64>(3)? != 0, "node": r.get::<_, Option<String>>(4)?,
+            "rc_url": r.get::<_, Option<String>>(5)?, "started": r.get::<_, f64>(6)?,
+            "ended": r.get::<_, Option<f64>>(7)?, "project": r.get::<_, Option<String>>(8)?,
+            "scope": r.get::<_, Option<String>>(9)?,
         }))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -417,11 +421,10 @@ impl Store {
             return refuse(format!("role must be one of {ROLES:?}, not {role:?}"));
         }
         tx.tx.execute(
-            "INSERT INTO sessions(session_id, task_id, role, node, name, rc_url, job, started) VALUES (?,?,?,?,?,?,?,?) \
+            "INSERT INTO sessions(session_id, task_id, role, node, name, started) VALUES (?,?,?,?,?,?) \
              ON CONFLICT(session_id) DO UPDATE SET task_id=excluded.task_id, role=excluded.role, active=1, ended=NULL, \
-             node=COALESCE(excluded.node, node), name=COALESCE(excluded.name, name), \
-             rc_url=COALESCE(excluded.rc_url, rc_url), job=COALESCE(excluded.job, job)",
-            params![session_id, task_id, role, seat.node, seat.name, seat.rc_url, seat.job, tx.now],
+             node=COALESCE(excluded.node, node), name=COALESCE(excluded.name, name)",
+            params![session_id, task_id, role, seat.node, seat.name, tx.now],
         )?;
         tx.event(task_id, "session", json!({"session_id": session_id, "role": role}))
     }
@@ -457,7 +460,7 @@ impl Store {
             )?;
             tx.event(&tid, "open", json!({"title": title, "section": section, "status": o.status}))?;
             if let Some(sid) = o.session_id.as_deref().filter(|s| !s.is_empty()) {
-                let seat = Seat { node: o.node.clone(), name: o.name.clone(), rc_url: o.rc_url.clone(), job: o.job.clone() };
+                let seat = Seat { node: o.node.clone(), name: o.name.clone() };
                 Store::add_session(tx, &tid, sid, "main", &seat)?;
             }
             Ok(json!({"task_id": tid}))
@@ -492,7 +495,7 @@ impl Store {
                     folded = Some(own);
                 }
             }
-            let joined = Seat { node: seat.node.clone(), job: seat.job.clone(), ..Seat::default() };
+            let joined = Seat { node: seat.node.clone(), ..Seat::default() };
             Store::add_session(tx, &tid, session_id, "joined", &joined)?;
             let main: Option<(String, Option<String>, Option<String>)> = tx
                 .tx
@@ -523,7 +526,7 @@ impl Store {
     }
 
     /// A session moves its own card: working, planned, blocked, review or done.
-    pub fn task_report(&self, task_id: &str, session_id: Option<&str>, state: &str, reason: Option<&str>, rc_url: Option<&str>, op_id: Option<&str>) -> Result<Value> {
+    pub fn task_report(&self, task_id: &str, session_id: Option<&str>, state: &str, reason: Option<&str>, op_id: Option<&str>) -> Result<Value> {
         let Some((section, status)) = report_state(state) else {
             return refuse(format!("state must be one of {REPORT_STATES:?}, not {state:?}"));
         };
@@ -533,14 +536,26 @@ impl Store {
                 return refuse("an approval card moves only through the approver");
             }
             let tid = row.task_id.clone();
-            if let (Some(url), Some(sid)) = (rc_url, session_id) {
-                tx.tx.execute("UPDATE sessions SET rc_url=? WHERE session_id=?", params![url, sid])?;
-            }
             let mut meta = row.meta.clone();
             meta.insert("reason".into(), if section == NEEDS_YOU { json!(reason) } else { Value::Null });
+            meta.remove(BLOCKED_BY_STATE);
             tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), tid])?;
             Store::set_card(tx, &tid, section, status, "report", json!({"session_id": session_id, "reason": reason}))?;
             Ok(json!({"task_id": tid, "section": section, "status": status}))
+        })
+    }
+
+    /// Title a card still named by `agent_card`, so a session's name or an earlier plan stays.
+    pub fn task_autotitle(&self, task_id: &str, title: &str, op_id: Option<&str>) -> Result<Value> {
+        self.write(op_id, |tx| {
+            let row = task_by_id(&tx.tx, task_id)?;
+            let default = row.meta.get("from") == Some(&json!("vault")) && row.title.starts_with("Agent on ");
+            if title.is_empty() || !default {
+                return Ok(json!({"task_id": row.task_id, "retitled": false}));
+            }
+            tx.tx.execute("UPDATE tasks SET title=?, updated=? WHERE task_id=?", params![title, tx.now, row.task_id])?;
+            tx.event(&row.task_id, "title", json!({"title": title}))?;
+            Ok(json!({"task_id": row.task_id, "retitled": true}))
         })
     }
 
@@ -701,24 +716,16 @@ impl Store {
 
     // -- Tony's actions, only through the vault API (R63) -------------------------------
 
-    fn finish_card(&self, task_id: &str, status: &str, why: &str) -> Result<Value> {
+    /// Close a card to History. A Stale card closes the same way (R61 item 4).
+    pub fn card_close(&self, task_id: &str) -> Result<Value> {
         self.write(None, |tx| {
             let row = task_by_id(&tx.tx, task_id)?;
             if row.kind == "approval" {
                 return refuse("an approval closes by approve, reject or cancel");
             }
-            Store::set_card(tx, &row.task_id, HISTORY, Some(status), why, json!({}))?;
-            Ok(json!({"task_id": row.task_id, "section": HISTORY, "status": status}))
+            Store::set_card(tx, &row.task_id, HISTORY, Some("done"), "close", json!({}))?;
+            Ok(json!({"task_id": row.task_id, "section": HISTORY, "status": "done"}))
         })
-    }
-
-    /// Close a card to History. A Stale card closes the same way (R61 item 4).
-    pub fn card_close(&self, task_id: &str) -> Result<Value> {
-        self.finish_card(task_id, "done", "close")
-    }
-
-    pub fn card_reject(&self, task_id: &str) -> Result<Value> {
-        self.finish_card(task_id, "rejected", "reject")
     }
 
     /// The card of an `agent` order: Needs you until its session reports, with the note it
@@ -735,6 +742,19 @@ impl Store {
             meta: Some(Map::from_iter([("from".into(), json!("vault"))])),
             ..Open::default()
         }, None)
+    }
+
+    /// An `agent` order that failed retires its card, unless a session reached it after all.
+    pub fn agent_order_failed(&self, task_id: &str, note: &str) -> Result<()> {
+        self.write(None, |tx| {
+            let row = task_by_id(&tx.tx, task_id)?;
+            let sessions: i64 = tx.tx.query_row("SELECT COUNT(*) FROM sessions WHERE task_id=?", [&row.task_id], |r| r.get(0))?;
+            if sessions == 0 && row.section == NEEDS_YOU {
+                Store::set_card(tx, &row.task_id, HISTORY, Some("failed"), "order_failed", json!({"note": note}))?;
+            }
+            Ok(json!(null))
+        })?;
+        Ok(())
     }
 
     // -- approvals (fleet.md R97 item 1, as amended: a request belongs to its task) -----
@@ -849,14 +869,15 @@ impl Store {
     // -- Stale (R61 item 4) ------------------------------------------------------------------
 
     /// A session that went: its row ends, and a Working or Needs-you card with no live
-    /// session left moves to Stale. Answers the tasks it moved.
-    pub fn session_gone(&self, session_id: Option<&str>, job: Option<&str>, node: &str) -> Result<Vec<String>> {
+    /// session left moves to Stale, or to History as done when the session was retired.
+    /// Answers the tasks it moved.
+    pub fn session_gone(&self, session_id: &str, retired: bool) -> Result<Vec<String>> {
         let v = self.write(None, |tx| {
-            let ids = match_rows(&tx.tx, session_id, job, node, true)?;
+            let ids = match_rows(&tx.tx, session_id)?;
             let mut moved = vec![];
             for (sid, tid) in ids {
                 tx.tx.execute("UPDATE sessions SET active=0, ended=? WHERE session_id=?", params![tx.now, sid])?;
-                if let Some(t) = stale_if_orphaned(tx, &tid, &sid)? {
+                if let Some(t) = end_if_orphaned(tx, &tid, &sid, retired)? {
                     moved.push(t);
                 }
             }
@@ -866,9 +887,9 @@ impl Store {
     }
 
     /// A session that is live: its row is active again, and a Stale card moves to Working.
-    pub fn session_live(&self, session_id: Option<&str>, job: Option<&str>, node: &str) -> Result<Vec<String>> {
+    pub fn session_live(&self, session_id: &str) -> Result<Vec<String>> {
         let v = self.write(None, |tx| {
-            let ids = match_rows(&tx.tx, session_id, job, node, false)?;
+            let ids = match_rows(&tx.tx, session_id)?;
             let mut moved = vec![];
             for (sid, tid) in ids {
                 tx.tx.execute("UPDATE sessions SET active=1, ended=NULL WHERE session_id=?", [&sid])?;
@@ -881,33 +902,127 @@ impl Store {
         Ok(serde_json::from_value(v).unwrap_or_default())
     }
 
+    /// A main session's live state moves its card (R61 item 2): `blocked` to Needs you with
+    /// `needs` as the reason, `working` out of Needs you or Stale, and `done` out of Stale or out
+    /// of a Needs you that a block put there, so a `request_human` outlives the turn that ends
+    /// after it, or a Needs you with no request. History, approval cards and a pending approval
+    /// stay. Answers the tasks it moved.
+    pub fn session_state(&self, session_id: &str, state: &str, needs: Option<&str>) -> Result<Vec<String>> {
+        let v = self.write(None, |tx| {
+            let mut moved = vec![];
+            for (sid, tid) in match_rows(&tx.tx, session_id)? {
+                let main: bool = tx.tx.query_row("SELECT role='main' FROM sessions WHERE session_id=?", [&sid], |r| r.get(0))?;
+                let row = task_by_id(&tx.tx, &tid)?;
+                if !main || row.kind == "approval" || row.status.as_deref() == Some("approval") {
+                    continue;
+                }
+                let by_state = row.meta.contains_key(BLOCKED_BY_STATE);
+                let blocked = match (state, row.section.as_str()) {
+                    ("blocked", NEEDS_YOU) if by_state && row.meta.get("reason").and_then(Value::as_str) == needs => continue,
+                    ("blocked", WORKING | NEEDS_YOU | STALE) => true,
+                    ("working", NEEDS_YOU | STALE) | ("done", STALE) => false,
+                    ("done", NEEDS_YOU) if by_state || row.status.is_none() => false,
+                    _ => continue,
+                };
+                let mut meta = row.meta.clone();
+                meta.insert("reason".into(), if blocked { json!(needs) } else { Value::Null });
+                match blocked {
+                    true => meta.insert(BLOCKED_BY_STATE.into(), json!(true)),
+                    false => meta.remove(BLOCKED_BY_STATE),
+                };
+                tx.tx.execute("UPDATE tasks SET meta=? WHERE task_id=?", params![Value::Object(meta).to_string(), row.task_id])?;
+                let (section, status) = if blocked { (NEEDS_YOU, Some("blocked")) } else { (WORKING, None) };
+                Store::set_card(tx, &row.task_id, section, status, "state", json!({"session_id": sid, "reason": needs}))?;
+                moved.push(row.task_id);
+            }
+            Ok(json!(moved))
+        })?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
+    /// A session took a new name. Its row keeps the name, and a card it is the main session of
+    /// takes the name as its title. Returns the retitled cards.
+    pub fn session_renamed(&self, session_id: &str, name: &str) -> Result<Vec<String>> {
+        if name.is_empty() {
+            return Ok(vec![]);
+        }
+        let v = self.write(None, |tx| {
+            let mut retitled = vec![];
+            for (sid, tid) in match_rows(&tx.tx, session_id)? {
+                tx.tx.execute("UPDATE sessions SET name=? WHERE session_id=?", params![name, sid])?;
+                let n = tx.tx.execute(
+                    "UPDATE tasks SET title=?1, updated=?2 WHERE task_id=?3 AND title<>?1 \
+                     AND EXISTS (SELECT 1 FROM sessions WHERE session_id=?4 AND task_id=?3 AND role='main')",
+                    params![name, tx.now, tid, sid],
+                )?;
+                if n > 0 {
+                    tx.event(&tid, "title", json!({"title": name}))?;
+                    retitled.push(tid);
+                }
+            }
+            Ok(json!(retitled))
+        })?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
     /// Reconcile with telemetry's roster: on each node it lists, an active row with no live
-    /// session ends, and an ended row whose session is live comes back. Nodes the roster
-    /// does not list are left alone.
+    /// session ends, an ended row whose session is live comes back, and a live session's state
+    /// moves its card. Nodes the roster does not list are left alone.
     pub fn reconcile(&self, roster: &HashMap<String, Vec<LiveSession>>) -> Result<Value> {
-        let rows: Vec<(String, String, Option<String>, String, bool)> = {
+        let rows: Vec<(String, String, bool, Option<String>)> = {
             let db = self.conn();
-            let mut st = db.prepare("SELECT session_id, task_id, job, node, active FROM sessions WHERE node IS NOT NULL")?;
+            let mut st = db.prepare("SELECT session_id, node, active, name FROM sessions WHERE node IS NOT NULL")?;
             let rows = st
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0)))?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             rows
         };
-        let (mut gone, mut live) = (vec![], vec![]);
-        for (sid, _tid, job, node, active) in rows {
+        let (mut gone, mut live, mut moved) = (vec![], vec![], vec![]);
+        for (sid, node, active, name) in rows {
             let Some(listed) = roster.get(&node) else { continue };
-            let is_live = listed.iter().any(|l| match (&l.session_id, &l.job) {
-                (Some(s), _) if !s.is_empty() => same_session(s, &sid),
-                (_, Some(j)) => job.as_deref() == Some(j.as_str()),
-                _ => false,
-            });
-            match (active, is_live) {
-                (true, false) => gone.extend(self.session_gone(Some(&sid), None, &node)?),
-                (false, true) => live.extend(self.session_live(Some(&sid), None, &node)?),
+            let found = listed_session(listed, &sid);
+            let listed_name = found.and_then(|l| l.name.as_deref()).filter(|_| active);
+            if let Some(now) = listed_name.filter(|n| name.as_deref() != Some(*n)) {
+                self.session_renamed(&sid, now)?;
+            }
+            match (active, found) {
+                (true, None) => gone.extend(self.session_gone(&sid, false)?),
+                (false, Some(_)) => live.extend(self.session_live(&sid)?),
                 _ => {}
             }
+            if let Some(l @ LiveSession { state: Some(state), .. }) = found {
+                moved.extend(self.session_state(&sid, state, l.needs.as_deref())?);
+            }
         }
-        Ok(json!({"stale": gone, "working": live}))
+        Ok(json!({"stale": gone, "working": live, "state": moved}))
+    }
+
+    /// Copy telemetry's link, project and scope onto each active session it lists. Only what
+    /// differs is written, so an unchanged roster sends the board nothing.
+    pub fn session_details(&self, roster: &HashMap<String, Vec<LiveSession>>) -> Result<()> {
+        type Row = (String, String, String, Option<String>, Option<String>, Option<String>);
+        let rows: Vec<Row> = {
+            let db = self.conn();
+            let mut st = db.prepare("SELECT session_id, task_id, node, rc_url, project, scope FROM sessions WHERE node IS NOT NULL AND active=1")?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            rows
+        };
+        let changed: Vec<(String, String, &LiveSession)> = rows.into_iter().filter_map(|(sid, tid, node, link, project, scope)| {
+            let found = listed_session(roster.get(&node)?, &sid)?;
+            (found.link != link || found.project != project || found.scope != scope).then_some((sid, tid, found))
+        }).collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        self.write(None, |tx| {
+            for (sid, tid, s) in &changed {
+                tx.tx.execute("UPDATE sessions SET rc_url=?, project=?, scope=? WHERE session_id=?", params![s.link, s.project, s.scope, sid])?;
+                tx.event(tid, "session_details", json!({"session_id": sid}))?;
+            }
+            Ok(json!(null))
+        })?;
+        Ok(())
     }
 
     /// Undo the port's section rename, for a rollback to the Python store.
@@ -919,33 +1034,30 @@ impl Store {
     }
 }
 
-fn same_session(a: &str, b: &str) -> bool {
-    let n = |s: &str| awm_plugin_sdk::ids::normalise(s).unwrap_or_else(|_| s.to_lowercase());
-    n(a) == n(b)
+fn listed_session<'a>(listed: &'a [LiveSession], session_id: &str) -> Option<&'a LiveSession> {
+    listed.iter().find(|l| l.session_id.as_deref().is_some_and(|s| same_session(s, session_id)))
 }
 
-/// The (session_id, task_id) rows a telemetry event names: by session id, else by job on
-/// its node.
-fn match_rows(db: &Connection, session_id: Option<&str>, job: Option<&str>, node: &str, active: bool) -> Result<Vec<(String, String)>> {
-    if let Some(sid) = session_id.filter(|s| !s.is_empty()) {
-        let norm = awm_plugin_sdk::ids::normalise(sid).unwrap_or_else(|_| sid.to_string());
-        let mut st = db.prepare("SELECT session_id, task_id FROM sessions WHERE session_id IN (?, ?)")?;
-        let rows: Vec<(String, String)> = st.query_map(params![sid, norm], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
-        if !rows.is_empty() {
-            return Ok(rows);
-        }
-    }
-    let Some(job) = job.filter(|s| !s.is_empty()) else { return Ok(vec![]) };
-    let mut st = db.prepare("SELECT session_id, task_id FROM sessions WHERE node=? AND job=? AND active=?")?;
-    let rows = st.query_map(params![node, job, active as i64], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+fn same_session(a: &str, b: &str) -> bool {
+    crate::front::norm(a) == crate::front::norm(b)
+}
+
+/// The (session_id, task_id) rows a telemetry event names.
+fn match_rows(db: &Connection, session_id: &str) -> Result<Vec<(String, String)>> {
+    let mut st = db.prepare("SELECT session_id, task_id FROM sessions WHERE session_id = ?")?;
+    let rows = st.query_map(params![session_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }
 
-fn stale_if_orphaned(tx: &mut Tx, task_id: &str, session_id: &str) -> Result<Option<String>> {
+fn end_if_orphaned(tx: &mut Tx, task_id: &str, session_id: &str, retired: bool) -> Result<Option<String>> {
     let row = task_by_id(&tx.tx, task_id)?;
     tx.event(&row.task_id, "session_gone", json!({"session_id": session_id}))?;
     if ![WORKING, NEEDS_YOU].contains(&row.section.as_str()) || live_sessions(&tx.tx, &row.task_id)? > 0 {
         return Ok(None);
+    }
+    if retired {
+        Store::set_card(tx, &row.task_id, HISTORY, Some("done"), "retired", json!({"session_id": session_id}))?;
+        return Ok(Some(row.task_id));
     }
     tx.tx.execute("UPDATE tasks SET section=?, updated=? WHERE task_id=?", params![STALE, tx.now, row.task_id])?;
     tx.event(&row.task_id, "stale", json!({"section": STALE, "status": row.status, "from": row.section}))?;
@@ -963,7 +1075,7 @@ fn unstale(tx: &mut Tx, task_id: &str, session_id: &str) -> Result<Option<String
 }
 
 fn migrate(db: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("tasks", "body"), ("tasks", "source_note"), ("sessions", "job")] {
+    for (table, column) in [("tasks", "body"), ("tasks", "source_note"), ("sessions", "project"), ("sessions", "scope")] {
         if !has_column(db, table, column)? {
             db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))?;
         }

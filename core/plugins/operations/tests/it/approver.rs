@@ -2,7 +2,7 @@
 //! on the requester's own task, grants, orders, the 2fa burst and the portal sign-in.
 //! Every id, host and key here is synthetic.
 
-use awm_plugin_operations::approver::{request_kinds, ApproverError, CHALLENGE_TTL_S, REQUEST_TTL_S, SESSION_TTL_S};
+use awm_plugin_operations::approver::{request_kinds, ApproverError, CHALLENGE_TTL_S, REQUEST_TTL_S, SERVICE_WINDOW_S, SESSION_TTL_S};
 use awm_plugin_operations::passkeys::soft::SoftAuthenticator;
 use awm_plugin_operations::store::Open;
 use awm_trust::grant::{b64u, unb64u, verify_grant, verify_order, Expect, GrantError};
@@ -444,14 +444,17 @@ async fn plugin_commits_grant_names_every_commit() {
 #[tokio::test]
 async fn agent_opens_a_card_and_an_order_the_node_verifies() {
     let e = env();
-    assert_eq!(code(e.ap.agent("deneb", None).await), "not_allowed");
-    assert_eq!(code(e.ap.agent("Bad Node", None).await), "not_allowed");
+    assert_eq!(code(e.ap.agent("deneb", None, None, None).await), "not_allowed");
+    assert_eq!(code(e.ap.agent("Bad Node", None, None, None).await), "not_allowed");
     let long = "n".repeat(65);
     for bad in ["", "has space", "x/../y", long.as_str()] {
-        assert_eq!(code(e.ap.agent(AGENT_NODE, Some(bad)).await), "bad_request", "{bad:?}");
+        assert_eq!(code(e.ap.agent(AGENT_NODE, None, None, Some(bad)).await), "bad_request", "{bad:?}");
+    }
+    for (model, effort) in [(Some("gpt"), None), (Some(""), None), (None, Some("xhigh")), (None, Some("High"))] {
+        assert_eq!(code(e.ap.agent(AGENT_NODE, model, effort, None).await), "bad_request", "{model:?} {effort:?}");
     }
     assert!(e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap().as_array().unwrap().is_empty(), "a refused agent issues no order");
-    let out = e.ap.agent(AGENT_NODE, Some("note_1-x")).await.unwrap();
+    let out = e.ap.agent(AGENT_NODE, None, None, Some("note_1-x")).await.unwrap();
     let task = s(&out["task_id"]).to_string();
     let card = e.store.task_get(&task).unwrap();
     assert_eq!(card["section"], "needs_you");
@@ -471,11 +474,24 @@ async fn agent_opens_a_card_and_an_order_the_node_verifies() {
     let row = e.ap.order_get(s(&body["order_id"])).unwrap().unwrap();
     assert!(row["pulled_at"].as_f64().is_some());
 
-    let plain = e.ap.agent(AGENT_NODE, None).await.unwrap();
+    let plain = e.ap.agent(AGENT_NODE, Some("sonnet"), Some("low"), None).await.unwrap();
     let envs = e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap();
     let last = envs.as_array().unwrap().iter().find(|x| x["order"]["order_id"] == plain["order_id"]).unwrap().clone();
-    assert_eq!(last["order"]["payload"], json!({"task_id": plain["task_id"], "node": AGENT_NODE}));
+    assert_eq!(last["order"]["payload"], json!({"task_id": plain["task_id"], "node": AGENT_NODE, "model": "sonnet", "effort": "low"}));
     assert_eq!(e.store.task_get(s(&plain["task_id"])).unwrap()["source_note"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_failed_agent_order_retires_its_card_only_when_no_session_reached_it() {
+    let e = env();
+    let out = e.ap.agent(AGENT_NODE, None, None, None).await.unwrap();
+    e.ap.order_done(s(&out["order_id"]), false, "no harness").unwrap();
+    let card = e.store.task_get(s(&out["task_id"])).unwrap();
+    assert_eq!((card["section"].as_str(), card["status"].as_str()), (Some("history"), Some("failed")));
+    let out = e.ap.agent(AGENT_NODE, None, None, None).await.unwrap();
+    e.store.task_attach(s(&out["task_id"]), "cc01", "main", Default::default(), None).unwrap();
+    e.ap.order_done(s(&out["order_id"]), false, "late").unwrap();
+    assert_eq!(e.store.task_get(s(&out["task_id"])).unwrap()["section"], "needs_you");
 }
 
 #[tokio::test]
@@ -565,4 +581,20 @@ async fn burst_binds_count_and_device() {
     let a = pk.assert(&o["options"]);
     e.ap.burst(s(&o["nonce"]), 4, "phone", &a).await.unwrap();
     assert_eq!(e.tools.calls(), vec![("burst".to_string(), json!({"device": "phone", "count": 4}))]);
+}
+
+#[tokio::test]
+async fn a_passkey_opens_the_service_switches_for_this_device_for_five_minutes() {
+    let e = env();
+    let (device, mut pk) = e.enrol("phone");
+    let first = e.ap.service_toggle(&device, "mizar", "dsh", false).await.unwrap();
+    assert_eq!(first["needs_approval"], true, "the first switch asks for the passkey and issues no order");
+    let rid = s(&first["request_id"]).to_string();
+    let a = e.approval_assertion(&mut pk, &rid);
+    e.ap.approve(&rid, &a).await.unwrap();
+    assert!(e.ap.service_toggle(&device, "mizar", "dsh", false).await.unwrap()["order_id"].is_string());
+    assert_eq!(e.ap.service_toggle("other-device", "mizar", "dsh", true).await.unwrap()["needs_approval"], true, "the window is this device's");
+    assert_eq!(code(e.ap.service_toggle(&device, "mizar", "../x", true).await), "bad_request");
+    e.clock.advance(SERVICE_WINDOW_S + 1.0);
+    assert_eq!(e.ap.service_toggle(&device, "mizar", "dsh", true).await.unwrap()["needs_approval"], true, "the window closes");
 }

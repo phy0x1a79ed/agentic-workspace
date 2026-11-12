@@ -42,7 +42,7 @@ API_MANIFEST: dict[str, Any] = {
              "Before this node restarts: ask the standby partner to hold a session that "
              "answers Tony, then reboot when `reboot` is true. Refuses, and leaves this node "
              "up, when the partner does not take the standby. Returns the standby session's "
-             "job and Remote Control link; give Tony the link before the reboot."),
+             "session id and Remote Control link; give Tony the link before the reboot."),
          "params": [{"name": "reason", "type": "string", "required": True, "description": "Why this node restarts."},
                     {"name": "expect_down_s", "type": "number", "required": False,
                      "description": "Expected downtime in seconds. Default 120."},

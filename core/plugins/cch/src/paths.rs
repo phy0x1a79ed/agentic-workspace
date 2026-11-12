@@ -8,7 +8,6 @@ use awm_harness::claude::launch::default_claude_bin;
 use awm_harness::claude::records::read_json;
 use awm_harness::claude::ClaudeHome;
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 /// The flags that let a pool session run without permission prompts.
 pub const SKIP_PERMISSION_FLAGS: [&str; 2] = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"];
@@ -29,14 +28,6 @@ pub struct Paths {
     /// looked up at use: under systemd `PATH` lacks `~/.local/bin`, and a `claude` that is not
     /// found there fails silently and leaves the pool empty while everything reports healthy.
     pub claude_bin: PathBuf,
-    /// `AWM_CX_PREFIX`, else `<warm `. The prefix is how the pool tells its own sessions from
-    /// one started by hand, so a renamed session is out of the pool by that alone. It differs
-    /// from the shell pool's `<spare ` on purpose: a leftover `<spare ` session is never ours.
-    pub name_prefix: String,
-    /// `AWM_CX_CLAIMED_PREFIX`, else `claimed `: what a session is renamed to when a terminal
-    /// takes it. Claude Code titles only a session whose record has no name, so the rename also
-    /// lets the built-in namer replace it later.
-    pub claimed_prefix: String,
     /// `AWM_CX_SEED_DIR`, else `~/.local/state/awm/seed`. It must hold no CLAUDE.md: a move adds
     /// the destination's file and keeps the origin's, so seeding beside one carries it everywhere.
     pub seed_dir: PathBuf,
@@ -187,8 +178,6 @@ impl Paths {
             cx_state: path("AWM_CX_STATE").unwrap_or_else(|| home.root.join("cx")),
             service_dir: awm_dir.join("services").join("cch"),
             claude_bin: path("AWM_CX_CLAUDE").unwrap_or_else(default_claude_bin),
-            name_prefix: var("AWM_CX_PREFIX").unwrap_or_else(|| "<warm ".into()),
-            claimed_prefix: var("AWM_CX_CLAIMED_PREFIX").unwrap_or_else(|| "claimed ".into()),
             seed_dir: path("AWM_CX_SEED_DIR").unwrap_or_else(|| user.join(".local").join("state").join("awm").join("seed")),
             model: var("AWM_CX_MODEL").unwrap_or_else(|| "opus".into()),
             effort: var("AWM_CX_EFFORT").unwrap_or_else(|| "high".into()),
@@ -245,8 +234,6 @@ impl Paths {
             cx_state: home.root.join("cx"),
             service_dir: awm_dir.join("services").join("cch"),
             claude_bin: root.join(".local").join("bin").join("claude"),
-            name_prefix: "<warm ".into(),
-            claimed_prefix: "claimed ".into(),
             seed_dir: root.to_path_buf(),
             model: "opus".into(),
             effort: "high".into(),
@@ -294,17 +281,15 @@ impl Paths {
         self.cx_state.join("starts")
     }
 
-    /// Where the record of a start in flight for the session `name` lives:
-    /// `starts/pending-<sha256(name)[:16]>.json`.
-    pub fn pending_path(&self, name: &str) -> PathBuf {
-        let digest = Sha256::digest(name.as_bytes());
-        let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-        self.starts_dir().join(format!("pending-{hex}.json"))
+    /// Where the record of a start in flight lives: `starts/pending-<token>.json`. The token is
+    /// random, because the session id is known only once the job appears.
+    pub fn pending_path(&self, token: &str) -> PathBuf {
+        self.starts_dir().join(format!("pending-{token}.json"))
     }
 
-    /// The lineage record of `job`.
-    pub fn lineage_path(&self, job: &str) -> PathBuf {
-        self.starts_dir().join(format!("{job}.json"))
+    /// The lineage record of the session with canonical id `id`.
+    pub fn lineage_path(&self, id: &str) -> PathBuf {
+        self.starts_dir().join(format!("{id}.json"))
     }
 
     /// The promise store, `<service dir>/pending`. [`Paths::legacy_promises_dir`] is where the
@@ -321,6 +306,12 @@ impl Paths {
     /// The keeper's hold record, `<service dir>/hold.json`.
     pub fn hold_path(&self) -> PathBuf {
         self.service_dir.join("hold.json")
+    }
+
+    /// The pool ledger, `<service dir>/pool.json`: `{canonical session id: spare | claimed | kept}`
+    /// for every session the pool made.
+    pub fn ledger_path(&self) -> PathBuf {
+        self.service_dir.join("pool.json")
     }
 
     /// The old keep service's hold record, which the start-up migration copies to [`Paths::hold_path`].
@@ -407,13 +398,10 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn the_pending_path_is_a_short_digest_of_the_name() {
+    fn the_pending_path_is_filed_under_its_token() {
         let p = Paths::under(Path::new("/r"));
-        let digest = Sha256::digest(b"rep");
-        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(p.pending_path("rep"), Path::new("/r/.claude/cx/starts").join(format!("pending-{}.json", &hex[..16])));
-        assert_ne!(p.pending_path("rep"), p.pending_path("rep2"));
-        assert_eq!(p.lineage_path("abababab"), Path::new("/r/.claude/cx/starts/abababab.json"));
+        assert_eq!(p.pending_path("cc0123"), Path::new("/r/.claude/cx/starts/pending-cc0123.json"));
+        assert_eq!(p.lineage_path("ccabababab000040008000000000000000"), Path::new("/r/.claude/cx/starts/ccabababab000040008000000000000000.json"));
     }
 
     #[test]
@@ -424,7 +412,6 @@ mod tests {
             ("AWM_CX_TRUST_FILE", "/t/trust.json"),
             ("AWM_CX_ROTATE_AGE_S", "60"),
             ("AWM_CX_LOOP", "0"),
-            ("AWM_CX_PREFIX", ""),
             ("HOME", "/u"),
         ]
         .into();
@@ -434,7 +421,7 @@ mod tests {
         assert_eq!(p.starts_dir(), Path::new("/t/st/starts"));
         assert_eq!(p.home, ClaudeHome::at("/c", "/t/trust.json"));
         assert_eq!(p.claude_bin, Path::new("/t/claude"));
-        assert_eq!((p.rotate_age_s, p.loop_enabled, p.name_prefix.as_str()), (60.0, false, "<warm "));
+        assert_eq!((p.rotate_age_s, p.loop_enabled), (60.0, false));
         assert_eq!(p.service_dir, Path::new("/a/services/cch"));
         assert_eq!((p.seed_dir.as_path(), p.lobby_dir.as_path()), (Path::new("/u/.local/state/awm/seed"), Path::new("/u/.local/state/awm/lobby")));
     }

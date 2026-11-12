@@ -9,8 +9,8 @@ from typing import Any
 
 from awm.trilium.board.ids import COLUMN_IDS, card_note_id
 
-#: Sections of the first board map onto the four of the new one.
-SECTION_ALIASES = {"done": "history", "proposed": "history", "triage": "history"}
+#: Sections that show in History. A stale card stays stale in the queue so a prompt revives it.
+SECTION_ALIASES = {"done": "history", "proposed": "history", "triage": "history", "stale": "history"}
 APPROVAL_STATES = ("pending", "approved", "rejected", "expired", "cancelled")
 
 
@@ -40,10 +40,12 @@ def pending(card: dict[str, Any]) -> list[dict[str, Any]]:
 
 def card_labels(card: dict[str, Any]) -> dict[str, str | None]:
     """The labels on a card's note. A None value removes the label."""
-    ended = card.get("done_at") or card.get("history_at")
+    section = section_of(card)
+    ended = (card.get("done_at") or card.get("history_at") or card.get("updated")) if section == "history" else None
+    status = "stale" if card.get("section") == "stale" else card.get("status")
     values: dict[str, Any] = {
-        "swarmCard": "", "readOnly": "", "taskId": card["task_id"], "section": section_of(card),
-        "status": card.get("status"), "peer": card.get("peer"), "cardKind": card.get("kind"),
+        "swarmCard": "", "readOnly": "", "taskId": card["task_id"], "section": section,
+        "status": status, "peer": card.get("peer"), "cardKind": card.get("kind"),
         "updatedAt": int(card.get("updated") or 0) or None,
         "historyAt": int(ended) if ended else None,
         "pendingApprovals": len(pending(card)) or None,
@@ -73,7 +75,7 @@ def card_body(card: dict[str, Any]) -> str:
         parts.append(f"<h4>Todos</h4><ul>{rows}</ul>")
     sessions = card.get("sessions") or []
     if sessions:
-        rows = "".join(f"<li>{e(text(s.get('name') or s.get('session_id') or s.get('job')))} "
+        rows = "".join(f"<li>{e(text(s.get('name') or '(unnamed)'))} "
                        f"({e(text(s.get('role')))}, "
                        f"{'active' if s.get('active') else 'ended'})</li>" for s in sessions)
         parts.append(f"<h4>Sessions</h4><ul>{rows}</ul>")

@@ -9,8 +9,8 @@ is a note, linking to it is an ordinary note link.
 This file holds the decisions a reader cannot recover from the code: why the
 library is read from Zotero's own service rather than from a machine, why the
 personal library is called `users/0` when the service calls it something else,
-why a saved paper cannot be read any sooner than it is, what a window read can
-and cannot see, why every list inside a record is sorted, and how the mirror
+why a saved paper cannot be read any sooner than it is, what the key may do,
+what a window read can and cannot see, why every list inside a record is sorted, and how the mirror
 finds the note it writes into.
 
 Zotero's own behaviour belongs to Zotero's documentation. Where the vault lives
@@ -63,13 +63,18 @@ carries a key. That is the whole of how a mirror and a person share one subtree.
 
 ## Reading the library
 
-**The key is read-only, and the code cannot write whatever the key allows.**
-`ZOTERO_API_KEY` is a key from `zotero.org/settings/keys`. The reader issues
-only GET and the method is not a parameter anywhere in `source.py`, so the day
-something needs to write is a deliberate change rather than an accident. This
-matters because the node holding the key is a public host and because a write
-made with it propagates to every machine the account syncs. `status` reports
-whether the key can write, so the capability cannot be quietly forgotten.
+**The code can create an item and nothing more, whatever the key allows.**
+`ZOTERO_API_KEY` is a key from `zotero.org/settings/keys`, with read access to
+the personal library and the groups. Reads go through `_get` in `source.py`. The
+one write path is `_post`, which only creates, for `add`. Nothing can edit or
+delete, because the node holding the key is a public host and a deletion made
+with it propagates to every machine the account syncs. `add` needs the key to
+have write access to the personal library. `status` reports whether the key can
+write, so the capability cannot be quietly forgotten.
+
+**CAUTION** `add` is a soft block. Its description limits it to an explicit user
+request. Keep any instruction to add papers proactively out of skills, briefs
+and docs.
 
 **CAUTION** The personal library is called `users/0` here, not the account's
 number. The desktop's copy of Zotero's interface numbers the signed-in user `0`,
@@ -351,7 +356,7 @@ Environment, read at start:
 
 | variable | default | what |
 |---|---|---|
-| `ZOTERO_API_KEY` | empty | a key from `zotero.org/settings/keys`. Required. Read access is all this needs. |
+| `ZOTERO_API_KEY` | empty | a key from `zotero.org/settings/keys`. Required. `add` needs write access to the personal library. |
 | `ZOTERO_USER` | discovered | the account's number. Read from the key when unset, which is one fewer thing to get wrong. |
 | `ZOTERO_API_BASE` | `https://api.zotero.org` | overridable so a test can point elsewhere. |
 | `ZOTERO_GROUPS` | `1` | mirror the group libraries too. |

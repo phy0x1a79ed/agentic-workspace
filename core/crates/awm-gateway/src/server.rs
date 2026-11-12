@@ -5,8 +5,9 @@ use std::sync::Arc;
 use awm_proto::{CallContext, Caller, Lane, Surface, UsageEvent};
 use axum::body::Body;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
@@ -16,6 +17,7 @@ use serde_json::{json, Value};
 
 use crate::gateway::{ApiError, Gateway};
 use crate::hub::Claim;
+use crate::loopback::Peer;
 use crate::supervisor;
 
 const SERVICE_TOKEN_HEADER: &str = "x-awm-service-token";
@@ -56,7 +58,32 @@ pub fn router(gw: Arc<Gateway>) -> Router {
         .route("/p/{plugin}/{page}/{*path}", get(page_file))
         // A call can carry a file inline (`files.rs`), and a door host receives it here.
         .layer(DefaultBodyLimit::max(crate::files::MAX_REQUEST_BYTES))
+        .layer(axum::middleware::from_fn_with_state(gw.clone(), admit))
         .with_state(gw)
+}
+
+/// Only the gateway's own Unix account reaches the main listener, plus a service that proves
+/// itself with its token, and the sockets of an `[[external]]` service that registered so.
+async fn admit(State(gw): Gw, ConnectInfo(peer): ConnectInfo<Peer>, req: Request, next: Next) -> Response {
+    if peer.uid == Some(crate::loopback::own_uid()) || admits_foreign(&gw, req.uri().path(), req.headers()) {
+        return next.run(req).await;
+    }
+    let who = peer.uid.map_or_else(|| "a client off this host's loopback".to_string(), |uid| format!("uid {uid}"));
+    tracing::warn!("refused {} {} from {who}", req.method(), req.uri().path());
+    ApiError::new(403, format!("{who} is not this gateway's account, and sent no service token")).into_response()
+}
+
+fn admits_foreign(gw: &Gateway, path: &str, h: &HeaderMap) -> bool {
+    match header(h, SERVICE_TOKEN_HEADER) {
+        Some(token) => gw.knows_token(token),
+        None => service_socket(path).and_then(|id| gw.hub.name_of_id(id)).is_some_and(|name| gw.cfg().external(&name).is_some()),
+    }
+}
+
+/// The service id in a control or bridge socket path.
+fn service_socket(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/hub/service/control/").or_else(|| path.strip_prefix("/hub/service/bridge/"))?;
+    rest.split('/').next().filter(|id| !id.is_empty())
 }
 
 /// The isolated door's own listener: `/mcp` and nothing else, so a container that reaches it
@@ -109,7 +136,9 @@ pub async fn serve(gw: Arc<Gateway>) -> anyhow::Result<()> {
     }
     supervisor::start_all(&gw, hold).await;
     let app = router(gw.clone());
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(gw.clone())).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<Peer>())
+        .with_graceful_shutdown(shutdown_signal(gw.clone()))
+        .await?;
     let _ = std::fs::remove_file(gw.state.join("gateway.json"));
     Ok(())
 }
@@ -315,13 +344,12 @@ async fn register(State(gw): Gw, h: HeaderMap, Json(req): Json<RegisterReq>) -> 
     if req.overlay {
         return Err(ApiError::new(409, "the Rust gateway does not run shadow overlays"));
     }
-    if let Some(path) = gw.token_file_of(&req.name) {
-        let expected = std::fs::read_to_string(&path).unwrap_or_default();
-        let sent = header(&h, SERVICE_TOKEN_HEADER).unwrap_or_default();
-        if expected.trim().is_empty() || expected.trim() != sent {
-            tracing::warn!("service {}: register without its service token; refused", req.name);
-            return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
-        }
+    // A token that is not this service's is refused, so one service cannot register as another.
+    let sent = header(&h, SERVICE_TOKEN_HEADER);
+    let must_prove = sent.is_some() || gw.token_file_of(&req.name).is_some();
+    if must_prove && !gw.token_matches(&req.name, sent.unwrap_or_default()) {
+        tracing::warn!("service {}: register without its service token; refused", req.name);
+        return Err(ApiError::new(403, format!("service {:?} needs its service token", req.name)));
     }
     if let Some(m) = req.mount.as_deref().filter(|m| !crate::mount::valid_mount(m)) {
         return Err(ApiError::new(400, format!("mount {m:?} is not a loopback http URL")));

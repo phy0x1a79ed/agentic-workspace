@@ -172,11 +172,25 @@ fn int_items(v: Option<&Value>) -> Vec<i64> {
 }
 
 impl Job {
+    /// The canonical id of the job's current session.
+    pub fn canonical(&self) -> Option<String> {
+        awm_plugin_sdk::ids::SessionId::canonical_of_native(awm_plugin_sdk::ids::Platform::Claude, self.session_id.as_deref()?)
+    }
+
+    /// Whether the job was launched as, or now carries, the name `name`. A launch finds its new job
+    /// this way: `claude --bg` picks the session id itself and ignores `--session-id`.
+    pub fn named(&self, name: &str) -> bool {
+        self.seed_name.as_deref() == Some(name) || self.name == name
+    }
+
     /// The job `short`, from its roster entry `worker` joined to its own record under `home`.
+    /// Its session id is its live process's: the roster keeps the first one through a `/clear`.
     pub fn from_worker(short: &str, worker: &Value, home: &ClaudeHome) -> Self {
         let st = read_json(&home.job_state(short));
         let empty = Object::new();
         let w = worker.as_object().unwrap_or(&empty);
+        let repl_pid = as_pid(w.get("replPid"));
+        let live = repl_pid.map(|pid| read_json(&home.session_record(pid))).filter(|r| as_pid(r.get("pid")) == repl_pid);
         let dispatch = object(w.get("dispatch")).unwrap_or(&empty);
         let seed = object(dispatch.get("seed")).unwrap_or(&empty);
         Self {
@@ -189,14 +203,17 @@ impl Job {
             origin_cwd: py_opt_str(st.get("originCwd")),
             cwd: py_opt_str(st.get("cwd")),
             first_terminal_at: py_opt_str(st.get("firstTerminalAt")),
-            repl_pid: as_pid(w.get("replPid")),
+            repl_pid,
             repl_proc_start: py_opt_str(w.get("replProcStart")),
             started_at_ms: millis(w.get("startedAt")),
             cli_version: py_opt_str(w.get("cliVersion")),
             pty_sock: py_opt_str(w.get("ptySock")),
             pty_auth: py_opt_str(w.get("ptyAuth")),
             dec_modes: int_items(w.get("decModes")),
-            session_id: py_opt_str(w.get("sessionId")),
+            session_id: live
+                .and_then(|r| py_opt_str(r.get("sessionId")))
+                .or_else(|| py_opt_str(w.get("sessionId")))
+                .or_else(|| py_opt_str(st.get("sessionId"))),
             source: py_opt_str(dispatch.get("source")),
             seed_name: py_opt_str(seed.get("name")),
             bridge_session_id: py_truthy_str(st.get("bridgeSessionId")),
@@ -224,6 +241,21 @@ pub fn load(home: &ClaudeHome) -> Vec<Job> {
         .collect();
     jobs.sort_by_key(|j| j.started_at_ms.unwrap_or(0));
     jobs
+}
+
+/// Every job whose directory and record remain under `jobs/` after the roster dropped it: one the
+/// daemon retired for idling, or one whose process died with the host. None of them has a
+/// process. Its session id is the one its record last saw.
+pub fn unlisted(home: &ClaudeHome) -> Vec<Job> {
+    let listed = RosterFile::read(home).workers;
+    let Ok(dirs) = std::fs::read_dir(home.jobs()) else { return Vec::new() };
+    dirs.flatten()
+        .filter(|d| d.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|d| d.file_name().into_string().ok())
+        .filter(|short| !listed.contains_key(short))
+        .map(|short| Job::from_worker(&short, &Value::Null, home))
+        .filter(|j| j.has_record)
+        .collect()
 }
 
 /// The pid of the running Claude Code daemon, or None when there is none.
@@ -271,7 +303,7 @@ mod tests {
             &h,
             json!({
                 "newer": {"replPid": 7, "startedAt": 2000, "cliVersion": "2.1.1", "sessionId": "s2",
-                          "decModes": [1, "x", 2], "dispatch": {"source": "cli", "seed": {"name": "<warm a>"}}},
+                          "decModes": [1, "x", 2], "dispatch": {"source": "cli", "seed": {"name": "a"}}},
                 "older": {"replPid": 8, "startedAt": 1000},
             }),
             None,
@@ -280,12 +312,16 @@ mod tests {
         let got = load(&h);
         assert_eq!(got.iter().map(|j| j.short.as_str()).collect::<Vec<_>>(), ["older", "newer"]);
         let newer = &got[1];
-        assert_eq!((newer.name.as_str(), newer.tokens, newer.seed_name.as_deref()), ("renamed", 5, Some("<warm a>")));
+        assert_eq!((newer.name.as_str(), newer.tokens, newer.seed_name.as_deref()), ("renamed", 5, Some("a")));
         assert_eq!(newer.dec_modes, [1, 2]);
         assert_eq!((newer.repl_pid, newer.source.as_deref(), newer.cwd.as_deref()), (Some(7), Some("cli"), Some("/w")));
         assert_eq!(newer.needs, None);
         assert!(newer.has_record);
         assert!(!got[0].has_record && got[0].name.is_empty());
+        assert_eq!(newer.session_id.as_deref(), Some("s2"));
+        std::fs::create_dir_all(h.sessions()).unwrap();
+        std::fs::write(h.session_record(7), json!({"pid": 7, "sessionId": "s3"}).to_string()).unwrap();
+        assert_eq!(load(&h)[1].session_id.as_deref(), Some("s3"), "a /clear's new id, from the live session record");
 
         write_roster(&h, json!({"ab12cd34": {"replProcStart": 4242, "cliVersion": true, "decModes": [true, 3.5]}}), None);
         write_job(&h, "ab12cd34", json!({"name": true, "tokens": "12", "intent": 0, "needs": 3}));
@@ -314,6 +350,19 @@ mod tests {
             assert_eq!(RosterFile::read_strict(&h).unwrap_err().path, h.roster());
             assert_eq!(RosterFile::read(&h), RosterFile::default());
         }
+    }
+
+    #[test]
+    fn unlisted_holds_the_job_records_the_roster_dropped() {
+        let (_d, h) = home();
+        write_roster(&h, json!({"listed": {"replPid": 7}}), None);
+        write_job(&h, "listed", json!({"name": "a"}));
+        write_job(&h, "dropped", json!({"name": "b", "sessionId": "s9"}));
+        std::fs::create_dir_all(h.jobs().join("bare")).unwrap();
+        std::fs::write(h.jobs().join("pins.json"), "[]").unwrap();
+        let got = unlisted(&h);
+        assert_eq!(got.iter().map(|j| j.short.as_str()).collect::<Vec<_>>(), ["dropped"]);
+        assert_eq!((got[0].session_id.as_deref(), got[0].repl_pid), (Some("s9"), None));
     }
 
     #[test]

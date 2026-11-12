@@ -3,7 +3,7 @@
     {
       "name": "send",
       "tool": "social_send",
-      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches inline text files, each {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. Gmail and Tony's own Slack refuse files, and Tony's own Slack sends nothing. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
+      "description": "Send a message as a configured account. With no `account` and `channel` it answers the chat of your latest pushed line, in its thread. A seat names another of its chats by its label, such as `DM` or `#general`. `file` uploads a file from your own node (an absolute path, up to 24 MiB), such as a plan's .md, with `text` as its message; `text` is optional with a file. `files` attaches several: each an absolute path on your node, or an inline {filename, text}. Discord takes files up to 10 MB, and the Opal Slack bot up to the 24 MiB a call carries. A DM where nobody but the bot has written is refused. `quiet` keeps the replies in the sent message's thread from its chat's seat holder.",
       "timeout": 300,
       "params": [
         {
@@ -46,7 +46,7 @@
     {
       "name": "react",
       "tool": "social_react",
-      "description": "Put an emoji reaction on a message, or take it off with `remove`. With no ids it reacts to your latest pushed line. `emoji` is a character, a name or :name:. Discord and the Opal Slack bot react. Gmail and Tony's own Slack refuse.",
+      "description": "Put an emoji reaction on a message, or take it off with `remove`. With no ids it reacts to your latest pushed line. `emoji` is a character, a name or :name:. Discord and the Opal Slack bot react.",
       "params": [
         {
           "name": "account",
@@ -137,7 +137,7 @@
     {
       "name": "seats",
       "tool": "social_seats",
-      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied, retiring), its agent's job and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message, and retires it 4 hours after the agent marks its task done.",
+      "description": "List the chats a bot account is in, each with the session holding it or null. A chat that [seats] in social.toml declares a seat also shows its seat: the state (empty, starting, occupied), its agent's session id and node, its level and its queued lines. Social starts a seat's agent on the seat's first new message. The seat stops its agent after 4 hours with no message and no running turn, and the next message resumes the same conversation.",
       "params": [
         {
           "name": "account",
@@ -149,7 +149,7 @@
     {
       "name": "mount",
       "tool": "social_mount",
-      "description": "Hold a seat: every new message in that chat, from anyone but the bot, is typed into your prompt as one line '[<server>/<chat>/<sender>, <level>] ↳<thread> <text>'. Background sessions only. One holder per seat: a held seat is refused unless `force`, which takes it and tells the old holder. A session below trusted never holds a trusted chat. A Discord DM is a seat only for an operator. Mounting a declared seat makes you its agent. The result's `rename` gives the seat's session name, seat:<app>/<server>/<chat>.",
+      "description": "Hold a seat: every new message in that chat, from anyone but the bot, is typed into your prompt as one line '[<server>/<chat>/<sender>, <level>] ↳<thread> <text>'. Background sessions only. One holder per seat: a held seat is refused unless `force`, which takes it and tells the old holder. A session below trusted never holds a trusted chat. A Discord DM is a seat only for an operator. A declared seat is refused: its host's `seats adopt` hands it a session. The result's `rename` gives the seat's session name, seat:<app>/<server>/<chat>.",
       "params": [
         {
           "name": "account",
@@ -187,12 +187,6 @@
       ]
     },
     {
-      "name": "mark_seat_done",
-      "tool": "social_mark_seat_done",
-      "description": "Mark your seat's task done, after its handoff journal. Social tells your agent to retire once 4 hours pass with no new message, and a new message clears the mark. A seat's agent only.",
-      "params": []
-    },
-    {
       "name": "forward",
       "tool": "social_forward",
       "description": "Forward a message from a chat you hold to another seat. Its agent gets the line, and may read your chat's history for 24 hours. An empty seat starts its agent, except a DM nobody has opened. With no `message_id` it forwards your latest pushed line.",
@@ -223,74 +217,9 @@
       ]
     },
     {
-      "name": "seat_reset",
-      "tool": "social_seat_reset",
-      "description": "Clear a seat's start breaker. A seat whose agent failed to come up 4 times in an hour holds for 6 hours, or until this.",
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "seat_adopt",
-      "tool": "social_seat_adopt",
-      "description": "Make a running background job the agent of a declared seat, keeping its conversation. Its level must be at least the seat's, and a session below trusted never takes a trusted seat.",
-      "surfaces": [
-        "cli",
-        "http"
-      ],
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "job",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "node",
-          "type": "string",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "seat_admit",
-      "tool": "social_seat_admit",
-      "description": "Admit a sender from outside the lab whose messages a seat holds: the held lines go to the seat's agent, and the sender's later messages reach it as any other.",
-      "params": [
-        {
-          "name": "account",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "channel",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
       "name": "seat_remote_control",
       "tool": "social_seat_remote_control",
-      "description": "Set a seat's Remote Control switch, which every agent the seat starts follows, and switch its live session too. Only operations on this node calls it, for the Remote Control switch on Ops.",
+      "description": "Set a seat's Remote Control switch, which every agent the seat starts follows. The seat's host applies it to the live session on its next pull, so `live` answers `pending`. Only operations on this node calls it, for the Remote Control switch on Ops.",
       "surfaces": [
         "cli",
         "http"
@@ -310,27 +239,129 @@
       ]
     },
     {
-      "name": "search",
-      "tool": "social_search",
-      "description": "Search a platform's own message index live (Slack search.messages, Gmail X-GM-RAW). Returns matches with attachment metadata. Not supported for Discord bot accounts (use fetch).",
+      "name": "seat_refresh",
+      "tool": "social_seat_refresh",
+      "description": "Pick a seat's model and effort, which win over social.toml. The seat's host restarts an agent it started on them once the agent is between turns, resuming its conversation, and keeps them for the next start of an empty seat. `live` answers `pending`. Only operations on this node calls it, for the Refresh button on Ops.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
       "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "<account>/<channel_id>, as `seats` shows it."
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "effort",
+          "type": "string",
+          "required": true,
+          "description": "low, medium or high."
+        }
+      ]
+    },
+    {
+      "name": "seat_pull",
+      "tool": "social_seat_pull",
+      "description": "A seat host's seats plugin holds this to take the rows waiting for its node. `ack_through` acks every row through that id. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 75,
+      "params": [
+        {
+          "name": "ack_through",
+          "type": "integer",
+          "required": false
+        },
+        {
+          "name": "wait_s",
+          "type": "number",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "seat_report",
+      "tool": "social_seat_report",
+      "description": "A seat host's seats plugin sends one row of its outbox. A row already applied is answered and not applied again. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 120,
+      "params": [
+        {
+          "name": "epoch",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "id",
+          "type": "integer",
+          "required": true
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "body",
+          "type": "object",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "seat_act",
+      "tool": "social_seat_act",
+      "description": "A seat host's seats plugin reacts to a message (`action` react) or downloads its attachments (`action` download) in a chat its node answers. Not for sessions.",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "timeout": 300,
+      "params": [
+        {
+          "name": "action",
+          "type": "string",
+          "required": true
+        },
         {
           "name": "account",
           "type": "string",
           "required": true
         },
         {
-          "name": "query",
+          "name": "channel",
           "type": "string",
           "required": true
         },
         {
-          "name": "channel",
+          "name": "message_id",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "emoji",
           "type": "string",
           "required": false
         },
         {
-          "name": "limit",
+          "name": "remove",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "idx",
           "type": "number",
           "required": false
         }
@@ -476,240 +507,6 @@
           "name": "platform_user_id",
           "type": "string",
           "required": true
-        }
-      ]
-    },
-    {
-      "name": "buckets",
-      "tool": "social_buckets",
-      "description": "List configured cloud file-store buckets (Google Drive) with kind and root. Each is probed now: `live` is false, with an `error`, when the store does not answer.",
-      "timeout": 60
-    },
-    {
-      "name": "bucket_ls",
-      "tool": "social_bucket_ls",
-      "description": "List the immediate children of a folder in a bucket. `path` is relative to the bucket root (omit for root). A missing path is a not-found error, a file is a not-a-folder error. Returns entries with name, path, is_dir, size, mime, web_url. `recursive=true` walks the whole tree instead, stopping at `limit` entries (default 1000) and setting `truncated` when more exist.",
-      "timeout": 600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "recursive",
-          "type": "boolean",
-          "required": false
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_stat",
-      "tool": "social_bucket_stat",
-      "description": "Return the entry for one file or folder in a bucket, or a not-found error. Paths as for bucket_ls.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "bucket_mkdir",
-      "tool": "social_bucket_mkdir",
-      "description": "Create the folder at `path` in a bucket, with every missing parent. Succeeds on an existing folder. Paths as for bucket_ls.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "bucket_get",
-      "tool": "social_bucket_get",
-      "description": "Download a file from a bucket to a system temp dir (outside the awm workspace) on the node social runs on and return its absolute path + metadata. Any size; it streams in chunks. Google-native docs are exported (Docs→pdf, Sheets→csv). A folder downloads as a local folder tree (files[0].is_dir, with `count` files), refusing one over `limit` entries (default 10000). Files that fail are listed in `failures` and the rest still download.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_put",
-      "tool": "social_bucket_put",
-      "description": "Upload a file (`src` = a path on the node social runs on) to `path` in a bucket, creating or overwriting it. Any size; it streams in chunks. A local folder uploads as the folder `path`, its tree inside it; files that fail are listed in `failures` and the rest still upload. `parents=true` creates missing folders above `path`; without it a missing folder is a not-found error. Returns the resulting entry.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "src",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "mime",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "parents",
-          "type": "boolean",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_rm",
-      "tool": "social_bucket_rm",
-      "description": "Delete the file/folder at `path` in a bucket.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": true
-        }
-      ]
-    },
-    {
-      "name": "bucket_mv",
-      "tool": "social_bucket_mv",
-      "description": "Move or rename the file or folder `src` to `dst` in a bucket. `dst` is the full new path, not a folder to move into. Paths as for bucket_ls. Sharing goes with the item. An existing `dst` is an error unless `overwrite=true`, which first moves it to the trash. `parents=true` creates missing folders above `dst`. Returns the new entry.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "src",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dst",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "overwrite",
-          "type": "boolean",
-          "required": false
-        },
-        {
-          "name": "parents",
-          "type": "boolean",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_cp",
-      "tool": "social_bucket_cp",
-      "description": "Copy the file or folder `src` to `dst` in a bucket. Arguments and errors as for bucket_mv. Returns the new entry.",
-      "timeout": 3600,
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "src",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "dst",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "overwrite",
-          "type": "boolean",
-          "required": false
-        },
-        {
-          "name": "parents",
-          "type": "boolean",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "bucket_search",
-      "tool": "social_bucket_search",
-      "description": "Search a bucket for files whose name contains `query`, across the whole drive. Returns matching entries. A `path` scope is refused.",
-      "params": [
-        {
-          "name": "bucket",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "query",
-          "type": "string",
-          "required": true
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "required": false
-        },
-        {
-          "name": "path",
-          "type": "string",
-          "required": false
         }
       ]
     },

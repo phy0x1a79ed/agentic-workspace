@@ -498,9 +498,14 @@ impl Stream {
             let mut lines = BufReader::new(stream).lines();
             let quiet = || std::io::Error::new(std::io::ErrorKind::TimedOut, "the event stream went quiet");
             let Some(opening) = tokio::time::timeout(IDLE_DEADLINE, lines.next_line()).await.map_err(|_| quiet())?? else { return Ok(()) };
-            let epoch = serde_json::from_str::<Value>(&opening).ok().and_then(|h| int(&h, "epoch"));
+            let opening = serde_json::from_str::<Value>(&opening).unwrap_or_default();
+            let epoch = int(&opening, "epoch");
             if let Some(e) = epoch {
                 self.begin(e);
+                // A new daemon read our cursor from the old one's numbering. Ask again from ours.
+                if int(&opening, "cursor").is_some_and(|c| c != self.journal.next()) {
+                    return Ok(());
+                }
             }
             loop {
                 let Some(raw) = tokio::time::timeout(IDLE_DEADLINE, lines.next_line()).await.map_err(|_| quiet())?? else { return Ok(()) };
@@ -599,24 +604,39 @@ mod tests {
         assert_eq!(mode, 0o700);
     }
 
-    #[test]
-    fn the_mark_is_saved_once_an_interval_and_on_close() {
+    /// A replaced daemon numbers from zero, so the cursor the plugin held for the old one would
+    /// skip the new one's first events until its stream caught up.
+    #[tokio::test]
+    async fn a_replaced_daemon_is_read_from_its_own_start() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let tmp = tempfile::tempdir().unwrap();
-        let st = tmp.path().join("stream.json");
-        let s = Stream::new(Mark::load(&st), SessionLogs::new(tmp.path().join("sessions")));
+        let socket = tmp.path().join("operator.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        // The daemon's side: it starts the watch where it was asked to, at most its own head.
+        let head = 2;
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut request = String::new();
+                BufReader::new(read).read_line(&mut request).await.unwrap();
+                let since = serde_json::from_str::<Value>(&request).unwrap()["args"]["since"].as_i64().unwrap();
+                let mut out = json!({"type": "watch.open", "epoch": 10, "cursor": since}).to_string() + "\n";
+                for seq in since..head {
+                    out += &(ev(seq, 1, "owner.said").to_string() + "\n");
+                }
+                write.write_all(out.as_bytes()).await.unwrap();
+            }
+        });
+        let s = Stream::new(Mark::load(&tmp.path().join("stream.json")), SessionLogs::new(tmp.path().join("sessions")));
         s.begin(9);
-        let next = || Mark::load(&st).next;
-        let t0 = Instant::now();
-        for i in 0..50 {
-            s.take_at(t0 + Duration::from_millis(i * 10), Some(9), ev(i as i64, 1, "owner.said"));
+        for seq in 0..40 {
+            s.take(Some(9), ev(seq, 1, "owner.said"));
         }
-        assert_eq!(next(), 1, "fifty events inside one interval wrote once");
-        s.take_at(t0 + MARK_INTERVAL, Some(9), ev(50, 1, "owner.said"));
-        assert_eq!(next(), 51, "the event that crosses the interval saves");
-        s.take_at(t0 + MARK_INTERVAL + Duration::from_millis(5), Some(9), ev(51, 1, "owner.said"));
-        assert_eq!(next(), 51);
-        s.shutdown();
-        assert_eq!(next(), 52, "close writes the final mark");
+        s.watch_once(&socket).await.unwrap();
+        s.watch_once(&socket).await.unwrap();
+        assert_eq!(s.journal.epoch(), Some(10));
+        assert_eq!(s.journal.next(), head, "the new daemon's events from its first");
     }
 
 }

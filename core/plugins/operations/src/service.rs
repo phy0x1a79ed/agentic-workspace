@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::api::{self, TOOL};
 use crate::approver::{Approver, Config, Tools};
 use crate::arbutus::{self, Approvals, ArbutusIo};
-use crate::front::{Front, Outside, Stamp};
+use crate::front::{Front, Outside, Reach, Stamp};
 use crate::home::{Home, LocalClient};
 use crate::keys::Keys;
 use crate::relay::{async_trait_free::BoxFut, Relay, StoreClient};
@@ -50,8 +50,24 @@ fn operator_dm() -> (String, String) {
     (var("AWM_OPERATOR_DM_ACCOUNT").unwrap_or_else(|| "discord-bot".into()), var("AWM_OPERATOR_DM_CHANNEL").unwrap_or_else(|| "1522674357762261112".into()))
 }
 
+/// Tony's Discord DM with the bot, for a question that needs his answer.
+const TONY_DM: (&str, &str) = ("discord-bot", "1469466265897668729");
+
 fn failed(out: &Value) -> bool {
     out.get("ok") == Some(&json!(false))
+}
+
+impl HubOutside {
+    async fn send(&self, account: &str, channel: &str, text: &str) -> bool {
+        let opts = CallOpts { timeout: Duration::from_secs(30), ..CallOpts::default() };
+        match self.hub.call_with("social", "send", json!({"account": account, "channel": channel, "text": text}), &opts).await {
+            Ok(out) => !failed(&out),
+            Err(e) => {
+                tracing::warn!("operations: could not reach Tony: {e}");
+                false
+            }
+        }
+    }
 }
 
 impl Outside for HubOutside {
@@ -59,14 +75,27 @@ impl Outside for HubOutside {
         Box::pin(awm_plugin_sdk::sessions::session_of(&self.hub, pid))
     }
 
-    fn tell<'a>(&'a self, peer: Option<&'a str>, job: &'a str, text: &'a str) -> BoxFut<'a, bool> {
+    fn holds_seat<'a>(&'a self, session: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(async move {
+            let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
+            match self.hub.call_with("seats", "list", json!({}), &opts).await {
+                Ok(out) => out["seats"].as_array().is_some_and(|rows| rows.iter().any(|r| r["session_id"].as_str() == Some(session))),
+                Err(e) => {
+                    tracing::warn!("operations: could not ask seats about {session}: {e}");
+                    false
+                }
+            }
+        })
+    }
+
+    fn tell<'a>(&'a self, peer: Option<&'a str>, session: &'a str, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
             let peer = peer.filter(|p| *p != self.node).map(str::to_string);
             let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
-            match self.hub.call_with("reflection", "message", json!({"to": job, "text": text}), &opts).await {
+            match self.hub.call_with("reflection", "message", json!({"to": {"id": session}, "text": text}), &opts).await {
                 Ok(out) => !failed(&out),
                 Err(e) => {
-                    tracing::warn!("operations: could not tell {job}: {e}");
+                    tracing::warn!("operations: could not tell {session}: {e}");
                     false
                 }
             }
@@ -76,14 +105,42 @@ impl Outside for HubOutside {
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
             let (account, channel) = operator_dm();
-            let opts = CallOpts { timeout: Duration::from_secs(30), ..CallOpts::default() };
-            match self.hub.call_with("social", "send", json!({"account": account, "channel": channel, "text": text}), &opts).await {
-                Ok(out) => !failed(&out),
+            self.send(&account, &channel, text).await
+        })
+    }
+
+    fn dm_tony<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
+        Box::pin(self.send(TONY_DM.0, TONY_DM.1, text))
+    }
+
+    fn reach<'a>(&'a self, node: &'a str, session: &'a str) -> BoxFut<'a, Reach> {
+        Box::pin(async move {
+            let peer = Some(node).filter(|n| *n != self.node).map(str::to_string);
+            let opts = CallOpts { peer, timeout: Duration::from_secs(30), ..CallOpts::default() };
+            match self.hub.call_with("reflection", "remote_control", json!({"on": true, "to": {"id": session}}), &opts).await {
+                Ok(out) if out["ok"] == json!(true) => match out["link"].as_str() {
+                    Some(url) => Reach::Link(url.to_string()),
+                    None if out["applies"] == json!("turn_end") => Reach::Connecting,
+                    None => Reach::Unavailable,
+                },
+                Ok(out) => {
+                    tracing::warn!("operations: Remote Control refused for {session} on {node}: {out}");
+                    Reach::Unavailable
+                }
                 Err(e) => {
-                    tracing::warn!("operations: could not DM Tony: {e}");
-                    false
+                    tracing::warn!("operations: could not turn on Remote Control for {session} on {node}: {e}");
+                    Reach::Unavailable
                 }
             }
+        })
+    }
+
+    fn links<'a>(&'a self, node: &'a str) -> BoxFut<'a, Option<HashMap<String, Option<String>>>> {
+        Box::pin(async move {
+            let opts = CallOpts { timeout: Duration::from_secs(10), ..CallOpts::default() };
+            let out = self.hub.call_with("telemetry", "nodes", json!({"node": node}), &opts).await.ok()?;
+            let sessions = out["nodes"].as_array()?.first()?["sessions"].as_array()?;
+            Some(sessions.iter().filter_map(|s| Some((s["session_id"].as_str()?.to_string(), s["link"].as_str().map(str::to_string)))).collect())
         })
     }
 }
@@ -115,8 +172,8 @@ impl ArbutusIo for HubArbutus {
         Box::pin(arbutus::run_approve(name, bundles, approved_by))
     }
 
-    fn tell<'a>(&'a self, job: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
-        Box::pin(async move { awm_plugin_sdk::sessions::tell(&self.hub, job, line).await.map(|_| ()).map_err(|e| e.to_string()) })
+    fn tell<'a>(&'a self, session: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
+        Box::pin(async move { awm_plugin_sdk::sessions::tell(&self.hub, session, line).await.map(|_| ()).map_err(|e| e.to_string()) })
     }
 }
 
@@ -142,7 +199,7 @@ pub struct Ops {
 }
 
 fn stamp(call: &awm_plugin_sdk::Call) -> Stamp {
-    Stamp { pid: call.caller_pid(), session_id: call.caller_session_id().map(str::to_string), claim: call.caller_claim().cloned() }
+    Stamp { pid: call.caller_pid(), session_id: call.caller_session_id().map(str::to_string), claim: call.caller_claim().cloned(), peer: awm_plugin_sdk::config::caller_peer(call.as_.as_deref()).map(str::to_string) }
 }
 
 fn refusal(msg: impl Into<String>) -> Value {
@@ -229,27 +286,38 @@ pub fn register(mut service: Service, ops: Arc<Ops>) -> Service {
 
 // -- the home node's loops -------------------------------------------------------------------
 
+fn text(v: &Value) -> Option<String> {
+    v.as_str().filter(|x| !x.is_empty()).map(str::to_string)
+}
+
 /// The roster's live sessions per node, from `telemetry nodes` (CONTRACT.md d5c3a3f2).
 pub fn roster_of(nodes: &Value) -> HashMap<String, Vec<LiveSession>> {
     nodes["nodes"].as_array().cloned().unwrap_or_default().iter().filter_map(|n| {
         let node = n["node"].as_str()?.to_string();
         let live = n["sessions"].as_array().cloned().unwrap_or_default().iter().map(|s| LiveSession {
-            session_id: s["session_id"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
-            job: s["job"].as_str().filter(|x| !x.is_empty()).map(str::to_string),
+            session_id: text(&s["session_id"]),
+            name: text(&s["name"]), link: text(&s["link"]), project: text(&s["project"]), scope: text(&s["scope"]),
+            state: text(&s["state"]), needs: text(&s["needs"]),
         }).collect();
         Some((node, live))
     }).collect()
 }
 
-/// One `telemetry/sessions` event: a session that went live or went.
+/// One `telemetry/sessions` event: a session that went live, went, took a new name or
+/// changed state.
 pub fn on_session_event(store: &Store, e: &Value) -> anyhow::Result<Vec<String>> {
-    let node = e["node"].as_str().unwrap_or_default();
-    let (sid, job) = (e["session_id"].as_str(), e["job"].as_str());
-    Ok(match e["event"].as_str() {
-        Some("gone") => store.session_gone(sid, job, node)?,
-        Some("live") => store.session_live(sid, job, node)?,
-        _ => vec![],
-    })
+    let Some(sid) = e["session_id"].as_str().filter(|s| !s.is_empty()) else { return Ok(vec![]) };
+    let mut moved = match e["event"].as_str() {
+        Some("gone") => return Ok(store.session_gone(sid, e["retired"] == json!(true))?),
+        Some("live") => store.session_live(sid)?,
+        Some("renamed") => return Ok(store.session_renamed(sid, e["name"].as_str().unwrap_or_default())?),
+        Some("state") => vec![],
+        _ => return Ok(vec![]),
+    };
+    if let Some(state) = e["state"].as_str() {
+        moved.extend(store.session_state(sid, state, e["needs"].as_str())?);
+    }
+    Ok(moved)
 }
 
 /// Follow telemetry's session feed, reconciling with its roster at each (re)connect.
@@ -286,6 +354,47 @@ pub fn follow_sessions(hub: Hub, store: Arc<Store>) -> SupervisedSubscription {
     )
 }
 
+async fn join_session_details(hub: &Hub, store: Arc<Store>) {
+    match hub.call("telemetry", "nodes", json!({}), None).await {
+        Ok(nodes) => {
+            let roster = roster_of(&nodes);
+            if let Err(e) = blocking(move || store.session_details(&roster)).await {
+                tracing::warn!("operations: session details: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("operations: telemetry nodes: {e}"),
+    }
+}
+
+/// Send each link still owed at every (re)connect and whenever a session changes in the roster.
+pub fn follow_links(hub: Hub, front: Arc<Front>, store: Arc<Store>) -> SupervisedSubscription {
+    let opts = SubscriptionOpts { idle_timeout: Duration::from_secs(3600), ..SubscriptionOpts::default() };
+    let (f1, s1, h1) = (front.clone(), store.clone(), hub.clone());
+    SupervisedSubscription::spawn(
+        "operations/telemetry.roster",
+        opts,
+        move || {
+            let (hub, front, s1) = (hub.clone(), f1.clone(), s1.clone());
+            async move {
+                let sub = hub.subscribe("telemetry", "roster", None, None).await?;
+                front.links_due().await;
+                join_session_details(&hub, s1).await;
+                Ok(sub)
+            }
+        },
+        move |event: Value| {
+            let (front, store, h2) = (front.clone(), store.clone(), h1.clone());
+            async move {
+                if event["changed"].as_array().is_some_and(|c| c.contains(&json!("sessions"))) {
+                    front.links_due().await;
+                    join_session_details(&h2, store).await;
+                }
+                Ok(())
+            }
+        },
+    )
+}
+
 /// Expire each pending request at its own expiry, waking early when a new one opens.
 pub async fn sweep_loop(ap: Arc<Approver>) {
     loop {
@@ -300,12 +409,10 @@ pub async fn sweep_loop(ap: Arc<Approver>) {
 /// Wire the whole service from the environment and run it.
 pub async fn serve() -> anyhow::Result<()> {
     let service = Service::from_env()?;
-    let env = service.context().env().clone();
     let hub = service.context().hub().clone();
     let s = Settings::from_env()?;
     let node = crate::settings::node_name();
     let init = std::env::var("AWM_OPERATIONS_INIT").is_ok_and(|v| v == "1");
-    crate::snapshot::take(&env.awm_dir)?;
 
     let mut home = None;
     let mut approver_handle = None;
@@ -332,6 +439,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let front = Arc::new(Front {
         relay: relay.clone(), node: node.clone(), outside, arbutus: arb.clone(), card_url: s.card_url.clone(),
         approver_origin: s.origin.clone(), remind_s: s.remind_s, clock: Arc::new(crate::now),
+        link_wait: Duration::from_secs(15), asking: Default::default(), roster_moved: Default::default(),
     });
     if let Some(a) = &arb {
         let f = front.clone();
@@ -343,7 +451,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let ops = Arc::new(Ops { front: front.clone(), home: home.clone() });
     let service = register(service, ops);
 
-    let (h2, r2, f2) = (hub.clone(), relay.clone(), front.clone());
+    let (h2, r2, f2, f3) = (hub.clone(), relay.clone(), front.clone(), front.clone());
     let started = async move {
         let r = r2.clone();
         tokio::spawn(async move {
@@ -373,6 +481,7 @@ pub async fn serve() -> anyhow::Result<()> {
         }
         if let (Some(h), Some(ap)) = (home, approver_handle) {
             follow_sessions(h2.clone(), h.store.clone());
+            follow_links(h2.clone(), f3, h.store.clone());
             let vault = Arc::new(crate::vault_push::HubVault { hub: h2.clone() });
             tokio::spawn(crate::vault_push::Pusher::attach(h.store.clone(), vault).run());
             tokio::spawn(sweep_loop(ap.clone()));

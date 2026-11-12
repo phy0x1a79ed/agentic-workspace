@@ -28,6 +28,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from awm.persistence.timestamps import iso_to_ms
 from awm.vpn import config, dao
 
 log = logging.getLogger("awm.vpn.container")
@@ -45,6 +46,10 @@ _DOCKER_TIMEOUT_S = 30.0
 # CLI was killed while the daemon carried on, so `up` failed on an exit that came
 # up anyway, and the next `up` hit a name conflict.
 _DOCKER_SLOW_TIMEOUT_S = 60.0
+# How long `down` gives openconnect to log the session out before docker kills it.
+_LOGOUT_S = 20
+# openconnect's log line for the logout it sends: "Send BYE packet: <reason>".
+_BYE = "Send BYE packet"
 # The worst case of `up`, for callers that size their own timeouts on it:
 # rm + 2fa arm + run + tunnel wait, plus slack for the polls inside the wait.
 UP_BUDGET_S = 2 * _DOCKER_SLOW_TIMEOUT_S + 15.0 + _UP_TIMEOUT_S + 30.0
@@ -147,26 +152,17 @@ def arm_2fa_burst(device: str) -> bool:
     rather than in the container because the container can't reach the host
     gateway before its tunnel is up.
 
-    Routed through the ``AWM_TWOFA_PEER`` selector like every other 2fa
-    consumer. It used to POST our own gateway unconditionally, which on a node
-    that borrows 2fa meant this one caller armed a local approver while ``ssh``
-    armed the owner's — the fleet-global attempt budget only holds if every
-    consumer agrees on where the singleton lives.
-
     Returns True on a clean call. Never raises — if 2fa is unreachable the dial
     falls back to a manual Duo approval (and likely times out).
     """
     from awm import gatewayclient
 
-    peer = gatewayclient.peer_env("AWM_TWOFA_PEER")
     try:
-        gatewayclient.call_sync("2fa", "burst", {"device": device}, peer=peer, timeout=15)
+        gatewayclient.call_sync("2fa", "burst", {"device": device}, timeout=15)
     except Exception as exc:  # noqa: BLE001 — arming is best-effort by contract
-        log.warning("2fa burst arm failed (device=%r, owner=%s): %s",
-                    device, peer or "local", exc)
+        log.warning("2fa burst arm failed (device=%r): %s", device, exc)
         return False
-    log.info("armed 2fa burst device=%r before dial (owner=%s)",
-             device, peer or "local")
+    log.info("armed 2fa burst device=%r before dial", device)
     return True
 
 
@@ -196,8 +192,14 @@ def exit_ip(name: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
+def _tunnel_device_present(name: str) -> bool:
+    return _docker(["exec", name, "test", "-e", "/sys/class/net/tun0"], check=False, timeout=20).returncode == 0
+
+
 def leak_check(name: str) -> tuple[str, bool]:
-    """Return (exit_ip, healthy). Healthy = reachable in-netns AND ≠ host IP."""
+    """Return (exit_ip, healthy). Healthy = tunnel device present, reachable in-netns AND ≠ host IP."""
+    if not _tunnel_device_present(name):
+        return "", False
     ip = exit_ip(name)
     if not ip:
         return "", False  # fail-closed: no egress through the tunnel
@@ -284,11 +286,11 @@ def _up_locked(profile: str) -> dict:
 
     # Pass creds via `-e KEY` (value taken from our env, not argv) so secrets
     # don't show up in `docker inspect`/`ps`. NET_ADMIN + tun for the dialer;
-    # publish the bounce sshd so host-side `ssh -W`/ProxyJump can egress here.
+    # publish the bounce sshd on loopback; other nodes reach it by jumping through this host.
     run_env = {**_subprocess_env(), **cfg.env}
     args = ["run", "-d", "--name", name,
             "--cap-add=NET_ADMIN", "--device=/dev/net/tun",
-            "-p", f"{config.bounce_port(profile)}:22"]
+            "-p", f"127.0.0.1:{config.bounce_port(profile)}:22"]
     for key in cfg.env:
         args += ["-e", key]
     args.append(cfg.image)
@@ -334,14 +336,29 @@ def _up_locked(profile: str) -> dict:
 
 
 def down(profile: str) -> dict:
-    """Tear the exit down and clear its singleton row."""
+    """Log the session out, remove the container and clear its singleton row.
+
+    ``docker stop`` lets openconnect log out (its stop signal is SIGINT), so the
+    VPN server stops counting the session; a bare ``rm -f`` would leave it open.
+    ``logged_out`` says whether openconnect logged the BYE it sent.
+    """
     name = container_name(profile)
+    logged_out = False
     with _profile_lock(profile):
         existed = _exists(name)
+        if existed:
+            try:
+                _docker(["stop", "-t", str(_LOGOUT_S), name], check=False, timeout=_LOGOUT_S + _DOCKER_TIMEOUT_S)
+                logs = _tail_logs(name, 15)
+                logged_out = _BYE in logs
+                if not logged_out:
+                    log.warning("%s stopped with no logout; the server may still count its session:\n%s", name, logs)
+            except DockerTimeout:
+                log.warning("docker stop %s timed out; removing it without a logout", name)
         _rm_quiet(name)
         dao.VpnDAO().delete(profile)
     return {"profile": profile, "container": name, "status": "down",
-            "removed": existed}
+            "removed": existed, "logged_out": logged_out}
 
 
 def status_one(profile: str) -> dict:
@@ -379,6 +396,12 @@ def status_all() -> list[dict]:
 def _tail_logs(name: str, lines: int = 30) -> str:
     proc = _docker(["logs", "--tail", str(lines), name], check=False)
     return ((proc.stdout or "") + (proc.stderr or "")).strip() or "(no logs)"
+
+
+def started_at(profile: str) -> float:
+    """When docker last started the profile's container, as a Unix time."""
+    raw = _docker(["inspect", "-f", "{{.State.StartedAt}}", container_name(profile)]).stdout
+    return iso_to_ms(raw) / 1000
 
 
 def _log_dead_container(name: str) -> None:

@@ -43,7 +43,7 @@ The `awm` MCP server (`awm mcp`) is registered in `<workspace>/.mcp.json`. Its s
 
 Discover the catalog. Do not memorize it.
 
-1. Run `awm(verb="describe")`. One call returns every tool with its verbs, each verb with a one-line summary and its required arguments. A client that defers schemas shows a tool as a bare name. Load it with `ToolSearch` first.
+1. Run `awm(verb="describe")`. One call returns every tool with its verbs, each verb with its first sentence and its arguments, `required` and `optional`. A client that defers schemas shows a tool as a bare name. Load it with `ToolSearch` first.
 2. Run `<tool>(verb="describe")` for all of that tool's verbs, their params and which params are required. A param lists its `type` only when it is not a string. Add `args={"verbs":["<name>"]}` for some of them. An unknown argument to a verb returns an error that carries its schema.
 3. Add the optional `peer` key to run a verb on a node across an edge. Its enum lists the valid nodes and its description names the default. A tool that one node serves routes there with no `peer`. A wrong `peer` is refused, never run locally.
 
@@ -53,15 +53,17 @@ Four tools change how you work:
 
 - `search` — one ranked search over journals, precedent posts, papers, transcripts and the awm tools, on this node and across its edges. Query it before you ask what the swarm already knows. Read a whole hit with `get`.
 - `journal` precedents — past user decisions on preferences, as journal posts tagged `precedent`. Search them before you ask the user a preference question. Post one when the user makes or overrides such a decision.
-- `reflection` — acts on your own session. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
-- `operations` — keeps your task on Tony's command center. When you need Tony in a background session, call `operations(verb="request_human", args={kind:"blocked", reason:<why>})` instead of `AskUserQuestion`, because nobody watches that terminal. Call it with `kind:"review"` when the work is ready to look at.
+- `reflection` — acts on your own session, and starts and retires other sessions. `reflection(verb="compact", args={followup:"<next task>"})` queues a compaction after this turn, then sends the follow-up prompt. A full context is a seam to cross, not a reason to stop.
+- `operations` — reaches Tony. When you need him in a background session, call `operations(verb="request_human", args={kind:"blocked", reason:<why>})` instead of `AskUserQuestion`, because nobody watches that terminal. Call it with `kind:"review"` when the work is ready to look at.
 
 The CLI (`awm <tool> <verb>`) and HTTP (`POST /invoke`) surfaces keep one command per verb, hidden verbs included. Only the MCP surface collapses.
 
 ## Git
 
 - A scope's branch is `feat/<scope>` by default. A legacy or nested scope has its own branch name. Ask `scope(verb="search")` instead of guessing.
-- Land your own work with the `ci/land` skill: `scripts/land.sh submit` from your scope on mizar. The first agent in a batch merges it with the `ci/merge` skill. The batch promotes `feat → dev → release` and refreshes each node, as `FEDERATION.md` § Deploy describes. There is no `main`.
+- Take finished awm work live with the `ship` skill. It merges `feat → dev`, then runs the release train `dev → release-candidate → release → nodes`. There is no `main`. For awm:
+  - Run it on mizar. The `dev` worktree is `projects/awm/dev`, and the backup remote is `github`.
+  - Build: `scripts/refresh-pins.sh`, with `AWM_DIR` set to `<workspace>/.awm`. Smoke tests: `scripts/run-tests.sh --smoke --changed release`. Rollout: `scripts/rollout.sh --restart <list> <sha>`.
 - Do not open pull requests. Open one only when Tony asks for it.
 - **WARNING** Never commit in the workspace root checkout. On a node that deploys awm, each deploy resets `<workspace>/` onto upstream `release` and discards local commits without a warning. Work in a scope worktree under `projects/` and push the branch. A `reset: moving to …` entry in `git -C <workspace> reflog` shows a deploy ran.
 - A push to mizar fails with *branch is currently checked out* when a worktree there holds the branch. This is not a permissions fault. See `PROTOCOLS.md` § *Pushing to mizar*.

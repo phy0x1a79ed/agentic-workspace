@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -170,6 +170,44 @@ CREATE TABLE IF NOT EXISTS seat_cursor (
 );
 ";
 
+/// v11: seats moved to their hosts. Each seat's state leaves as a `seed` row its host applies
+/// once. A line already waiting is queued again after the seeds, because a line that reached a
+/// host before its seed would start a second agent beside a live one.
+pub const SEATS_V11: &str = "
+ALTER TABLE seat_queue ADD COLUMN node TEXT NOT NULL DEFAULT '';
+ALTER TABLE seat_queue ADD COLUMN kind TEXT NOT NULL DEFAULT 'line';
+ALTER TABLE seat_queue ADD COLUMN body TEXT NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS ix_seat_queue_node ON seat_queue (node, delivered_at, id);
+CREATE TABLE IF NOT EXISTS seat_hosts (
+    node  TEXT PRIMARY KEY,
+    epoch TEXT NOT NULL DEFAULT '',
+    mark  INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO seat_queue (account, channel_id, line, queued_at, node, kind, body)
+    SELECT account, channel_id, '', 0, node, 'seed', json_object('state', json_object(
+        'state', state, 'job', job, 'job_node', job_node, 'adopted', adopted, 'since', since, 'last_message', last_message,
+        'done_at', done_at, 'deadline', deadline, 'previous', previous, 'breaker', breaker, 'held', held, 'replied', replied,
+        'missed', missed, 'remote_control', remote_control, 'rc_url', rc_url))
+    FROM seat_registry WHERE node != '';
+INSERT INTO seat_queue (account, channel_id, message_id, thread_id, line, queued_at, node, kind, body)
+    SELECT q.account, q.channel_id, q.message_id, q.thread_id, q.line, q.queued_at, r.node, 'line', '{\"kept\":true}'
+    FROM seat_queue q JOIN seat_registry r ON r.account = q.account AND r.channel_id = q.channel_id
+    WHERE q.delivered_at = 0 AND q.kind = 'line' ORDER BY q.id;
+UPDATE seat_queue SET delivered_at = 1 WHERE delivered_at = 0 AND kind = 'line' AND node = '';
+ALTER TABLE seat_registry ADD COLUMN report TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE seat_registry DROP COLUMN job_node;
+ALTER TABLE seat_registry DROP COLUMN adopted;
+ALTER TABLE seat_registry DROP COLUMN since;
+ALTER TABLE seat_registry DROP COLUMN last_message;
+ALTER TABLE seat_registry DROP COLUMN done_at;
+ALTER TABLE seat_registry DROP COLUMN deadline;
+ALTER TABLE seat_registry DROP COLUMN previous;
+ALTER TABLE seat_registry DROP COLUMN breaker;
+ALTER TABLE seat_registry DROP COLUMN held;
+ALTER TABLE seat_registry DROP COLUMN replied;
+ALTER TABLE seat_registry DROP COLUMN missed;
+";
+
 /// v10: each seat's Remote Control switch, and its live session's claude.ai link.
 pub const SEATS_V10: &str = "
 ALTER TABLE seat_registry ADD COLUMN remote_control INTEGER NOT NULL DEFAULT 0;
@@ -190,6 +228,8 @@ fn migration(from: i64) -> String {
         // Every message the Python saw counts as routed, so the first resync replays none.
         8 => format!("{SEATS}INSERT OR IGNORE INTO seat_routed (account, channel_id, message_id, routed_at) SELECT account, channel_id, message_id, 0 FROM social_history;\n"),
         9 => SEATS_V10.into(),
+        10 => SEATS_V11.into(),
+        11 => "ALTER TABLE social_mounts RENAME COLUMN job TO session_id;\nALTER TABLE social_keepers RENAME COLUMN job TO session_id;\nALTER TABLE seat_registry RENAME COLUMN job TO session_id;\nALTER TABLE seat_lines RENAME COLUMN job TO session_id;\n".into(),
         _ => String::new(),
     }
 }
@@ -223,23 +263,23 @@ pub fn open_conn(path: &Path) -> anyhow::Result<Connection> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    match version(&conn)? {
+    let from = match version(&conn)? {
         None if tables(&conn)? == 0 => {
-            conn.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}"))?;
+            conn.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}{SEATS_V11}"))?;
             conn.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';")?;
             conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")?;
-            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [SCHEMA_VERSION])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (11)", [])?;
+            11
         }
         None => anyhow::bail!("{}: has tables but no schema_version, so it is not a social.db this build knows", path.display()),
         Some(v) if v > SCHEMA_VERSION => anyhow::bail!("{}: schema v{v} is newer than this build's v{SCHEMA_VERSION}", path.display()),
-        Some(v) => {
-            for from in v..SCHEMA_VERSION {
-                let tx = conn.unchecked_transaction()?;
-                tx.execute_batch(&migration(from))?;
-                tx.execute("UPDATE schema_version SET version = ?1", [from + 1])?;
-                tx.commit()?;
-            }
-        }
+        Some(v) => v,
+    };
+    for step in from..SCHEMA_VERSION {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(&migration(step))?;
+        tx.execute("UPDATE schema_version SET version = ?1", [step + 1])?;
+        tx.commit()?;
     }
     Ok(conn)
 }
@@ -260,6 +300,33 @@ impl Db {
     {
         let me = self.0.clone();
         tokio::task::spawn_blocking(move || f(&me.lock().unwrap_or_else(|p| p.into_inner()))).await.expect("a db call panicked")
+    }
+
+    // -- gap resync ---------------------------------------------------------
+
+    /// The seats and mounted chats of `account`: what a gap in the live feed must not lose.
+    pub async fn gap_chats(&self, account: &str) -> Vec<String> {
+        let a = account.to_string();
+        self.run(move |c| c.prepare("SELECT channel_id FROM seat_registry WHERE account = ?1 UNION SELECT channel_id FROM social_mounts WHERE account = ?1").and_then(|mut s| s.query_map(params![a], |r| r.get(0))?.collect()).unwrap_or_default()).await
+    }
+
+    /// The newest message of a chat this connection has seen.
+    pub async fn cursor(&self, account: &str, channel: &str) -> Option<String> {
+        let (a, ch) = (account.to_string(), channel.to_string());
+        self.run(move |c| c.query_row("SELECT last_id FROM seat_cursor WHERE account = ?1 AND channel_id = ?2", params![a, ch], |r| r.get(0)).optional().ok().flatten()).await
+    }
+
+    pub async fn set_cursor(&self, account: &str, channel: &str, last_id: &str) {
+        let v = [account, channel, last_id].map(str::to_string);
+        let _ = self
+            .run(move |c| {
+                c.execute(
+                    "INSERT INTO seat_cursor (account, channel_id, last_id) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT (account, channel_id) DO UPDATE SET last_id = excluded.last_id WHERE CAST(excluded.last_id AS INTEGER) > CAST(seat_cursor.last_id AS INTEGER)",
+                    params![v[0], v[1], v[2]],
+                )
+            })
+            .await;
     }
 
     // -- operators ----------------------------------------------------------
@@ -395,10 +462,10 @@ impl Db {
         self.run(move |c| {
             let at = now_iso();
             c.execute(
-                "INSERT INTO social_mounts (account, channel_id, channel_name, node, job, session_name, mounted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-                 ON CONFLICT (account, channel_id) DO UPDATE SET channel_name = excluded.channel_name, node = excluded.node, job = excluded.job, \
+                "INSERT INTO social_mounts (account, channel_id, channel_name, node, session_id, session_name, mounted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT (account, channel_id) DO UPDATE SET channel_name = excluded.channel_name, node = excluded.node, session_id = excluded.session_id, \
                  session_name = excluded.session_name, mounted_at = excluded.mounted_at",
-                params![m.account, m.channel_id, m.channel_name, m.node, m.job, m.session_name, at],
+                params![m.account, m.channel_id, m.channel_name, m.node, m.session_id, m.session_name, at],
             )?;
             Ok(Mount { mounted_at: at, ..m })
         })
@@ -410,12 +477,12 @@ impl Db {
         self.run(move |c| c.execute("DELETE FROM social_mounts WHERE account = ?1 AND channel_id = ?2", params![a, ch]).map(|n| n > 0).unwrap_or(false)).await
     }
 
-    /// Free every seat `(node, job)` holds, and return what it held.
-    pub async fn release_holder(&self, node: &str, job: &str) -> Vec<Mount> {
-        let (n, j) = (node.to_string(), job.to_string());
+    /// Free every seat `(node, session)` holds, and return what it held.
+    pub async fn release_holder(&self, node: &str, session: &str) -> Vec<Mount> {
+        let (n, j) = (node.to_string(), session.to_string());
         self.run(move |c| {
-            let rows: Vec<Mount> = c.prepare(&format!("{MOUNT_COLS} WHERE node = ?1 AND job = ?2")).and_then(|mut s| s.query_map(params![n, j], Mount::from_row)?.collect()).unwrap_or_default();
-            let _ = c.execute("DELETE FROM social_mounts WHERE node = ?1 AND job = ?2", params![n, j]);
+            let rows: Vec<Mount> = c.prepare(&format!("{MOUNT_COLS} WHERE node = ?1 AND session_id = ?2")).and_then(|mut s| s.query_map(params![n, j], Mount::from_row)?.collect()).unwrap_or_default();
+            let _ = c.execute("DELETE FROM social_mounts WHERE node = ?1 AND session_id = ?2", params![n, j]);
             rows
         })
         .await
@@ -437,7 +504,7 @@ impl Db {
     }
 }
 
-const MOUNT_COLS: &str = "SELECT account, channel_id, channel_name, node, job, session_name, mounted_at FROM social_mounts";
+const MOUNT_COLS: &str = "SELECT account, channel_id, channel_name, node, session_id, session_name, mounted_at FROM social_mounts";
 
 /// One `social_mounts` row: the session a chat's lines are pushed to.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -446,19 +513,19 @@ pub struct Mount {
     pub channel_id: String,
     pub channel_name: String,
     pub node: String,
-    pub job: String,
+    pub session_id: String,
     pub session_name: String,
     pub mounted_at: String,
 }
 
 impl Mount {
     fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(Self { account: r.get(0)?, channel_id: r.get(1)?, channel_name: r.get(2)?, node: r.get(3)?, job: r.get(4)?, session_name: r.get(5)?, mounted_at: r.get(6)? })
+        Ok(Self { account: r.get(0)?, channel_id: r.get(1)?, channel_name: r.get(2)?, node: r.get(3)?, session_id: r.get(4)?, session_name: r.get(5)?, mounted_at: r.get(6)? })
     }
 
     /// The `holder` object `seats` and `mount` show.
     pub fn holder(&self) -> Value {
-        json!({"node": self.node, "job": self.job, "session_name": self.session_name, "mounted_at": self.mounted_at})
+        json!({"node": self.node, "session_id": self.session_id, "session_name": self.session_name, "mounted_at": self.mounted_at})
     }
 }
 
@@ -567,7 +634,7 @@ mod tests {
             let c = Connection::open(&old).unwrap();
             c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}")).unwrap();
             c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (8);").unwrap();
-            c.execute("INSERT INTO social_mounts (account, channel_id, node, job) VALUES ('a', 'c', 'n', 'j')", []).unwrap();
+            c.execute("INSERT INTO social_mounts (account, channel_id, node, job) VALUES ('a', 'c', 'n', 'cc0a1b2c3d111122223333444455556666')", []).unwrap();
             c.execute("INSERT INTO social_history (account, channel_id, message_id) VALUES ('a', 'c', 'm1')", []).unwrap();
         }
         let before: Vec<String> = Connection::open(&old).unwrap().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
@@ -581,6 +648,33 @@ mod tests {
         assert_eq!(version(&open_conn(&old).unwrap()).unwrap(), Some(SCHEMA_VERSION), "reopening is a no-op");
     }
 
+    /// **WARNING** A wrong seed vacates a live agent, so this pins the v10 mapping row by row.
+    #[test]
+    fn a_v10_seat_leaves_as_a_seed_ahead_of_its_waiting_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("v10.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}{SEATS_V10}")).unwrap();
+            c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (10);").unwrap();
+            c.execute_batch("INSERT INTO seat_registry (account, channel_id, node, state, job, job_node, adopted, remote_control, rc_url, previous, breaker, missed) VALUES ('a', 'live', 'altair', 'occupied', 'cc0a1b2c3d111122223333444455556666', 'altair', 1, 1, 'u', '{\"job\":\"old\",\"node\":\"altair\"}', '{\"hold_until\":5.0}', 3);").unwrap();
+            c.execute_batch("INSERT INTO seat_queue (account, channel_id, message_id, line, queued_at) VALUES ('a', 'live', 'm1', 'waiting', 7.0), ('gone', 'x', 'm2', 'orphan', 7.0);").unwrap();
+        }
+        let c = open_conn(&p).unwrap();
+        assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
+        let rows: Vec<(String, String, String, f64)> = c.prepare("SELECT node, kind, line, delivered_at FROM seat_queue WHERE delivered_at = 0 ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("altair".to_string(), "seed".to_string(), String::new(), 0.0), ("altair".to_string(), "line".to_string(), "waiting".to_string(), 0.0)], "the seed first, and the orphan closed");
+        let kept: String = c.query_row("SELECT body FROM seat_queue WHERE kind = 'line' AND delivered_at = 0", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, r#"{"kept":true}"#, "a line already waiting survives the pause");
+        let body: String = c.query_row("SELECT body FROM seat_queue WHERE kind = 'seed'", [], |r| r.get(0)).unwrap();
+        let state = &serde_json::from_str::<Value>(&body).unwrap()["state"];
+        assert_eq!((state["state"].as_str(), state["job"].as_str(), state["job_node"].as_str(), state["adopted"].as_i64(), state["missed"].as_i64(), state["remote_control"].as_i64()), (Some("occupied"), Some("cc0a1b2c3d111122223333444455556666"), Some("altair"), Some(1), Some(3), Some(1)));
+        assert_eq!(state["previous"].as_str(), Some("{\"job\":\"old\",\"node\":\"altair\"}"), "a string the host parses");
+        let (kept, report): (String, String) = c.query_row("SELECT session_id, report FROM seat_registry", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((kept.as_str(), report.as_str()), ("cc0a1b2c3d111122223333444455556666", "{}"));
+        assert!(c.prepare("SELECT breaker FROM seat_registry").is_err(), "the state machine's columns are gone");
+    }
+
     #[test]
     fn a_v9_seat_gains_the_switch_off_and_no_link() {
         let tmp = tempfile::tempdir().unwrap();
@@ -589,12 +683,11 @@ mod tests {
             let c = Connection::open(&p).unwrap();
             c.execute_batch(&format!("{SCHEMA}{HISTORY}{MOUNTS}{KEEPERS_V5}{KEEPER_STATE}{QUIET}{SEATS}")).unwrap();
             c.execute_batch("ALTER TABLE social_keepers ADD COLUMN seen_at TEXT NOT NULL DEFAULT '';CREATE TABLE schema_version (version INTEGER NOT NULL);INSERT INTO schema_version VALUES (9);").unwrap();
-            c.execute("INSERT INTO seat_registry (account, channel_id, state, job) VALUES ('a', 'c', 'occupied', 'j')", []).unwrap();
+            c.execute("INSERT INTO seat_registry (account, channel_id, state, job) VALUES ('a', 'c', 'occupied', '')", []).unwrap();
         }
         let c = open_conn(&p).unwrap();
         assert_eq!(version(&c).unwrap(), Some(SCHEMA_VERSION));
         let (rc, url, state): (i64, String, String) = c.query_row("SELECT remote_control, rc_url, state FROM seat_registry", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         assert_eq!((rc, url.as_str(), state.as_str()), (0, "", "occupied"));
     }
-
 }

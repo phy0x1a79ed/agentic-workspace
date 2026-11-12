@@ -12,14 +12,11 @@ log = logging.getLogger("awm.ssh.hub_adapter")
 
 svc = SSHService()
 
-# Test verbs keep working on the CLI and over HTTP but are not agent tools.
-_CLI_HTTP = ["cli", "http"]
-
 API_MANIFEST: dict[str, Any] = {
     "description": (
         "SSH to the managed HPC hosts, and the only sanctioned way to reach "
-        "them. `connect` orchestrates the VPN and the Duo approver itself, so "
-        "do NOT call the vpn or 2fa domains around it — they are already armed, "
+        "them. `connect` arms the Duo approver itself, so do NOT call the 2fa "
+        "domain around it — it is already armed, "
         "once, for the single login it is about to make. After connecting, plain "
         "`ssh <host> <cmd>` multiplexes over the ControlMaster with no new "
         "authentication. A host reported 'unavailable' is held after an earlier "
@@ -34,14 +31,14 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Open a ControlMaster SSH connection to a managed host. "
                 "Idempotent — if already connected it does an auth-free liveness "
-                "check and returns without a new login. Orchestrates VPN + 2FA "
-                "burst automatically for hosts that require them, deduplicating "
+                "check and returns without a new login. Arms the 2FA burst "
+                "automatically for hosts that require it, deduplicating "
                 "concurrent requests into a single attempt — you do not need to "
-                "call the vpn or 2fa domains, and doing so spends MFA budget "
-                "this service is accounting for. Blocks until the ControlMaster "
-                "socket is live, then returns success: seconds when the VPN "
-                "exit is up, a minute or more when it has to be re-dialed. "
-                "A failure names what failed (the VPN exit, the Duo approver, "
+                "call the 2fa domain, and doing so spends MFA budget this "
+                "service is accounting for. Sockeye hosts jump through the UBC "
+                "VPN tunnel that altair's vpn service keeps up; never call vpn "
+                "for them. Blocks until the ControlMaster socket is live. A "
+                "failure names what failed (the VPN tunnel, the Duo approver, "
                 "the host). Returns status 'unavailable' (no login attempted) if "
                 "the host is held by the circuit breaker after a prior failure — "
                 "recovery is an operator /approve in Discord, never a retry. An "
@@ -52,9 +49,9 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "host", "type": "string", "required": True},
             ],
-            # A VPN re-dial (service._VPN_UP_TIMEOUT) plus the ssh login
-            # (service._CONNECT_TIMEOUT), plus slack for the lease.
-            "timeout": 420,
+            # The ssh login (service._CONNECT_TIMEOUT), plus slack for a
+            # lease queued behind another login.
+            "timeout": 300,
         },
         {
             "name": "disconnect",
@@ -74,56 +71,18 @@ API_MANIFEST: dict[str, Any] = {
             "name": "status",
             "tool": "ssh_status",
             "description": (
-                "List all managed hosts and their connection state. Reports an "
-                "in-memory snapshot of each host's lifecycle state (plus a breaker "
-                "lockfile check) — it does NOT probe the network. Per-host status "
-                "is one of connected / connecting / disconnecting / disconnected, "
-                "or 'unavailable' when the host is held by the circuit breaker. A "
+                "List all managed hosts and their connection state on this node. "
+                "Reports an in-memory snapshot of each host's lifecycle state and "
+                "does NOT probe the network. Per-host status is one of connected / "
+                "connecting / disconnecting / disconnected. A held host reads "
+                "disconnected here, and `connect` reports it as 'unavailable'. A "
                 "host whose master died out-of-band may still read 'connected' "
                 "until the next connect re-probes it."
             ),
             "params": [],
         },
-        {
-            "name": "notify_test",
-            "tool": "ssh_notify_test",
-            "surfaces": _CLI_HTTP,
-            "description": (
-                "Fire the Discord lock-alert wire on demand to confirm the ssh "
-                "service can reach the operator BEFORE a real lockout depends on "
-                "it. Sends through the exact social→Discord path a real breaker "
-                "trip uses (same peer selector, edge, bearer, channel) but writes "
-                "NO lockfile and mutates no state, and surfaces the send result "
-                "instead of swallowing — so a broken notify wire fails loudly. The "
-                "message is clearly a test and requests no /approve action."
-            ),
-            "params": [
-                {"name": "host", "type": "string", "required": False},
-            ],
-        },
-        {
-            "name": "receive_test",
-            "tool": "ssh_receive_test",
-            "surfaces": _CLI_HTTP,
-            "description": (
-                "The inbound twin of notify_test: prove this service can still "
-                "HEAR an operator /approve. Asks social to emit a synthetic, "
-                "inert probe (a nonce only — no device, no channel, no Discord "
-                "traffic) and waits for it to come back. Fails loudly if it does "
-                "not, and distinguishes 'could not emit' from 'did not receive'. "
-                "Opens no approval window, arms nothing, writes no lockfile."
-            ),
-            "params": [
-                {"name": "timeout", "type": "number", "required": False},
-            ],
-        },
     ],
     "emitters": [],
-    # Direct-session slot lease: a requester (this node or a peer) holds an open
-    # WS for the duration of one connect attempt; the OPEN socket IS the lease.
-    # This node is the fleet's slot arbiter for lockout-sensitive hosts. See
-    # SSHService._lease_session and FEDERATION.md (SlotArbiter DFA).
-    "sessions": [{"kind": "lease", "transport": "direct"}],
 }
 
 
@@ -131,9 +90,6 @@ HANDLERS = {
     "connect": lambda args: svc.connect(args["host"]),
     "disconnect": lambda args: svc.disconnect(args["host"]),
     "status": lambda _args: svc.status(),
-    "notify_test": lambda args: svc.notify_test(args.get("host", "[selftest]")),
-    "receive_test": lambda args: svc.receive_test(
-        float(args.get("timeout") or 10.0)),
 }
 
 
@@ -144,7 +100,6 @@ async def main() -> None:
     )
     await ServiceAdapter(
         "ssh", API_MANIFEST, HANDLERS,
-        session_handlers={"lease": svc._lease_session},
         on_start=svc.init,
     ).run()
 

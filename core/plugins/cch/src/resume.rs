@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use awm_harness::claude::{records, roster, ClaudeHome};
 use awm_harness::contract::{lost_notice, HarnessEvent, Kind, Reporter};
-use awm_plugin_sdk::{ids, procfs, Hub};
+use awm_plugin_sdk::ids::{Platform, SessionId};
+use awm_plugin_sdk::{procfs, Hub};
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
@@ -76,7 +77,7 @@ pub const FOLLOW_THROUGH: Duration = Duration::from_secs(1800);
 pub const FOLLOW_POLL: Duration = Duration::from_secs(2);
 
 /// The platform code of a Claude Code session in an R9 id.
-pub const PLATFORM: &str = "cc";
+pub const PLATFORM: &str = Platform::Claude.code();
 
 /// `text` as cch types it into a session on its own account: after `from cch@<node>: `, so no
 /// line cch wrote reads as the user's. A follow-up reflection passed in carries its own prefix
@@ -209,7 +210,7 @@ pub fn r9(session_uuid: &str) -> String {
     if session_uuid.is_empty() {
         return String::new();
     }
-    ids::r9(PLATFORM, session_uuid).unwrap_or_else(|e| {
+    SessionId::from_harness_native(Platform::Claude, session_uuid).map(|id| id.canonical()).unwrap_or_else(|e| {
         tracing::warn!("cch: an event names no session: {e}");
         String::new()
     })
@@ -1081,9 +1082,6 @@ mod tests {
         }
         async fn repaint(&mut self) -> Result<bool, LaneError> {
             panic!("the resume never repaints")
-        }
-        fn forget(&mut self) {
-            panic!("the resume never reads a screen")
         }
         async fn press(&mut self, _key: Key) -> Result<(), LaneError> {
             panic!("the resume presses no keys")

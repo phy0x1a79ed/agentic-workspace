@@ -115,6 +115,11 @@ fi
 docker run --rm -v "$volume:/c" "$image" sh -c 'chmod -R a+rwX /c 2>/dev/null || true'
 
 mkdir -p "$target_dir"
+# Cargo never deletes a superseded output, so every edit leaves another test binary and
+# incremental session behind. Drop those untouched for three days; a current one relinks.
+find "$target_dir" -mindepth 3 -maxdepth 4 \
+    \( -path '*/deps/*' -type f -perm -u+x ! -name '*.*' -o -path '*/incremental/*' -prune \) \
+    -mtime +3 -exec rm -rf {} + 2>/dev/null || true
 mounts=(-v "$volume:/cargo/registry" -v "$workdir:$workdir" -v "$target_dir:$target_dir")
 [ "$workdir" != "$here/core" ] || mounts+=(-v "$here:$here:ro")
 env_conda=()

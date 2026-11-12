@@ -210,6 +210,52 @@ async fn a_reload_that_makes_a_service_external_stops_its_child() {
     awm_gateway::supervisor::stop_all(&gw).await;
 }
 
+/// An `[[external]]` plugin's hook runs in the gateway, and its registered service then hears
+/// `shutdown` so its own unit respawns it. An unchanged stamp runs no hook and sends nothing; a
+/// restart sends `shutdown` without a hook; a failed hook refuses the plugin.
+#[tokio::test]
+async fn an_external_plugins_hook_runs_in_the_gateway_then_restarts_it() {
+    let node = Node::new();
+    let dir = node.plugin("ext", "install = 'install.sh'\n", "");
+    std::fs::write(dir.join("install.sh"), "sleep 0.3\necho ran >> \"$AWM_DIR/hook.log\"\n").unwrap();
+    node.config("[[external]]\nservice = \"ext\"\n");
+    let gw = node.open(no_peers()).await;
+    let id = gw.hub.register("ext", "ext", None, None).unwrap();
+    let awm_gateway::hub::Claim::Claimed { mut rx, .. } = gw.hub.claim(&id) else { panic!("claim") };
+    let runs = || std::fs::read_to_string(node.state.join("hook.log")).unwrap_or_default().lines().count();
+    let shutdowns = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>| {
+        std::iter::from_fn(|| rx.try_recv().ok()).filter(|f| f.contains("shutdown")).count()
+    };
+    let installing = |gw: &Gateway| gw.services_view().as_array().unwrap().iter().any(|r| r["installing"] == json!(true));
+
+    awm_gateway::supervisor::start_all(&gw, false).await;
+    assert!(installing(&gw), "the flag is up before the hook ends");
+    until("the install", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (1, 1));
+    assert!(awm_gateway::hooks::stamp_path(&gw.state, "ext").is_file());
+    assert_eq!(pid_of(&gw, "ext"), None, "the gateway never spawns it");
+
+    gw.reload(&ReloadRequest::default()).await.unwrap();
+    until("the no-op", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (1, 0), "an unchanged stamp runs no hook");
+
+    let report = gw.reload(&ReloadRequest { restart: vec!["ext".into()], force: false }).await.unwrap();
+    assert_eq!(report["stopped"], json!([]), "the restart waits for the hook");
+    until("the restart", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (1, 1), "a restart sends shutdown without a hook");
+
+    std::fs::write(dir.join("new-file"), "x").unwrap();
+    gw.reload(&ReloadRequest::default()).await.unwrap();
+    until("the reinstall", || (!installing(&gw)).then_some(())).await;
+    assert_eq!((runs(), shutdowns(&mut rx)), (2, 1), "a moved stamp reinstalls and restarts");
+
+    std::fs::write(dir.join("install.sh"), "echo boom >&2\nexit 1\n").unwrap();
+    gw.reload(&ReloadRequest::default()).await.unwrap();
+    let reason = until("the refusal", || refusal(&gw, "ext")).await;
+    assert!(reason.contains("boom"), "{reason}");
+    assert_eq!(shutdowns(&mut rx), 0, "a failed hook leaves the old service up");
+}
+
 /// A failed hook refuses its plugin alone, names its last output, and cascades to the plugins
 /// that need its tool. A restart that names it runs the hook again.
 #[tokio::test]
@@ -389,4 +435,45 @@ async fn a_mount_streams_its_response() {
     release.notify_one();
     let second = tokio::time::timeout(Duration::from_secs(5), resp.chunk()).await.unwrap();
     assert_eq!(second.unwrap().unwrap(), "data: two\n\n");
+}
+
+/// A connection from another Unix account reaches nothing on the main listener, unless it sends a
+/// service token or opens a socket of an `[[external]]` service that registered with its token.
+#[tokio::test]
+async fn another_account_is_refused_unless_a_service_proves_itself() {
+    use awm_gateway::loopback::{own_uid, Peer};
+    use axum::extract::connect_info::MockConnectInfo;
+
+    let node = Node::new();
+    let token_file = node.state.join("ext.token");
+    std::fs::write(&token_file, "s3cret\n").unwrap();
+    node.config(&format!("[[external]]\nservice = \"ext\"\ntoken_file = {token_file:?}\n"));
+    let gw = node.open(no_peers()).await;
+    let app = awm_gateway::server::router(gw.clone()).layer(MockConnectInfo(Peer { uid: Some(own_uid() + 1) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let http = reqwest::Client::new();
+    let gated = |resp: reqwest::Response| async move {
+        let status = resp.status().as_u16();
+        (status, status == 403 && resp.text().await.unwrap().contains("not this gateway's account"))
+    };
+    let register = |name: &'static str, token: &'static str| {
+        http.post(format!("{url}/hub/service/register")).header("X-Awm-Service-Token", token).json(&json!({"name": name})).send()
+    };
+
+    assert_eq!(gated(http.get(format!("{url}/status")).send().await.unwrap()).await, (403, true));
+    let invoke = http.post(format!("{url}/invoke")).json(&json!({"name": "awm", "args": {}})).send().await.unwrap();
+    assert_eq!(gated(invoke).await, (403, true), "no pid header makes it the host");
+    assert_eq!(gated(register("ext", "wrong").await.unwrap()).await, (403, true));
+    assert_eq!(gated(register("other", "s3cret").await.unwrap()).await, (403, false), "one service's token registers no other");
+
+    let resp = register("ext", "s3cret").await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let id = resp.json::<Value>().await.unwrap()["service_id"].as_str().unwrap().to_string();
+    let control = |id: String| http.get(format!("{url}/hub/service/control/{id}")).send();
+    assert_eq!(gated(control(id).await.unwrap()).await.1, false, "the registered service reaches its control socket");
+    assert_eq!(gated(control("nope".into()).await.unwrap()).await, (403, true));
+    let status = http.get(format!("{url}/status")).header("X-Awm-Service-Token", "s3cret").send().await.unwrap();
+    assert_eq!(status.status(), 200, "a token passes as its service");
 }

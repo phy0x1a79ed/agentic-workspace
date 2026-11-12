@@ -14,7 +14,7 @@ use crate::portal::{Grants, GRANT_KEY_ENV};
 use crate::store::{AuthStore, INIT_ENV};
 use crate::verbs::{self, Caller};
 use crate::landing::{self, Landing};
-use crate::{certs, policy, snapshot, tls};
+use crate::{certs, policy, tls};
 
 const PUBLIC_PROFILE: &str = "public";
 
@@ -25,7 +25,6 @@ const FRONT: &str = "Report one service's front: the TLS port auth opened for it
 pub async fn serve() -> anyhow::Result<()> {
     let service = Service::from_env()?;
     let env = service.context().env().clone();
-    snapshot::take(&env.awm_dir)?;
     let state = env.state_dir();
     std::fs::create_dir_all(&state)?;
 
@@ -75,10 +74,9 @@ pub async fn serve() -> anyhow::Result<()> {
     let status = json!({
         "listener_port": port, "tls": tls_on, "san": san, "upstream": env.hub_url, "serving": true,
         "profile": profile.as_deref().unwrap_or("default"),
-        "vault_upstream": upstreams.vault, "relay_upstream": upstreams.tether, "board_upstream": upstreams.board,
+        "vault_upstream": upstreams.vault, "relay_upstream": upstreams.tether,
         "vault_mount": upstreams.vault.as_ref().map(|_| policy::vault::SHELL),
         "relay_mounts": upstreams.tether.as_ref().map(|_| [policy::tether::PREFIX, policy::tether::ROOMS]),
-        "board_mount": upstreams.board.as_ref().map(|_| policy::board::PREFIX),
     });
     let _watch = fronts::watch(fronts.clone(), service.context().hub().clone());
     register(service, Arc::new(store), status, fronts).run().await
