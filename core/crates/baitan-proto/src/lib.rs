@@ -157,12 +157,18 @@ pub struct SettleArgs {
     pub outcome: Outcome,
 }
 
-/// `Kept` carries the facts made true, `(id, at, provider)`, and each id's true size in bytes.
-/// `Broken` creates no instance.
+/// `Kept` carries the facts made true, `(id, at, provider)`, each id's true size in bytes, and,
+/// for an instance that is a directory, the relative paths of its files. `Broken` creates no
+/// instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Outcome {
-    Kept { facts: Vec<Fact>, sizes: BTreeMap<Id, u64> },
+    Kept {
+        facts: Vec<Fact>,
+        sizes: BTreeMap<Id, u64>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        listing: BTreeMap<Id, Vec<String>>,
+    },
     Broken { message: String },
 }
 
@@ -205,7 +211,13 @@ pub enum Phase {
     Open,
     Awarded { provider: ProviderId },
     Started { provider: ProviderId },
-    Settled { provider: ProviderId, facts: Vec<Fact>, sizes: BTreeMap<Id, u64> },
+    Settled {
+        provider: ProviderId,
+        facts: Vec<Fact>,
+        sizes: BTreeMap<Id, u64>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        listing: BTreeMap<Id, Vec<String>>,
+    },
     Failed { name: String, message: String },
 }
 
@@ -272,7 +284,7 @@ pub struct OfferSet {
     pub size: Option<u64>,
 }
 
-/// `op` names the job kind (`cargo`, `task`, `place`, …). `props` is the declared request set:
+/// `op` names the job kind; `docs/dex-poc/JOBS.md` defines each kind's `spec` and slots. `props` is the declared request set:
 /// contract, version when it matters, output-affecting params. `inputs` are exact ids; a
 /// placement step names the slot ids of earlier steps. `spec` is the job payload, opaque to the
 /// market. `to` is the destination provider of a placement step.

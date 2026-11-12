@@ -46,7 +46,11 @@ fn every_msg_round_trips() {
         Msg::Settle(SettleArgs {
             promise: "p1".into(),
             provider: "capella".into(),
-            outcome: Outcome::Kept { facts: vec![Fact::at("i1", "capella")], sizes: [("i1".into(), 42)].into() },
+            outcome: Outcome::Kept {
+                facts: vec![Fact::at("i1", "capella")],
+                sizes: [("i1".into(), 42)].into(),
+                listing: [("i1".into(), vec!["a.faa".into()])].into(),
+            },
         }),
         Msg::Settle(SettleArgs { promise: "p1".into(), provider: "capella".into(), outcome: Outcome::Broken { message: "exit 1".into() } }),
         Msg::Award(AwardArgs { promise: "p1".into(), set }),
