@@ -159,7 +159,9 @@ for name in "${ORDER[@]}"; do
 
   py="$PY" pypath="$src:$COMP"
   if [ -n "${PLUGIN_ENVS[$name]:-}" ]; then
-    py="$conda_root/envs/${PLUGIN_ENVS[$name]}/bin/python" pypath=""
+    # The source dir first, so the suite tests this checkout and not the copy
+    # the plugin env installed editable from the deployed workspace.
+    py="$conda_root/envs/${PLUGIN_ENVS[$name]}/bin/python" pypath="$src"
     if [ ! -x "$py" ]; then
       RESULT[$name]="NO ENV"
       continue
