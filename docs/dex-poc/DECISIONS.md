@@ -316,6 +316,9 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - Spot machines: the image persists, so reference databases (GTDB-Tk) always exist and bid as present. Processed data does not survive a stop; the front drops those entries when the machine stops, and disposal of them settles at once.
 - Award to a sleeping spot provider: the front starts the instance from shogun's image; the instance runs the job and reports through the front.
 
+- Revised by `tool-surface`: batching is the provider's business. It may hold until a batch fills under a steady stream, and run several batches at once, one per resource profile (separate arrays).
+- Revised by `tool-surface`: the offer carries default CPU and memory for a contract the provider has not seen; the provider picks the real limits and may trade ETA against core and memory cost. Learning them stays deferred (learned estimates).
+
 **Landed.** This file. Absorbs `providers`.
 
 ## fair-share (2026-11-12)
@@ -332,3 +335,23 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - baitan has no quota or budget system.
 
 **Landed.** This file. The concurrency rule goes into `nextflow`; bid timing goes into `bids`.
+
+## tool-surface (2026-11-12)
+
+**Question.** What is the narrow caller surface, given the 60 s edge timeout and the generated CLI, MCP and HTTP surfaces?
+
+**User's words.** "mcp should prolly skip watch, but CLI can have it, so that agent can set up monitors as needed" / "offer shouldnt take a batch, but the system can operate with batches as optimizations, like when pushing offers to providers"
+
+**Decided.**
+- Caller verbs, each returning at once:
+  - `offer`: one offer set; returns a promise id. Picker and award run in baitan.
+  - `status`: open, awarded (to whom), started, settled; once settled, the facts `(slot id, at, provider)` with true sizes. This is the pollable catch-up state. There is no separate `result`.
+  - `cancel`: withdraws before award; after award, asks the provider to stop, and the promise settles broken.
+  - `dispose`: the direct disposal from `gc`.
+  - `review`: scores per axis for a settled promise, from the checker's own transaction. baitan forwards it to the provider, which keeps it as its record for that contract. It never changes the instance.
+  - `watch`: event stream for promise ids. CLI only, so agents can set up monitors; MCP and HTTP skip it.
+- Provider verbs stay off the caller surface: `register`, `bid`, `started`, `settle`.
+- No manual award; a caller narrows providers with a place type in the offer.
+- Batching is internal to baitan and providers, never in the caller surface.
+
+**Landed.** This file.
