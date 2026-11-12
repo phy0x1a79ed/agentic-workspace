@@ -122,12 +122,14 @@ if (window.__awmChat._v !== 1) {
   // -- Teams: the chat service, with a skype token minted from the MSAL api.spaces token ----
   const T = {how: 'drop', composer: '[data-tid="ckeditor"][contenteditable="true"], [role="textbox"][contenteditable="true"]'};
   T.msal = function (audience) {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!/accesstoken/i.test(k)) continue;
-      let o;
-      try { o = JSON.parse(localStorage.getItem(k)); } catch (e) { continue; }
-      if (o.credentialType === 'AccessToken' && audience.test(o.target || '')) return o;
+    for (const store of [localStorage, sessionStorage]) {
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        if (!/accesstoken/i.test(k)) continue;
+        let o;
+        try { o = JSON.parse(store.getItem(k)); } catch (e) { continue; }
+        if (o.credentialType === 'AccessToken' && audience.test(o.target || '')) return o;
+      }
     }
     throw new Error('no ' + audience.source + ' token in the MSAL cache; is Teams signed in?');
   };
@@ -135,7 +137,7 @@ if (window.__awmChat._v !== 1) {
     const now = Date.now() / 1000;
     if (!force && T._auth && T._auth.exp - 120 > now) return T._auth;
     const sp = T.msal(/api\.spaces\.skype\.com/);
-    const r = await fetch('https://teams.microsoft.com/api/authsvc/v1.0/authz', {method: 'POST', headers: {Authorization: 'Bearer ' + sp.secret}});
+    const r = await fetch(location.origin + '/api/authsvc/v1.0/authz', {method: 'POST', headers: {Authorization: 'Bearer ' + sp.secret}});
     if (!r.ok) throw new Error('teams authz: ' + r.status);
     const az = await r.json();
     const tok = az.tokens || {};
@@ -195,7 +197,7 @@ if (window.__awmChat._v !== 1) {
     return out;
   };
   T.url = async function (id) {
-    return 'https://teams.microsoft.com/l/chat/' + encodeURIComponent(id) + '/0';
+    return location.origin + '/l/chat/' + encodeURIComponent(id) + '/0';
   };
   C.teams = T;
 
@@ -216,6 +218,15 @@ if (window.__awmChat._v !== 1) {
         }
       }]);
       chunks.pop();
+    }
+    if (!D._token) {
+      // Discord hides window.localStorage; a fresh iframe's copy still reads the saved token.
+      try {
+        const f = document.body.appendChild(document.createElement('iframe'));
+        const t = f.contentWindow.localStorage.getItem('token');
+        f.remove();
+        if (t) D._token = JSON.parse(t);
+      } catch (e) { /* no token saved */ }
     }
     if (!D._token) throw new Error('no Discord token in the page; is Discord signed in?');
     return D._token;

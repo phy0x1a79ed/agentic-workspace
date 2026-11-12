@@ -14,14 +14,14 @@ type R = Result<Value, VerbError>;
 pub struct Tab {
     hub: Hub,
     pub site: String,
-    /// The host the tab is on once signed in. Anywhere else, such as a sign-in page, the page
+    /// The hosts the tab is on once signed in. Anywhere else, such as a sign-in page, the page
     /// scripts are not run.
-    host: &'static str,
+    hosts: &'static [&'static str],
 }
 
 impl Tab {
-    pub fn new(hub: Hub, site: &str, host: &'static str) -> Tab {
-        Tab { hub, site: site.to_string(), host }
+    pub fn new(hub: Hub, site: &str, hosts: &'static [&'static str]) -> Tab {
+        Tab { hub, site: site.to_string(), hosts }
     }
 
     pub async fn cdp(&self, method: &str, params: Value) -> R {
@@ -46,9 +46,9 @@ impl Tab {
         let args: Vec<String> = args.iter().map(Value::to_string).collect();
         let off_site = format!("the {} tab is at ' + location.href.split('?')[0] + '; sign in to it through `browser viewer`", self.site);
         let expression = format!(
-            "if (!location.hostname.endsWith({host:?})) throw new Error('{off_site}');\n{prelude}\n(async () => JSON.stringify(await {f}({})))()",
+            "if (!{hosts}.some(h => location.hostname.endsWith(h))) throw new Error('{off_site}');\n{prelude}\n(async () => JSON.stringify(await {f}({})))()",
             args.join(", "),
-            host = self.host
+            hosts = json!(self.hosts)
         );
         let r = self.cdp("Runtime.evaluate", json!({"expression": expression, "awaitPromise": true, "returnByValue": true})).await?;
         if let Some(ex) = r.get("exceptionDetails") {

@@ -134,6 +134,7 @@ API_MANIFEST: dict[str, Any] = {
                 "awm session, prefer signin_url."
             ),
             "params": [],
+            "timeout": 240,
         },
         {
             "name": "signin_url",
@@ -199,7 +200,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "remove", "type": "boolean",
                  "description": "Revoke the grant at path."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "message",
@@ -219,7 +220,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Conversation id, id prefix or name. Omit for "
                                 "the latest."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "new",
@@ -248,7 +249,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Host folders to grant first: \"path\", "
                                 "\"path:ro\" or \"path:rw\" (default ro)."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "read",
@@ -275,7 +276,7 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Keep messages that carry no text, such as "
                                 "tool results. Default false."},
             ],
-            "timeout": 120,
+            "timeout": 240,
         },
         {
             "name": "update_check",
