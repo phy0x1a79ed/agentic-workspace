@@ -6,9 +6,9 @@
 
 ## Current
 
-`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
+`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
 
-Now: `storage`. First question to ask: where do inputs come from and results go (chinook as the results home, altair as a workspace that publishes to chinook, a local workspace per provider for data and dependencies), and how that meets the locator, which sits outside baitan.
+Now: `locator`. First question: the requester fills `(input, at, place)` in the starting state; where does it get that from, and does the first version need a locator at all?
 
 ## Waiting on the user
 
@@ -33,8 +33,7 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `storage`: distributed storage. Results (and maybe inputs) live on chinook in a dedicated folder; altair as a workspace that publishes to chinook; every provider has local workspaces for data and dependencies. Where step 5 pulls inputs from.
-    - `locator`: a service outside baitan that finds instances across nodes.
+  - `locator`: a service outside baitan that finds instances across nodes; the requester uses it to state where inputs are now.
   - `fronting`: altair bids on behalf of providers that cannot run a live service (HPC clusters) or sleep (spot machines for GTDB-Tk and metabuli, images set up by shogun, spun up by altair). Each machine is its own provider and its own bid; a front submits several bids.
   - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. Largely absorbed by `fronting`.
   - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
@@ -75,4 +74,5 @@ None.
 - `deliverable`: named output slots; compute ends at L; delivery is a separate placement step.
 - `cache-identity`: declared property sets; id names, subset match finds; hits are provider bids.
 - `cache-scenarios`: reviews score, never fail; broken promise = never delivered; no invalidation.
+- `storage`: stores are places, placement is an offer; chinook bids placement only; transfer inside the compute bid; requester states current input places.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.

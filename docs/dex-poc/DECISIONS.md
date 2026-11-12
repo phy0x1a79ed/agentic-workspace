@@ -256,3 +256,19 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - So the cache never needs invalidation and never cascades.
 
 **Landed.** Closes the caching walk. Test cases are in journal 3a6c999a.
+
+## storage (2026-11-12)
+
+**Question.** Where do inputs come from and results go (chinook, altair, provider workspaces), and who pays to move inputs to the provider?
+
+**User's words.** "option A, but requester needs to know where the input is now (not necessarily L)"
+
+**Decided.**
+- baitan has no storage concept. A store is a place; putting something there is a placement offer.
+- Results reach chinook only through an explicit final placement step that the requester's adapter appends. There is no default sink.
+- chinook is a provider that bids only on placement steps. Publishing from altair to chinook is one such step.
+- A provider's local workspace (data, dependencies, finished results) is internal to it. Its cache index covers that workspace; baitan never looks inside.
+- Input transfer is inside the compute bid (option A): the provider fetches inputs and prices the move into its estimate.
+- The requester states where each input is now, as `(input, at, place)` facts in the offer set's starting state. The provider prices the move from that place to its own L. L stays unknown to the requester until the award.
+
+**Landed.** This file.
