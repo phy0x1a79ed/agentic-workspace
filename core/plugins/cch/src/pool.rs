@@ -219,10 +219,11 @@ pub(crate) mod testing {
         }
     }
 
-    /// A temporary Claude home holding five sessions: a fresh spare (`warmfresh`), a spare
-    /// somebody renamed and prompted (`adopted`), a claim abandoned before its first prompt
+    /// A temporary Claude home holding five rostered sessions: a fresh spare (`warmfresh`), a
+    /// spare somebody renamed and prompted (`adopted`), a claim abandoned before its first prompt
     /// (`stranded`), the same claim after its process died (`strandeddead`), and a claim that
-    /// has just been made (`claimedfresh`). The newest starts five seconds before the box is made.
+    /// has just been made (`claimedfresh`). A sixth, `rebooted`, is a spare the roster dropped
+    /// when its process died. The newest starts five seconds before the box is made.
     pub struct TestBox {
         _dir: TempDir,
         pub root: PathBuf,
@@ -230,7 +231,7 @@ pub(crate) mod testing {
         pub newest_ms: i64,
     }
 
-    pub const SHORTS: [&str; 5] = ["warmfresh", "adopted", "stranded", "strandeddead", "claimedfresh"];
+    pub const SHORTS: [&str; 6] = ["warmfresh", "adopted", "stranded", "strandeddead", "claimedfresh", "rebooted"];
 
     /// The canonical session id of the box's session `i`.
     pub fn id_of(i: usize) -> String {
@@ -301,6 +302,7 @@ pub(crate) mod testing {
                     }),
                 );
             }
+            ledger.insert(id_of(5), Stage::Spare);
             std::fs::create_dir_all(self.paths.service_dir.as_path()).unwrap();
             std::fs::write(self.paths.ledger_path(), serde_json::to_vec(&ledger).unwrap()).unwrap();
             let roster = json!({"proto": 1, "supervisorPid": std::process::id(), "workers": map});
@@ -323,6 +325,11 @@ pub(crate) mod testing {
             for (short, state) in states {
                 write_json(&self.paths.home.job_state(short), &state);
             }
+            // A spare whose process died with the host: the roster dropped it, its record stayed.
+            let mut rebooted = pristine("marmot", None, &seed);
+            rebooted["sessionId"] = json!("00000000-0000-4000-8000-000000000005");
+            rebooted["state"] = json!("failed");
+            write_json(&self.paths.home.job_state("rebooted"), &rebooted);
         }
 
         /// The pool over this box, with `adjust` applied to its paths first.

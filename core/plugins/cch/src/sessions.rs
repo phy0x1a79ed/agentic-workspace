@@ -164,6 +164,17 @@ impl<'a> Sessions<'a> {
     pub fn load(&self) -> Vec<Session> {
         roster::load(&self.paths.home)
     }
+
+    /// [`Self::load`] plus the dead jobs the roster dropped, which only removal may see. The
+    /// roster's omissions count only while its daemon runs: a stopped daemon's roster omits
+    /// jobs that still have a process.
+    pub fn collectable(&self) -> Vec<Session> {
+        let mut all = self.load();
+        if self.daemon_pid().is_some() {
+            all.extend(roster::unlisted(&self.paths.home));
+        }
+        all
+    }
 }
 
 #[cfg(test)]

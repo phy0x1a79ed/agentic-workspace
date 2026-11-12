@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use awm_harness::claude::pty::{self, DaemonError, DaemonLane};
-use awm_harness::claude::trust;
+use awm_harness::claude::{pins, trust};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Instant};
 
@@ -165,6 +165,9 @@ where
     };
     if let Err(exc) = ledger::set(&pool.paths.ledger_path(), &id, Stage::Claimed) {
         tracing::warn!("cx: could not mark {short} claimed: {exc}");
+    }
+    if let Err(exc) = pins::pin(&pool.paths.home, &short).await {
+        tracing::warn!("cx: could not pin {short}: {exc}");
     }
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     tracing::info!(

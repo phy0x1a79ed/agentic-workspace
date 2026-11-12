@@ -435,7 +435,8 @@ async fn a_gone_push_returns_its_lines_and_starts_the_next_agent_with_them() {
 async fn an_agent_that_vanished_gives_way_with_a_notice_unless_the_seat_only_adopted_it() {
     let mut t = T::new(false);
     t.send("task").await;
-    assert_eq!(t.world.w().specs[0]["pin"], true, "a seat's agent is a persistent session");
+    let spec = t.world.w().specs[0].clone();
+    assert_eq!((&spec["pin"], &spec["brief"]), (&json!(true), &json!(false)), "a seat's agent is a persistent session with its own brief");
     assert!(t.world.w().specs[0].get("replaces").is_none());
 
     t.world.w().up.remove("job-1");

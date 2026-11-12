@@ -331,7 +331,7 @@
       "verb": "resume"
     },
     {
-      "description": "Resume each pinned job whose process is gone.",
+      "description": "Resume each seat agent whose process is gone, and stop every other dead pinned job.",
       "params": [],
       "verb": "revive_pinned"
     },
@@ -529,13 +529,13 @@
           "type": "boolean"
         },
         {
-          "description": "Pin the job, so the daemon's idle retirement passes it over. A pinned job is a kept session: stopping it unpins it and removes it with `claude rm`.",
+          "description": "Pin the job, so the daemon's idle retirement passes it over. Default true. Stopping a pinned job unpins it and removes it with `claude rm`.",
           "name": "pin",
           "required": false,
           "type": "boolean"
         },
         {
-          "description": "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true. A pinned start never gets it.",
+          "description": "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true.",
           "name": "brief",
           "required": false,
           "type": "boolean"

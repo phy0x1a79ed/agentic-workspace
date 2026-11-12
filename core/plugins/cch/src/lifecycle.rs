@@ -633,7 +633,7 @@ pub fn parse(args: &Value) -> Result<Spec, Refused> {
     let restricted = flag(given("restricted"), "restricted")?;
     let strict_mcp = flag(given("strict_mcp"), "strict_mcp")?;
     let remote_control = remote_control(given("remote_control"), &name)?;
-    let pin = flag(given("pin"), "pin")?;
+    let pin = given("pin").is_none() || flag(given("pin"), "pin")?;
     let tags = tag_list(given("tags"))?;
     Ok(Spec {
         project,
@@ -657,7 +657,7 @@ pub fn parse(args: &Value) -> Result<Spec, Refused> {
         strict_mcp,
         remote_control,
         pin,
-        brief: brief != Some(false) && !pin,
+        brief: brief != Some(false),
         started_by,
         replaces,
         tags,
@@ -2663,7 +2663,7 @@ mod tests {
             "project": "awm", "scope": "demo", "lobby": false,
             "cwd": w.projects().join("awm/demo").display().to_string(),
             "attach": format!("claude attach {}", chosen_job(&w)), "parent": id_of(PARENT_JOB), "mode": "rep",
-            "pinned": false, "link": null, "link_reason": out["link_reason"],
+            "pinned": true, "link": null, "link_reason": out["link_reason"],
         });
         assert_eq!(out, expected);
         let rec = read_lineage(&w.paths, &chosen_id(&w)).unwrap();

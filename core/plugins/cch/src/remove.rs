@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use awm_harness::claude::cli::{RunError, Runner};
+use awm_harness::claude::roster;
 use serde::Serialize;
 
 use crate::ledger;
@@ -43,7 +44,7 @@ pub fn plan<P: Processes, T: Terminals>(pool: &Pool<P, T>, now: Option<f64>) -> 
     let s = pool.sessions();
     let version = s.binary_version();
     let attached = pool.terminals.attached();
-    s.load()
+    s.collectable()
         .into_iter()
         .filter(|x| s.removable(x, version.as_deref(), now, Some(&attached)))
         .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session_id: x.canonical(), short: x.short, name: x.name, removed: None })
@@ -68,7 +69,7 @@ fn still_removable<P: Processes, T: Terminals>(pool: &Pool<P, T>, short: &str) -
     let s = pool.sessions();
     let version = s.binary_version();
     let attached = pool.terminals.attached();
-    s.load().iter().any(|x| x.short == short && s.removable(x, version.as_deref(), None, Some(&attached)))
+    s.collectable().iter().any(|x| x.short == short && s.removable(x, version.as_deref(), None, Some(&attached)))
 }
 
 /// Carry out the plan, re-checking each session as it comes up, with `claude rm` run by `runner`.
@@ -93,13 +94,15 @@ where
     done
 }
 
-/// Drop the ledger entries of sessions the roster no longer lists. An empty roster drops
-/// nothing: it is what a stopped daemon looks like.
+/// Drop the ledger entries whose job directory is gone. A dead session keeps its entry until
+/// `claude rm` succeeds, so a failed removal is retried on the next tick. Finding no job at all
+/// drops nothing.
 fn forget_the_gone<P: Processes, T: Terminals>(pool: &Pool<P, T>) {
-    let live: BTreeSet<String> =
-        pool.sessions().load().iter().filter_map(|s| s.canonical()).collect();
-    if !live.is_empty() {
-        ledger::retain(&pool.paths.ledger_path(), |k| live.contains(k));
+    let home = &pool.paths.home;
+    let kept: BTreeSet<String> =
+        roster::load(home).into_iter().chain(roster::unlisted(home)).filter_map(|s| s.canonical()).collect();
+    if !kept.is_empty() {
+        ledger::retain(&pool.paths.ledger_path(), |k| kept.contains(k));
     }
 }
 
@@ -140,19 +143,23 @@ mod tests {
         let b = TestBox::new();
         let items: std::collections::HashMap<String, Removal> =
             plan(&b.pool(), Some(b.a_minute_on())).into_iter().map(|i| (i.short.clone(), i)).collect();
-        assert_eq!(items.keys().cloned().collect::<HashSet<_>>(), HashSet::from(["strandeddead".into(), "stranded".into()]));
+        assert_eq!(
+            items.keys().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["strandeddead".into(), "stranded".into(), "rebooted".into()])
+        );
         assert_eq!(items["strandeddead"].why, "the process is gone");
+        assert_eq!(items["rebooted"].why, "the process is gone", "a spare the roster dropped");
         assert!(items["stranded"].why.contains("never prompted"));
     }
 
     #[test]
-    fn test_the_ledger_forgets_a_session_the_roster_no_longer_lists() {
+    fn test_the_ledger_forgets_a_session_only_once_its_job_is_gone() {
         let b = TestBox::new();
         let gone = ledger::key("11111111-1111-4111-8111-111111111111").unwrap();
         ledger::set(&b.paths.ledger_path(), &gone, ledger::Stage::Spare).unwrap();
         forget_the_gone(&b.pool());
         let held = ledger::load(&b.paths.ledger_path());
-        assert!(!held.contains_key(&gone) && held.len() == 5);
+        assert!(!held.contains_key(&gone) && held.len() == 6, "the dropped spare's entry outlives its process");
     }
 
     /// Answers `claude rm` with success, recording each argv.
@@ -175,8 +182,9 @@ mod tests {
         let by: std::collections::HashMap<_, _> = done.iter().map(|d| (d.short.as_str(), d.removed)).collect();
         assert_eq!(by["stranded"], Some(true));
         assert_eq!(by["strandeddead"], Some(false));
+        assert_eq!(by["rebooted"], Some(true));
         let calls = rm.0.lock().unwrap().clone();
         assert!(calls.iter().all(|c| c[1] == "rm" && c[0].ends_with("claude")));
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 3);
     }
 }
