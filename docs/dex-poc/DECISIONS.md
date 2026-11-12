@@ -189,7 +189,7 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 **Decided.**
 - Every piece of work is an offer: compute, data transfer, deployment, publishing. There is one kind of offer.
 - The subject is a location-free who; its lineage identity stays pure. A fact is a triple, e.g. `(subject, at, place)`. An offer asks for facts to become true; offers are not pure, whos are.
-- Facts are organised as knowledge triples. Each element is a metasmith-style type set from its own namespace: subjects from the data and dependency namespaces, predicates from a relation namespace (`at`, `derived_from`, `reviewed_by`), objects from the place namespace or data again. A place type (e.g. any Slurm scratch with 1 TB free) abstracts location.
+- Facts are organised as knowledge triples. Each element is a metasmith-style type set from its own namespace: subjects from the data and dependency namespaces, predicates from a relation namespace (`at`, `derived_from`, `reviewed_by`), objects from the place namespace or data again. A place type (e.g. any Slurm scratch with 1 TB free) abstracts location. Revised by `fronting`: a place is a provider, not a node; a place type is a type set over provider properties.
 - A cache hit is a fact already true. Moving versus recomputing is decided by bids.
 - The unit of work is an offer set: a short chain of steps sharing a place variable L, e.g. move the inputs to L, then run at L. It is biddable when its starting state is true. One provider bids on the whole set and is the binding of L; it may subcontract moves.
 - What-planning is done ahead of time by the requester (metasmith's solver, a compiled Nextflow plan). The adapter (e.g. the baitan Nextflow executor) builds offer sets mechanically from a task's inputs and their current places. The market does where-planning. Providers plan preconditions one level deep and price them into the bid.
@@ -264,7 +264,7 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 **User's words.** "option A, but requester needs to know where the input is now (not necessarily L)"
 
 **Decided.**
-- baitan has no storage concept. A store is a place; putting something there is a placement offer.
+- baitan has no storage concept. A store is a place; putting something there is a placement offer. Revised by `fronting`: places are providers, so chinook and altair's workspace are providers.
 - Results reach chinook only through an explicit final placement step that the requester's adapter appends. There is no default sink.
 - chinook is a provider that bids only on placement steps. Publishing from altair to chinook is one such step.
 - A provider's local workspace (data, dependencies, finished results) is internal to it. Its cache index covers that workspace; baitan never looks inside.
@@ -300,3 +300,20 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - The caller names only what it wants gone, so reference databases and build tools stay unless named.
 
 **Landed.** This file.
+
+## fronting (2026-11-12)
+
+**Question.** How does a front (altair) bid for backends that cannot run a live service (Slurm clusters, sleeping spot machines), and what does an award trigger?
+
+**User's words.** "slurm commands need to be cached and time blocked (no more than 1 call per min, including sbatch for jobs). Also, it'll be the front's job to manage arrays (scheduling)" / "providers can register at a node and how they fullfill requests are their business. This also means that nodes aren't really improtant here. the locations are really providers." / "for gtdbtk, we'd make the image persist so that the reference always exists. data that is processed doesnt survive though"
+
+**Decided.**
+- A provider registers at a node. How it fulfils requests is its own business; baitan sees only bids, awards and settles.
+- Nodes drop out of the model. Locations are providers: `(x, at, p)` names a provider, and L binds to the awarded provider.
+- A front is just a provider host that registers several providers (one per cluster or spot machine), each with its own bids.
+- A Slurm front caches every Slurm command's output and makes at most one call per minute per cluster, `sbatch` included. Bids use the cached queue and fair-share state. The front batches awarded work into job arrays and owns that scheduling.
+- The front tracks each backend's holdings from the awards and settles that pass through it.
+- Spot machines: the image persists, so reference databases (GTDB-Tk) always exist and bid as present. Processed data does not survive a stop; the front drops those entries when the machine stops, and disposal of them settles at once.
+- Award to a sleeping spot provider: the front starts the instance from shogun's image; the instance runs the job and reports through the front.
+
+**Landed.** This file. Absorbs `providers`.

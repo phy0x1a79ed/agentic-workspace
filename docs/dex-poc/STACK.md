@@ -6,9 +6,9 @@
 
 ## Current
 
-`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage, locator, gc. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
+`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage, locator, gc, fronting, providers. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
 
-Now: `fronting`. First question: how a front knows a backend's state (queue, cache) to bid for it without a service on the backend, and what an award triggers.
+Now: `fair-share`. First question: is fair-share only Slurm account quotas (a cost axis in the front's bid), or also fairness among baitan's own requesters?
 
 ## Waiting on the user
 
@@ -33,8 +33,6 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `fronting`: altair bids on behalf of providers that cannot run a live service (HPC clusters) or sleep (spot machines for GTDB-Tk and metabuli, images set up by shogun, spun up by altair). Each machine is its own provider and its own bid; a front submits several bids.
-  - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. Largely absorbed by `fronting`.
   - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
   - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
   - `bids`: what a bid vector holds, how bids move as a provider reaches capacity, the scoring algorithm.
@@ -76,4 +74,6 @@ None.
 - `storage`: stores are places, placement is an offer; chinook bids placement only; transfer inside the compute bid; requester states current input places.
 - `locator`: not needed; consumers know their inputs and request outputs moved back.
 - `gc`: caller sends a disposal request after the job, straight to the holder, no bid round.
+- `fronting`: providers register at a node and fulfil as they like; locations are providers; Slurm calls cached, ≤1/min, front owns arrays; spot images persist references, not data.
+- `providers`: absorbed by `fronting`.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
