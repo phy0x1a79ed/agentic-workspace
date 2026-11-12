@@ -277,8 +277,11 @@ impl Inner {
             Some(d) => d.join(cmd),
             None => PathBuf::from(cmd),
         };
+        // sockeye refuses an sbatch run from /arc/home, so every call runs from scratch.
+        tokio::fs::create_dir_all(&self.cfg.scratch).await?;
         let out = tokio::process::Command::new(prog)
             .args(args)
+            .current_dir(&self.cfg.scratch)
             .stdin(std::process::Stdio::null())
             .output()
             .await?;
