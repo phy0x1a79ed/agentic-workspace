@@ -330,8 +330,14 @@ any verb of any tool from it. The bridge ships an explicit
 
 Claude sees only what it is granted. Grants are consent rows plus live bind
 mounts, persisted and replayed at boot, and each carries a mode — `ro` or `rw`.
-Grant the workspace read-only with `awm science grants --path <p> --mode ro`;
-called with no path the verb lists what a node already has.
+Grant a folder with `awm science grants --path <p> --mode ro`. Called with no
+path, the verb lists what a node already has. Give an existing grant a new
+`--mode` to switch it in place. Pass `--remove` to revoke it. `science new`
+takes `mounts` (`"path"`, `"path:ro"` or `"path:rw"`, default `ro`) and grants
+them before the first turn. Grants are global to the daemon, so every
+conversation on the node sees a mount, and it lasts until `grants` removes it.
+Read-only may be anything. Keep read-write small and local: `science grants`
+refuses a writable grant under `/mnt/`, where the scan crawls a WSL drive.
 
 | Path | Mode |
 |---|---|
@@ -357,11 +363,13 @@ Five things that bite:
   on its first command. `projects/` is far past the cap. `science grants`
   refuses an overlapping or oversized writable grant. A grant added in the UI
   bypasses that check.
-- **A stale judgement outlives the grant.** Removing the overlap is not enough.
-  Stop the daemon, delete the read grant's record from
-  `sandbox-grant-scans.json`, then start it again. The restart also clears the
-  in-memory "was writable" mark.
-
+- **A stale judgement outlives the grant.** A record in
+  `sandbox-grant-scans.json` outlives its grant, so a removed or downgraded
+  grant stays judged. Every stop this service makes (`stop`, `restart`, the
+  idle stop) lists the grants while the daemon is up. Once it is down, the
+  service drops each record whose grant is no longer `rw`.
+  A stop also clears the in-memory "was writable" mark. A stop made outside
+  this service prunes nothing.
 - **Symlinks do not work.** A grant root must reach the path symlink-free, so a
   curated directory of symlinks into the workspace is refused. Grant real
   directories — which also means `.awm/data` (a symlink) is not grantable; grant

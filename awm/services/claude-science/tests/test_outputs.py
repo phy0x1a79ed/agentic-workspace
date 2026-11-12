@@ -133,3 +133,8 @@ def test_a_rw_grant_past_the_scan_cap_is_refused(tmp_path, monkeypatch):
         (tmp_path / f"d{i}").mkdir()
     with pytest.raises(ValueError, match="more than 5 folders"):
         outputs.check_writable_grant(str(tmp_path), [])
+
+
+def test_a_rw_grant_on_a_wsl_drive_is_refused():
+    with pytest.raises(ValueError, match="WSL drive"):
+        outputs.check_writable_grant("/mnt/d/scratch", [])
