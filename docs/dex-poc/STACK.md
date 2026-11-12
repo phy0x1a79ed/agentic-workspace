@@ -6,7 +6,7 @@
 
 ## Current
 
-`version-policy`. First question: how baitan handles mismatched contract versions between requesters, the market and providers. Deferred items and test cases for baitan: journal 3a6c999a.
+`transport-survey`. First question: what carries baitan's envelope between the market, awm peers, Slurm fronts and spot machines, and does an existing awm path already push events (subscribe)? Deferred items and test cases for baitan: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -31,7 +31,6 @@ Nothing.
 
 ## Stack
 
-- `version-policy`: mismatched baitan contract versions across requesters, market and providers.
 - `transport-survey`: baitan's carrier; do awm peer links give subscribe; what reaches Slurm fronts and spot machines.
 - `core-boundary`: baitan's market core against the awm adapter; whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate.
 - `handoff`: the brief for the build session, written from the findings
@@ -67,6 +66,7 @@ None.
 - `build-repro`: dropped; identity is declared.
 - `nextflow`: custom executor at task level; manifest-only work dirs; three dev layers (task hash, threaded declarations, axes and reviews), all built.
 - `compute-market`: baitan; all child topics closed.
+- `version-policy`: declared version ranges at register; no translation; `UnsupportedVersion` to requesters.
 - `stack-prune`: dropped first-test, swap, coexistence.
 - `envelope-mapping`: dex dropped; baitan takes its envelope with `replyTo` and reply selectors.
 - `redundancy`: no duplicates; sign of life via `status`; fresh round without the failed provider; no deadlines, hangs are the provider's; per-axis bid error and success rate correct the picker.

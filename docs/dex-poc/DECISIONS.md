@@ -442,3 +442,16 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 **Decided.** Drop `first-test`, `swap` and `coexistence` (dex module port, hot swap, session rollout). Keep `version-policy` (baitan's contract versions), `transport-survey` (baitan's carrier and event push), `core-boundary` (baitan's crate split and generated surfaces) and `handoff`.
 
 **Landed.** `STACK.md`.
+
+## version-policy (2026-11-12)
+
+**Question.** How baitan handles mismatched contract versions between requesters, the market and providers.
+
+**User's words.** "explicit version opt in and declarations are safest"
+
+**Decided.** No translation, no `accept` list, no upcasters.
+- Providers declare the versions they speak at `register`. An offer goes only to providers whose range holds its `v`; others are ineligible, not an error. An empty eligible set is `NoBids`.
+- A requester's `v` the market does not speak gets `raise UnsupportedVersion {supported: [min, max]}`. A reply carries the `v` of the message it answers.
+- The market speaks a range and keeps an old version while a registered party uses it.
+
+**Landed.** This file.
