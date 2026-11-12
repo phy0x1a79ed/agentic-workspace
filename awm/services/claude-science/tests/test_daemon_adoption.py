@@ -286,6 +286,7 @@ def test_launch_goes_into_a_user_manager_unit_when_there_is_one(monkeypatch):
     # the very unit that is the point of this path.
     assert "--detached" not in launch
     assert "--property=Restart=no" in launch, "systemd must not race our supervision"
+    assert "--property=TimeoutStopSec=10" in launch, "the daemon ignores SIGTERM; 90 s default outlasts callers"
 
 
 def test_the_name_is_cleared_before_it_is_claimed(monkeypatch):
