@@ -243,3 +243,16 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - Two doors (the same bytes brought in twice) hit only if both imports declare the same set; otherwise it is an accepted miss.
 
 **Open.** Scenario 9: a cached result that fails its review.
+
+## cache-scenarios (2026-11-12)
+
+**Question.** Walk the caching scenarios one at a time to confirm the caches stay dumb. Scenarios 1–3 and 6 were walked under `dependencies`; 4, 5, 7 and 8 under `cache-identity`. Last: what happens when a cached result fails its review?
+
+**User's words.** "reviews cant fail... it only scores the result against the criteria of the bid. a broken promise means the results were never delivered"
+
+**Decided.**
+- A review never fails a result. It scores the result against the offer's criteria and feeds the provider's score for that contract. The result stays cached either way.
+- A broken promise means the result was never delivered (the offer settled with an error, or never settled). No instance is created, so nothing enters a cache and nothing downstream can depend on it.
+- So the cache never needs invalidation and never cascades.
+
+**Landed.** Closes the caching walk. Test cases are in journal 3a6c999a.
