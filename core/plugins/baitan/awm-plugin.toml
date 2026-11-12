@@ -1,0 +1,18 @@
+# baitan (摆摊): the compute market. The service hosts the market, dials the provider links in
+# ~/.baitan/baitan.toml and serves the caller verbs to agents. Design: docs/dex-poc/DECISIONS.md.
+[plugin]
+name = "baitan"
+version = "0.1.0"
+
+[[service]]
+name = "baitan"
+
+[[tool]]
+name = "baitan"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

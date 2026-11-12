@@ -1,0 +1,29 @@
+[package]
+name = "awm-plugin-baitan"
+description = "The baitan binary: market, provider, front, connect and caller surfaces; the awm feature adds the awm plugin mode."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "baitan"
+path = "src/main.rs"
+
+[features]
+default = ["awm"]
+awm = ["dep:awm-plugin-sdk"]
+
+[dependencies]
+baitan = { path = "../../crates/baitan" }
+awm-plugin-sdk = { workspace = true, optional = true }
+anyhow.workspace = true
+baitan-proto = { path = "../../crates/baitan-proto" }
+baitan-market = { path = "../../crates/baitan-market" }
+clap.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

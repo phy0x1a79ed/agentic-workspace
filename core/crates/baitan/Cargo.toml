@@ -1,0 +1,20 @@
+[package]
+name = "baitan"
+description = "baitan roles and caller surfaces: market server, provider, front, connect, CLI, MCP and HTTP."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+baitan-proto = { path = "../baitan-proto" }
+baitan-carrier = { path = "../baitan-carrier" }
+baitan-market = { path = "../baitan-market" }
+baitan-provider = { path = "../baitan-provider" }
+baitan-slurm = { path = "../baitan-slurm" }
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
