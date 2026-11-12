@@ -89,6 +89,7 @@ START_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_START_TIMEOUT_S", "90"))
 #: How long to keep asking a running daemon for a sign-in nonce. The daemon
 #: answers `status` within seconds of launch but cannot mint until its boot
 #: finishes, which took two minutes on altair's slow disk.
+STOP_GRACE_S = 10
 MINT_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_MINT_TIMEOUT_S", "180"))
 
 #: Sentinel names inside the data dir that mean "first-run provisioning has
@@ -427,12 +428,15 @@ class Supervisor:
             for verb in ("stop", "reset-failed"):
                 subprocess.run(
                     ["systemctl", "--user", verb, TRANSIENT_UNIT],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, timeout=STOP_GRACE_S + 15,
                     env={**os.environ, **bus},
                 )
             launch = [
                 "systemd-run", "--user", "--quiet", "--collect",
                 f"--unit={TRANSIENT_UNIT}", "--property=Restart=no",
+                # The daemon ignores SIGTERM, so systemd's default 90 s grace
+                # outlasts every caller's timeout before the SIGKILL lands.
+                f"--property=TimeoutStopSec={STOP_GRACE_S}",
                 *(f"--setenv={k}={v}" for k, v in env_note.items()),
                 "--", *serve,
             ]
