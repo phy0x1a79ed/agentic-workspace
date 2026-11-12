@@ -20,6 +20,8 @@ use tokio::time::{sleep, sleep_until, Instant};
 const GATE: Duration = Duration::from_secs(60);
 /// A queue waits this long after its first job so a burst of launches lands in one array.
 const HOLD: Duration = Duration::from_secs(2);
+/// How long a task may stay unlisted by `squeue` with no `exit` before it counts as failed.
+const MISSING_GRACE: Duration = Duration::from_secs(150);
 /// Interval of the `exit` file check while jobs are outstanding.
 const EXIT_POLL: Duration = Duration::from_secs(10);
 /// Queue wait at fair-share factor 0; the wait scales with `(1 - factor)^2`.
@@ -85,6 +87,8 @@ struct State {
     next_ok: Option<Instant>,
     calls: Vec<(Instant, String)>,
     batches: u64,
+    /// When `squeue` first stopped listing a task that has no `exit` yet.
+    missing: HashMap<PromiseId, Instant>,
 }
 
 struct Inner {
@@ -398,19 +402,26 @@ impl Inner {
             }
         };
         // A task Slurm no longer lists that left no `exit` (walltime, OOM, node loss) is a
-        // failed job; one with an `exit` is reported by the exit watcher.
+        // failed job; one with an `exit` is reported by the exit watcher. squeue can omit a
+        // task just submitted, and a compute node's `exit` reaches the login node late on a
+        // shared filesystem, so a task fails only once it stays missing past the grace.
+        let now = Instant::now();
+        let mut missing = HashMap::new();
         for (promise, workdir) in gone {
             if tokio::fs::try_exists(workdir.join("exit")).await.unwrap_or(false) {
                 continue;
             }
             let mut st = self.st.lock().unwrap();
-            if st.jobs.remove(&promise).is_some() {
+            let since = st.missing.get(&promise).copied().unwrap_or(now);
+            if now < since + MISSING_GRACE {
+                missing.insert(promise, since);
+            } else if st.jobs.remove(&promise).is_some() {
                 self.persist(&st);
                 let _ = self.done.send((promise, -1));
             }
         }
         let mut st = self.st.lock().unwrap();
-        let now = Instant::now();
+        st.missing = missing;
         st.wanted &= stale(st.squeue.as_ref().map(|c| c.0), now) || stale(st.share.as_ref().map(|c| c.0), now);
     }
 
