@@ -41,14 +41,20 @@ pub struct Removal {
 /// The terminals are read once for the whole plan: re-reading them per session lets the set
 /// change underneath a single plan.
 pub fn plan<P: Processes, T: Terminals>(pool: &Pool<P, T>, now: Option<f64>) -> Vec<Removal> {
+    let (version, sessions) = removable(pool, now);
+    sessions
+        .into_iter()
+        .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session_id: x.canonical(), short: x.short, name: x.name, removed: None })
+        .collect()
+}
+
+/// The binary version, and every session that may be deleted at `now`.
+fn removable<P: Processes, T: Terminals>(pool: &Pool<P, T>, now: Option<f64>) -> (Option<String>, Vec<Session>) {
     let s = pool.sessions();
     let version = s.binary_version();
     let attached = pool.terminals.attached();
-    s.collectable()
-        .into_iter()
-        .filter(|x| s.removable(x, version.as_deref(), now, Some(&attached)))
-        .map(|x| Removal { why: why(pool, &x, version.as_deref(), now), session_id: x.canonical(), short: x.short, name: x.name, removed: None })
-        .collect()
+    let found = s.collectable().into_iter().filter(|x| s.removable(x, version.as_deref(), now, Some(&attached))).collect();
+    (version, found)
 }
 
 fn why<P: Processes, T: Terminals>(pool: &Pool<P, T>, s: &Session, version: Option<&str>, now: Option<f64>) -> String {
@@ -66,10 +72,7 @@ fn why<P: Processes, T: Terminals>(pool: &Pool<P, T>, s: &Session, version: Opti
 }
 
 fn still_removable<P: Processes, T: Terminals>(pool: &Pool<P, T>, short: &str) -> bool {
-    let s = pool.sessions();
-    let version = s.binary_version();
-    let attached = pool.terminals.attached();
-    s.collectable().iter().any(|x| x.short == short && s.removable(x, version.as_deref(), None, Some(&attached)))
+    removable(pool, None).1.iter().any(|x| x.short == short)
 }
 
 /// Carry out the plan, re-checking each session as it comes up, with `claude rm` run by `runner`.

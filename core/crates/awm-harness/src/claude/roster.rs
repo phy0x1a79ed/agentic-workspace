@@ -210,7 +210,10 @@ impl Job {
             pty_sock: py_opt_str(w.get("ptySock")),
             pty_auth: py_opt_str(w.get("ptyAuth")),
             dec_modes: int_items(w.get("decModes")),
-            session_id: live.and_then(|r| py_opt_str(r.get("sessionId"))).or_else(|| py_opt_str(w.get("sessionId"))),
+            session_id: live
+                .and_then(|r| py_opt_str(r.get("sessionId")))
+                .or_else(|| py_opt_str(w.get("sessionId")))
+                .or_else(|| py_opt_str(st.get("sessionId"))),
             source: py_opt_str(dispatch.get("source")),
             seed_name: py_opt_str(seed.get("name")),
             bridge_session_id: py_truthy_str(st.get("bridgeSessionId")),
@@ -250,11 +253,7 @@ pub fn unlisted(home: &ClaudeHome) -> Vec<Job> {
         .filter(|d| d.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|d| d.file_name().into_string().ok())
         .filter(|short| !listed.contains_key(short))
-        .map(|short| {
-            let mut job = Job::from_worker(&short, &Value::Null, home);
-            job.session_id = py_opt_str(read_json(&home.job_state(&short)).get("sessionId"));
-            job
-        })
+        .map(|short| Job::from_worker(&short, &Value::Null, home))
         .filter(|j| j.has_record)
         .collect()
 }
