@@ -48,6 +48,10 @@ impl Provider {
                 declared.insert("type".into(), t);
             }
             let id = instance_id(&declared);
+            if st.instances.get(&id).is_some_and(|n| n.path == path) {
+                ids.push(id);
+                continue;
+            }
             let listing = if path.is_dir() { walk_files(&path) } else { vec![] };
             st.index.drop_ids(std::slice::from_ref(&id));
             st.index.insert(Entry {
@@ -55,7 +59,7 @@ impl Provider {
                 slots: BTreeMap::from([(item.slot.unwrap_or_else(|| "out".into()), id.clone())]),
                 flight: None,
             });
-            st.instances.insert(id.clone(), Instance { path, listing, props: Some(declared) });
+            st.instances.insert(id.clone(), Instance::new(path, listing));
             ids.push(id);
         }
         self.inner.persist(&st);

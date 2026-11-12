@@ -86,7 +86,11 @@ pub struct Listener(UnixListener);
 
 /// Binds `path`, replacing a stale socket file.
 pub fn unix_listen(path: impl AsRef<Path>) -> std::io::Result<Listener> {
-    let _ = std::fs::remove_file(path.as_ref());
+    let path = path.as_ref();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _ = std::fs::remove_file(path);
     UnixListener::bind(path).map(Listener)
 }
 

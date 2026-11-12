@@ -35,6 +35,8 @@ fn caller_name() -> String {
 
 pub async fn run(m: ArgMatches) -> anyhow::Result<()> {
     let (name, sub) = m.subcommand().expect("subcommand required");
+    // A dialled role's stderr reaches the market host's log; stdout carries the link.
+    tracing_subscriber::fmt().with_writer(std::io::stderr).with_ansi(false).init();
     match name {
         "serve" => roles::serve(baitan_market::Market::new("market"), roles::MarketConfig::load()?).await,
         "provider" => roles::provider(sub.get_one::<PathBuf>("config").cloned()).await,

@@ -20,6 +20,8 @@ use tokio::time::{sleep, sleep_until, Instant};
 const GATE: Duration = Duration::from_secs(60);
 /// A queue waits this long after its first job so a burst of launches lands in one array.
 const HOLD: Duration = Duration::from_secs(2);
+/// How long a task may stay unlisted by `squeue` with no `exit` before it counts as failed.
+const MISSING_GRACE: Duration = Duration::from_secs(150);
 /// Interval of the `exit` file check while jobs are outstanding.
 const EXIT_POLL: Duration = Duration::from_secs(10);
 /// Queue wait at fair-share factor 0; the wait scales with `(1 - factor)^2`.
@@ -42,6 +44,9 @@ pub struct SlurmConfig {
     /// Directory of the Slurm binaries; the plain command names on `PATH` when `None`.
     #[serde(default)]
     pub bin_dir: Option<PathBuf>,
+    /// The cluster schedules whole nodes and refuses `--mem` (trillium), so arrays name no CPU or memory.
+    #[serde(default)]
+    pub whole_node: bool,
 }
 
 type Profile = (u32, u64);
@@ -81,7 +86,8 @@ struct State {
     wanted: bool,
     next_ok: Option<Instant>,
     calls: Vec<(Instant, String)>,
-    batches: u64,
+    /// When `squeue` first stopped listing a task that has no `exit` yet.
+    missing: HashMap<PromiseId, Instant>,
 }
 
 struct Inner {
@@ -240,14 +246,7 @@ impl Inner {
                 Slot::Queued => None,
             })
             .collect();
-        let path = self.saved_path();
-        let write = || -> anyhow::Result<()> {
-            std::fs::create_dir_all(path.parent().unwrap())?;
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&saved)?)?;
-            Ok(std::fs::rename(tmp, &path)?)
-        };
-        if let Err(e) = write() {
+        if let Err(e) = baitan_provider::backend::write_json(&self.saved_path(), &saved) {
             tracing::warn!("persist jobs: {e}");
         }
     }
@@ -274,8 +273,11 @@ impl Inner {
             Some(d) => d.join(cmd),
             None => PathBuf::from(cmd),
         };
+        // sockeye refuses an sbatch run from /arc/home, so every call runs from scratch.
+        tokio::fs::create_dir_all(&self.cfg.scratch).await?;
         let out = tokio::process::Command::new(prog)
             .args(args)
+            .current_dir(&self.cfg.scratch)
             .stdin(std::process::Stdio::null())
             .output()
             .await?;
@@ -295,15 +297,8 @@ impl Inner {
     }
 
     async fn submit(&self, idx: usize) {
-        let (q, n) = {
-            let mut st = self.st.lock().unwrap();
-            st.batches += 1;
-            (st.queues.remove(idx), st.batches)
-        };
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        let dir = self.cfg.scratch.join(&self.cfg.cluster).join(format!("batch-{stamp}-{n}"));
+        let q = self.st.lock().unwrap().queues.remove(idx);
+        let dir = self.cfg.scratch.join(&self.cfg.cluster).join(format!("batch-{}", baitan_proto::new_id()));
         let list: String = q.jobs.iter().map(|j| format!("{}\n", j.workdir.display())).collect();
         let list_path = dir.join("workdirs");
         let script = format!(
@@ -321,15 +316,16 @@ impl Inner {
             tracing::warn!("batch files: {e}");
             return self.fail(q.jobs);
         }
-        let mut args = vec![
-            format!("--array=0-{}", q.jobs.len() - 1),
-            format!("--cpus-per-task={}", q.profile.0),
-            format!("--mem={}M", q.profile.1),
+        let mut args = vec![format!("--array=0-{}", q.jobs.len() - 1), "--nodes=1".into()];
+        if !self.cfg.whole_node {
+            args.extend([format!("--cpus-per-task={}", q.profile.0), format!("--mem={}M", q.profile.1)]);
+        }
+        args.extend([
             format!("--account={}", self.cfg.account),
             format!("--time={}", self.cfg.walltime),
             "--job-name=baitan".into(),
             format!("--output={}/slurm-%A_%a.out", dir.display()),
-        ];
+        ]);
         if let Some(p) = &self.cfg.partition {
             args.push(format!("--partition={p}"));
         }
@@ -391,19 +387,26 @@ impl Inner {
             }
         };
         // A task Slurm no longer lists that left no `exit` (walltime, OOM, node loss) is a
-        // failed job; one with an `exit` is reported by the exit watcher.
+        // failed job; one with an `exit` is reported by the exit watcher. squeue can omit a
+        // task just submitted, and a compute node's `exit` reaches the login node late on a
+        // shared filesystem, so a task fails only once it stays missing past the grace.
+        let now = Instant::now();
+        let mut missing = HashMap::new();
         for (promise, workdir) in gone {
             if tokio::fs::try_exists(workdir.join("exit")).await.unwrap_or(false) {
                 continue;
             }
             let mut st = self.st.lock().unwrap();
-            if st.jobs.remove(&promise).is_some() {
+            let since = st.missing.get(&promise).copied().unwrap_or(now);
+            if now < since + MISSING_GRACE {
+                missing.insert(promise, since);
+            } else if st.jobs.remove(&promise).is_some() {
                 self.persist(&st);
                 let _ = self.done.send((promise, -1));
             }
         }
         let mut st = self.st.lock().unwrap();
-        let now = Instant::now();
+        st.missing = missing;
         st.wanted &= stale(st.squeue.as_ref().map(|c| c.0), now) || stale(st.share.as_ref().map(|c| c.0), now);
     }
 
