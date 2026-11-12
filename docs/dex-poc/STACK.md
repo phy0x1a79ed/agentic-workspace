@@ -6,9 +6,9 @@
 
 ## Current
 
-`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage, locator, gc, fronting, providers. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
+`compute-market`: baitan (摆摊), a compute market for awm peers, Slurm clusters and spot machines. The user's pressing issue (2026-11-11); evidence in journal 7ab424c3. Closed so far, in `DECISIONS.md`: market-scope, standalone, braavos-offer, metasmith-reuse, promise, mutation, dependencies, deliverable, cache-identity, cache-scenarios, storage, locator, gc, fronting, providers, fair-share. Deferred items and test cases: journal 3a6c999a (tag `deferred`), edited in place as items change.
 
-Now: `fair-share`. First question: is fair-share only Slurm account quotas (a cost axis in the front's bid), or also fairness among baitan's own requesters?
+Now: `tool-surface`. First question: is offer, status, result, cancel, dispose, watch the complete caller surface, and does `offer` take a batch?
 
 ## Waiting on the user
 
@@ -33,12 +33,11 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
   - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
-  - `bids`: what a bid vector holds, how bids move as a provider reaches capacity, the scoring algorithm.
+  - `bids`: what a bid vector holds, how bids move as a provider reaches capacity, the scoring algorithm. A batching provider may delay its bid; how long a requester waits for bids.
   - `redundancy`: with one reliable and one flaky provider, run at least as fast as the reliable one alone, with the flaky one helping occasionally.
   - `build-repro`: do real workloads (kb, lance, musl release) give byte-identical output? E4 tested only a dependency-free crate.
-  - `nextflow`: run compiled Nextflow workflows through the market. Aspirational; last under `compute-market`. Includes test 2 of journal 3a6c999a (checker CheckM must hit the plan's CheckM cache).
+  - `nextflow`: run compiled Nextflow workflows through the market. Aspirational; last under `compute-market`. The executor posts every ready task concurrently (from `fair-share`). Includes test 2 of journal 3a6c999a (checker CheckM must hit the plan's CheckM cache).
 - `envelope-mapping`: map the dex TypeScript kernel's envelope (altair, dex/edge) to `{v, id, from, to, selector, args}`; ask whether both share one envelope.
 - `first-test`: `claude-md-sync` is a candidate after the experiments. One origin per name against C3 is still open.
 - `version-policy`: whether a reply is translated to the caller's version (caller sends an `accept` list; receiver replies in the highest version it can produce, else a structured error).
@@ -76,4 +75,5 @@ None.
 - `gc`: caller sends a disposal request after the job, straight to the holder, no bid round.
 - `fronting`: providers register at a node and fulfil as they like; locations are providers; Slurm calls cached, ≤1/min, front owns arrays; spot images persist references, not data.
 - `providers`: absorbed by `fronting`.
+- `fair-share`: folded into the Slurm front's ETA; time is a common, optional axis; offers posted concurrently.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.

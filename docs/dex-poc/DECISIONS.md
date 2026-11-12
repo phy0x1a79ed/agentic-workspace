@@ -317,3 +317,18 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - Award to a sleeping spot provider: the front starts the instance from shogun's image; the instance runs the job and reports through the front.
 
 **Landed.** This file. Absorbs `providers`.
+
+## fair-share (2026-11-12)
+
+**Question.** How do Slurm fair-use quotas enter the market "as a system"?
+
+**User's words.** "offers are scored [on] axes. one of these axes should prolly be time to completion. It may be used nearly always, but im hesitant to force it on everything. A slurm front provider should take into account fair share in the time estimate for the bid. fairshare -> expected queue time + scheduling consessions (if it wants to batch, for example) -> expected total ETA. A provider that needs to batch may delay a bit before bidding to wait for a batch of bids, which are typical for workflows. So offers should be asynchronous, not serial"
+
+**Decided.**
+- Time to completion is a common axis, not a required one. An offer names its own axes.
+- Fair-share has no axis of its own. A Slurm front turns it into time: fair-share gives expected queue time; add any delay the front accepts to batch; the sum is the bid's ETA.
+- A batching provider may hold its bids briefly to collect a batch of offers, as workflows post many at once.
+- So callers post offers concurrently, not one after another. The baitan executor must post every ready task at once.
+- baitan has no quota or budget system.
+
+**Landed.** This file. The concurrency rule goes into `nextflow`; bid timing goes into `bids`.
