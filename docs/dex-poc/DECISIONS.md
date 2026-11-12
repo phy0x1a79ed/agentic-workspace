@@ -285,3 +285,18 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - A starting state may list several `at` facts for one input; each bidder prices the nearest.
 
 **Landed.** This file. New topic `gc` pushed under `compute-market`.
+
+## gc (2026-11-12)
+
+**Question.** How does a caller get provider-side data deleted once it is done with it?
+
+**User's words.** "we shouldnt make this a part of offers, then we will be deleting intermediates and moving stuff back and forth throughout a pipeline. rather the caller should be able to request disposal of things when job is done. -> this could be formatted as an offer, but prolly can be optimized since only the original providers can fullfil the offer"
+
+**Decided.**
+- Retention is not part of an offer. Intermediates stay put through a pipeline.
+- When the job (or the whole pipeline) is done, the caller sends a disposal request naming exact instance ids.
+- Disposal has the shape of an offer (end state: the instance is no longer at L) but skips the bid round: only the holder can fulfil it, so it goes straight to the provider that settled the instance. The caller knows that provider from the settled events.
+- The provider deletes the instance and drops it from its cache index, then settles. An id it does not hold settles as done.
+- The caller names only what it wants gone, so reference databases and build tools stay unless named.
+
+**Landed.** This file.
