@@ -481,6 +481,7 @@ impl Inner {
         let scored: Vec<Values> = live.iter().map(|l| l.2.clone()).collect();
         let win = picker::pick(&p.set.picker, &p.set.axes, &scored);
         let (winner, raw, _) = live[win].clone();
+        tracing::info!("{id} awarded to {winner} out of {} bids", live.len());
         let (set, v) = (p.set.clone(), p.v);
         self.promises.get_mut(id).unwrap().award = Some(AwardInfo { at: Instant::now(), bid: raw });
         let phase = Phase::Awarded { provider: winner.clone() };
@@ -494,6 +495,10 @@ impl Inner {
 
     fn bid(&mut self, a: BidArgs) -> Msg {
         let Some(p) = self.promises.get_mut(&a.promise) else { return unknown(&a.promise) };
+        match (&a.values, &a.reason) {
+            (Some(v), _) => tracing::info!("{} bids {:?} on {}", a.provider, v, a.promise),
+            (None, r) => tracing::info!("{} declines {}: {}", a.provider, a.promise, r.as_deref().unwrap_or("-")),
+        }
         if matches!(p.phase, Phase::Open) && p.eligible.contains(&a.provider) && !p.bids.contains_key(&a.provider) {
             p.bids.insert(a.provider, a.values);
             self.check_complete(&a.promise);

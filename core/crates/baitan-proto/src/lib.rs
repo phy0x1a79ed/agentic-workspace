@@ -246,6 +246,17 @@ impl Fact {
         }
     }
 
+    /// An `at` fact that also names where the holder keeps the item, so a fetcher needs no `src`.
+    pub fn at_path(id: &str, provider: &str, path: &str) -> Self {
+        let mut f = Fact::at(id, provider);
+        f.o.insert("path".into(), path.into());
+        f
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.o.get("path").map(String::as_str)
+    }
+
     /// `(id, provider)` when this is an `at` fact.
     pub fn as_at(&self) -> Option<(&str, &str)> {
         (self.p.get("rel").map(String::as_str) == Some("at"))

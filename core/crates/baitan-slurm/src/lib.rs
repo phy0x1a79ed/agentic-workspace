@@ -86,7 +86,6 @@ struct State {
     wanted: bool,
     next_ok: Option<Instant>,
     calls: Vec<(Instant, String)>,
-    batches: u64,
     /// When `squeue` first stopped listing a task that has no `exit` yet.
     missing: HashMap<PromiseId, Instant>,
 }
@@ -247,14 +246,7 @@ impl Inner {
                 Slot::Queued => None,
             })
             .collect();
-        let path = self.saved_path();
-        let write = || -> anyhow::Result<()> {
-            std::fs::create_dir_all(path.parent().unwrap())?;
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, serde_json::to_vec(&saved)?)?;
-            Ok(std::fs::rename(tmp, &path)?)
-        };
-        if let Err(e) = write() {
+        if let Err(e) = baitan_provider::backend::write_json(&self.saved_path(), &saved) {
             tracing::warn!("persist jobs: {e}");
         }
     }
@@ -305,15 +297,8 @@ impl Inner {
     }
 
     async fn submit(&self, idx: usize) {
-        let (q, n) = {
-            let mut st = self.st.lock().unwrap();
-            st.batches += 1;
-            (st.queues.remove(idx), st.batches)
-        };
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        let dir = self.cfg.scratch.join(&self.cfg.cluster).join(format!("batch-{stamp}-{n}"));
+        let q = self.st.lock().unwrap().queues.remove(idx);
+        let dir = self.cfg.scratch.join(&self.cfg.cluster).join(format!("batch-{}", baitan_proto::new_id()));
         let list: String = q.jobs.iter().map(|j| format!("{}\n", j.workdir.display())).collect();
         let list_path = dir.join("workdirs");
         let script = format!(

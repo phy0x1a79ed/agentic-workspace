@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use baitan_proto::{PromiseId, Resources};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,16 @@ pub struct JobSpec {
 /// built with, once per launched job.
 pub type Done = (PromiseId, i32);
 pub type DoneTx = mpsc::UnboundedSender<Done>;
+
+/// Writes `value` as JSON through a temp file and a rename, so a crash never leaves half a file.
+pub fn write_json(path: &Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec(value)?)?;
+    std::fs::rename(tmp, path)
+}
 
 #[async_trait]
 pub trait Backend: Send + Sync {

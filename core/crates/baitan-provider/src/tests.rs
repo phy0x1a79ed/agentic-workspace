@@ -198,15 +198,25 @@ async fn a4_build_then_place_end_to_end() {
         spec: json!({"path": dest}),
         to: Some("beta".into()),
     };
-    let set = set_of(vec![build, place]);
-    let mut m = Mkt::start(vec![Provider::local(c)]);
+    let set = set_of(vec![build, place.clone()]);
+    let mut g = cfg(d.path(), "gamma");
+    g.routes = [("alpha".into(), "local".into())].into();
+    let mut m = Mkt::start(vec![Provider::local(c), Provider::local(g)]);
     let o = m.run("alpha", "p", &set).await;
     let (facts, sizes, listing) = kept(&o);
-    assert!(facts.contains(&Fact::at(&out, "alpha")) && facts.contains(&Fact::at(&out, "beta")));
+    let held_at = |at: &str| facts.iter().find(|f| f.as_at() == Some((out.as_str(), at))).and_then(Fact::path).map(PathBuf::from);
+    assert!(held_at("alpha").unwrap().join("out.txt").exists());
     assert!(sizes[&out] > 0);
     assert_eq!(listing[&out], vec!["out.txt".to_string()]);
     let placed: Vec<_> = std::fs::read_dir(&dest).unwrap().flatten().collect();
-    assert!(placed.len() == 1 && placed[0].path().join("out.txt").exists());
+    assert!(placed.len() == 1 && placed[0].path() == held_at("beta").unwrap() && placed[0].path().join("out.txt").exists());
+
+    // A provider that never held `out` fetches it from the path in the settled facts, with no `src`.
+    let elsewhere = d.path().join("gamma-ws");
+    let mut again = set_of(vec![Step { spec: json!({"path": elsewhere}), to: Some("gamma".into()), ..place }]);
+    again.start = facts.clone();
+    m.run("gamma", "q", &again).await;
+    assert!(held_at("alpha").map(|p| elsewhere.join(p.file_name().unwrap()).join("out.txt")).unwrap().exists());
 }
 
 #[tokio::test]

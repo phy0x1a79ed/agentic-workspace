@@ -1529,6 +1529,7 @@ dependencies = [
  "baitan-proto",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

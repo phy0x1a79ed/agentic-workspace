@@ -16,7 +16,6 @@ pub struct ProviderConfig {
     pub versions: [u32; 2],
     /// Concurrent jobs the provider prices its queue against.
     pub slots: u32,
-    pub cpus: u32,
     pub placement_only: bool,
     /// Provider id to `[user@]host` for rsync over ssh. Empty or `local` means the same filesystem.
     pub routes: BTreeMap<ProviderId, String>,
@@ -38,7 +37,6 @@ impl Default for ProviderConfig {
             props: PropSet::new(),
             versions: [baitan_proto::SUPPORTED[0], baitan_proto::SUPPORTED[1]],
             slots: 4,
-            cpus: 4,
             placement_only: false,
             routes: BTreeMap::new(),
             bandwidth: 100e6,
