@@ -272,3 +272,16 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - The requester states where each input is now, as `(input, at, place)` facts in the offer set's starting state. The provider prices the move from that place to its own L. L stays unknown to the requester until the award.
 
 **Landed.** This file.
+
+## locator (2026-11-12)
+
+**Question.** Where does the requester get the current places of its inputs, and does the first version need a locator?
+
+**User's words.** "dont need locator. both expected consumers (agents requesting builds and Metasmith) already know where inputs are and should request to have outputs moved back."
+
+**Decided.**
+- No locator. Both expected consumers (agents requesting builds, metasmith) know where their inputs are and state them in the starting state.
+- Consumers ask for outputs to be moved back with an explicit placement step.
+- A starting state may list several `at` facts for one input; each bidder prices the nearest.
+
+**Landed.** This file. New topic `gc` pushed under `compute-market`.
