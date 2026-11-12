@@ -179,3 +179,20 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 Sequence drawn in the session: run → offer to all → bids → picker → award/decline → provider pulls inputs → started/progress → settled → requester fetches outputs → checker → review.
 
 **Open, moved to new topics.** Where inputs come from and where outputs go (`storage`); whether data transfer, deployment and dependency acquisition are offers (`mutation`, `dependencies`); fronting sleeping providers (`fronting`).
+
+## mutation (2026-11-12)
+
+**Question.** Are data transfer, deployment and publishing offers, and how does that square with pure transforms?
+
+**User's words.** "mutations are also offers, this is great. I think what is missing is a subject". "location needs to be abstracted, then we get predicate logic." "we'd need basically the format of beliefs as knowlege triples in knowledge bases... can each element of the triple be represented by metamisth type sets? but from different namespaces I think." "basically an offer can be bidded on if the starting state is true ... need chain offers here, or offer sets? \"move all of these things locally and execute the actual job\"" "we can prolly avoid planning for the most part, or atleast having to do it ourselves." "it looks like we dont need querries at this stage, but the kb triples structure is still important to organize around."
+
+**Decided.**
+- Every piece of work is an offer: compute, data transfer, deployment, publishing. There is one kind of offer.
+- The subject is a location-free who; its lineage identity stays pure. A fact is a triple, e.g. `(subject, at, place)`. An offer asks for facts to become true; offers are not pure, whos are.
+- Facts are organised as knowledge triples. Each element is a metasmith-style type set from its own namespace: subjects from the data and dependency namespaces, predicates from a relation namespace (`at`, `derived_from`, `reviewed_by`), objects from the place namespace or data again. A place type (e.g. any Slurm scratch with 1 TB free) abstracts location.
+- A cache hit is a fact already true. Moving versus recomputing is decided by bids.
+- The unit of work is an offer set: a short chain of steps sharing a place variable L, e.g. move the inputs to L, then run at L. It is biddable when its starting state is true. One provider bids on the whole set and is the binding of L; it may subcontract moves.
+- What-planning is done ahead of time by the requester (metasmith's solver, a compiled Nextflow plan). The adapter (e.g. the baitan Nextflow executor) builds offer sets mechanically from a task's inputs and their current places. The market does where-planning. Providers plan preconditions one level deep and price them into the bid.
+- No query engine now. A provider checks an offer set with L bound to itself, by type-set subset tests and lookups by who. Facts change only through events; each provider is the authority on facts about itself.
+
+**Deferred (journal 3a6c999a).** A query layer (conjunctive patterns, Datalog as the ceiling) for discovery without a who; per-step combinatorial bids; providers deciding what to compute; actions that cannot be phrased as an end state.
