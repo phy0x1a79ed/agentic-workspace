@@ -355,3 +355,18 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - Batching is internal to baitan and providers, never in the caller surface.
 
 **Landed.** This file.
+
+## bids (2026-11-12)
+
+**Question.** How long baitan waits for bids, what happens with none, and how bids move as a provider fills up.
+
+**User's words.** "if no bids, should return with error, not retry." / "1s is prolly good for a timeout, not including netowrk delays. we dont want an offer to always cost something like 10s though. even 1s is prolly too long" / "holding is really just an optimization (or more like gamble) in the provider. it doesnt even need to do it." / on capacity: "this is provider implementation detail and lots of solutions exist. the task is well defined. do as you like"
+
+**Decided.**
+- The offer carries its bid window. It is sub-second; about 1 s (excluding network) is the ceiling, and the round closes early once every eligible provider has bid or declined.
+- No bids: the promise errors at once. No retry.
+- Holding a bid to collect a batch is an optional provider gamble. The default is to bid at once and put the expected batch wait into the ETA.
+- Capacity is a provider implementation detail, solved by existing task-allocation methods. Default for the reference provider: price each new bid as if all its open bids win, release on loss, never decline for capacity (decline only when it cannot do the work).
+- Picker: robust z-scores (median/MAD), clamped, weighted sum; with fewer than three bids, score each axis as a ratio to the best; one bid wins.
+
+**Landed.** This file.
