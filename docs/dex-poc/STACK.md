@@ -6,7 +6,7 @@
 
 ## Current
 
-`core-boundary`. First question: baitan's crate split (market core, carrier, generated surfaces) and the awm adapter; whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate. Deferred items and test cases for baitan: journal 3a6c999a.
+Nothing. The stack is empty; baitan is built and live.
 
 ## Waiting on the user
 
@@ -31,8 +31,7 @@ Nothing.
 
 ## Stack
 
-- `core-boundary`: baitan's market core against the awm adapter; whether awm's catalog-to-CLI/MCP/HTTP generator moves to an awm-free crate.
-- `handoff`: the brief for the build session, written from the findings
+None.
 
 ## Workers
 
@@ -74,3 +73,5 @@ None.
 - `tool-surface`: offer, status, cancel, dispose, review; watch on CLI only; single offers, internal batching.
 - `fair-share`: folded into the Slurm front's ETA; time is a common, optional axis; offers posted concurrently.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
+- `core-boundary`: six baitan crates with no awm import; the `awm` feature of the plugin is the only adapter; awm's generator stays put.
+- `handoff`: no separate session; this session built and shipped baitan.

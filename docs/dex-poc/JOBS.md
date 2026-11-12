@@ -39,9 +39,12 @@ A step's `op` picks the kind. The provider writes each kind as a `run.sh` in a f
 |---|---|---|---|
 | `task` | `{script, stage, outputs}` | `["out"]` | `out` is the work dir after the script exits 0. Its listing holds the relative paths that match `outputs` |
 | `cargo` | `{git, rev, bin, target?, features?}` | `["bin"]` | `bin` is the built binary file |
-| `place` | `{path}` | none | each input id is copied into `path` at the provider `to` |
+| `place` | `{path, src?}` | none | each input id is copied into `path` at the provider `to`, under the base name of its source |
 
-- `task.script` is the shell body to run. `task.stage` maps a name in the work dir to `{id, path?, src?}`. `path` selects a file inside a directory instance. `src` is the absolute path at the input's place, for a leaf. `task.outputs` is a list of globs.
+- `task.script` is the shell body to run. `task.stage` maps a name in the work dir to `{id, path?, src?}`. `path` selects a file inside a directory instance. `task.outputs` is a list of globs.
+- `src` (per stage item, or `place.src` keyed by id) is the absolute path at the input's place. Give it only when the input's `start` fact names no `path`.
+- A settled `at` fact names the holder's path in `o.path`. Copy settled facts into a later set's `start`, and the next provider fetches without `src`.
+- A provider runs `place` on its own host, never through its backend. A Slurm front therefore moves data from the login node and queues nothing for it.
 - A provider without cargo declines `cargo`. A placement-only provider declines every set that holds a non-placement step.
 - A placement step's inputs are slot ids of earlier steps in the same set, or ids the provider holds. A provider resolves a slot id that a cache hit replaced to the stored id.
 - A step whose input the provider does not hold is fetched from the nearest place in the set's `start` facts. The fetch time goes into the bid.

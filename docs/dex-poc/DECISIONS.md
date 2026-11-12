@@ -120,12 +120,13 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 
 **Decided.**
 - Callers now: the shell, awm agents, and Nextflow running as one whole job (the market runs the head process; Nextflow submits its own tasks). Later: a Nextflow executor plugin, and users off the fleet (that needs its own auth layer).
-- Surfaces: like awm, each verb is declared once and generated into a CLI, MCP and HTTP. The market daemon owns job state. The CLI is a thin client over the node's Unix socket; `submit` returns an id at once, `wait` and `logs -f` stream events, `fetch` pulls outputs by digest into the shared store, and `run` = submit + wait + fetch with the job's exit code. On a host with no daemon the CLI uses `ssh <node> market serve-stdio`.
-- The CLI talks only to its local daemon; the daemon decides placement.
+- Surfaces: like awm, each verb is declared once and generated into a CLI, MCP and HTTP. The verbs are those of `tool-surface`, which replaced the first sketch of `submit`, `wait` and `fetch` by digest.
+- The market owns promise state. The CLI is a thin client over `~/.baitan/market.sock`. On a host without the market, `BAITAN_CONNECT` names a dial command such as `ssh mizar baitan connect`, which bridges stdio to the market socket.
+- The market decides placement. A caller narrows it only with a place type.
 
-**Open, for `core-boundary`.** awm's generator lives in its gateway crates (`awm-gateway`, `awm-mcp`, `awm-cli`). A standalone market either reuses them (and depends on awm) or the catalog-to-surfaces generator moves into a crate with no awm dependency that both use.
+**Closed by `core-boundary` (2026-11-12).** baitan keeps its own catalog: the `Msg` enum in `baitan-proto` generates the clap subcommands, the MCP tools and `POST /invoke` in `core/crates/baitan`. No baitan crate imports awm. The `awm` cargo feature of `core/plugins/baitan` adds the plugin mode, which registers the same verbs with `awm-plugin-sdk` and runs the market in process. awm's generator stays in the gateway crates.
 
-**Landed.** Input to `tool-surface` and `core-boundary`.
+**Landed.** `core/crates/baitan`, `core/plugins/baitan`, release ebd7b6f0.
 
 ## braavos-offer (2026-11-11)
 
@@ -470,3 +471,27 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - awm is the agents' interface: an awm adapter lets agents post offers through the federation and republishes events on `/hub/emit`.
 
 **Landed.** This file.
+
+## core-boundary (2026-11-12)
+
+**Question.** How baitan's crates split, and whether awm's catalog-to-surfaces generator moves to an awm-free crate.
+
+**Decided.** The user said to build against the settled spec and split the crates "based on what makes impementation easy". The split is:
+- `baitan-proto`: the envelope, the `Msg` catalog, facts, offer sets and the id hashes.
+- `baitan-carrier`: JSON lines over stdio, ssh children and Unix sockets.
+- `baitan-market`: the bid round, picker, promise state and events.
+- `baitan-provider`: the subset-match cache, imports, job scripts and the local backend.
+- `baitan-slurm`: the Slurm front backend.
+- `baitan`: the roles (`serve`, `provider`, `front`, `connect`) and the generated CLI, MCP and HTTP surfaces.
+
+awm's generator stays in the gateway crates. Only the `awm` feature of `core/plugins/baitan` touches awm. The crates live in the awm workspace so one release train ships them.
+
+**Landed.** feat/dex-poc, release ebd7b6f0.
+
+## handoff (2026-11-12)
+
+**Question.** The brief for a separate build session.
+
+**Decided.** No separate session. The user directed this session to build, test and deploy baitan itself. `JOBS.md` holds the wire contract that the build added to this file.
+
+**Landed.** Live on mizar since release cab01b96. Journal 3a6c999a records the test cases and what passed.
