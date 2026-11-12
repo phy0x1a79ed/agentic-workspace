@@ -52,6 +52,7 @@ fn rig() -> Rig {
         walltime: "01:00:00".into(),
         scratch: dir.path().join("scratch"),
         bin_dir: Some(bin),
+        whole_node: false,
     };
     Rig { be: SlurmBackend::new(cfg.clone(), tx), cfg, dir, rx }
 }
@@ -124,7 +125,7 @@ async fn five_same_profile_launches_make_one_array() {
     }
     let sb: Vec<_> = r.log().into_iter().filter(|l| l.starts_with("sbatch")).collect();
     assert_eq!(sb.len(), 1, "{sb:?}");
-    for flag in ["--array=0-4", "--cpus-per-task=2", "--mem=1024M", "--account=acct", "--partition=cpu", "--time=01:00:00"] {
+    for flag in ["--array=0-4", "--nodes=1", "--cpus-per-task=2", "--mem=1024M", "--account=acct", "--partition=cpu", "--time=01:00:00"] {
         assert!(sb[0].contains(flag), "{flag} missing in {}", sb[0]);
     }
 }

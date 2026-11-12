@@ -42,6 +42,9 @@ pub struct SlurmConfig {
     /// Directory of the Slurm binaries; the plain command names on `PATH` when `None`.
     #[serde(default)]
     pub bin_dir: Option<PathBuf>,
+    /// The cluster schedules whole nodes and refuses `--mem` (trillium), so arrays name no CPU or memory.
+    #[serde(default)]
+    pub whole_node: bool,
 }
 
 type Profile = (u32, u64);
@@ -321,15 +324,16 @@ impl Inner {
             tracing::warn!("batch files: {e}");
             return self.fail(q.jobs);
         }
-        let mut args = vec![
-            format!("--array=0-{}", q.jobs.len() - 1),
-            format!("--cpus-per-task={}", q.profile.0),
-            format!("--mem={}M", q.profile.1),
+        let mut args = vec![format!("--array=0-{}", q.jobs.len() - 1), "--nodes=1".into()];
+        if !self.cfg.whole_node {
+            args.extend([format!("--cpus-per-task={}", q.profile.0), format!("--mem={}M", q.profile.1)]);
+        }
+        args.extend([
             format!("--account={}", self.cfg.account),
             format!("--time={}", self.cfg.walltime),
             "--job-name=baitan".into(),
             format!("--output={}/slurm-%A_%a.out", dir.display()),
-        ];
+        ]);
         if let Some(p) = &self.cfg.partition {
             args.push(format!("--partition={p}"));
         }
