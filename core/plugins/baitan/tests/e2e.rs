@@ -21,26 +21,42 @@ fn provider_toml(home: &Path, id: &str) -> String {
     path.display().to_string()
 }
 
-fn offer(home: &Path, place: &str) -> String {
+/// Offers a task at `place` and waits for it to settle. No caller verb reports a provider
+/// registering, so a `NoBids` while the dialled link comes up is offered again.
+fn settle_at(home: &Path, place: &str) -> Value {
     let set = json!({
         "steps": [{"op": "task", "props": {"contract": "e2e", "place": place}, "slots": ["out"],
                    "spec": {"script": "echo hi > out.txt", "stage": {}, "outputs": ["out.txt"]}}],
         "place": {"name": place},
     });
-    let reply = baitan(home, &["offer", "--set", &set.to_string()]);
-    reply["promise"].as_str().unwrap().to_string()
-}
-
-fn settled(home: &Path, promise: &str) -> Value {
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut promise = String::new();
     loop {
-        let status = baitan(home, &["status", "--promise", promise]);
-        if status["phase"].get("settled").is_some() {
+        if promise.is_empty() {
+            promise = baitan(home, &["offer", "--set", &set.to_string()])["promise"].as_str().unwrap().to_string();
+        }
+        let status = baitan(home, &["status", "--promise", &promise]);
+        let phase = &status["phase"];
+        if phase.get("settled").is_some() {
             return status;
         }
-        assert!(status["phase"].get("failed").is_none(), "{status}");
-        assert!(Instant::now() < deadline, "not settled: {status}");
-        std::thread::sleep(Duration::from_millis(200));
+        if phase["failed"]["name"] == "NoBids" {
+            promise.clear();
+        } else {
+            assert!(phase.get("failed").is_none(), "{status}");
+        }
+        assert!(Instant::now() < deadline, "not settled at {place}: {status}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Kills the child even when an assertion panics, so it cannot hold the test harness's pipes open.
+struct Reap(std::process::Child);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -56,19 +72,21 @@ fn serve_dials_providers_and_callers_offer_through_the_socket() {
         format!("ssh -o BatchMode=yes localhost HOME={} {BIN} provider --config {remote}", home.display()),
     ]);
     std::fs::write(home.join(".baitan/baitan.toml"), format!("links = {links}\n")).unwrap();
-    let mut serve = Command::new(BIN).arg("serve").env("HOME", home).spawn().unwrap();
-    std::thread::sleep(Duration::from_secs(3));
+    let _serve = Reap(Command::new(BIN).arg("serve").env("HOME", home).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    while !home.join(".baitan/market.sock").exists() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     for place in ["near", "far"] {
-        let promise = offer(home, place);
-        let status = settled(home, &promise);
+        let status = settle_at(home, place);
         let phase = &status["phase"]["settled"];
         assert_eq!(phase["provider"], place);
         let listing: Vec<&Value> = phase["listing"].as_object().unwrap().values().collect();
         assert_eq!(listing[0], &json!(["out.txt"]));
     }
 
-    let mut mcp = Command::new(BIN).arg("mcp").env("HOME", home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut mcp = Reap(Command::new(BIN).arg("mcp").env("HOME", home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
+    let mcp = &mut mcp.0;
     let mut stdin = mcp.stdin.take().unwrap();
     writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
     let mut line = String::new();
@@ -80,6 +98,4 @@ fn serve_dials_providers_and_callers_offer_through_the_socket() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(names, ["offer", "status", "cancel", "dispose", "review"]);
-    let _ = mcp.kill();
-    let _ = serve.kill();
 }
