@@ -396,3 +396,27 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 **Decided.** Dropped. Identity is the declared property set and baitan never compares bytes, so byte-identity does not affect the market. A caller who needs it adds a property (e.g. a lockfile hash).
 
 **Landed.** This file.
+
+## nextflow (2026-11-12)
+
+**Question.** How does a compiled Nextflow workflow run through baitan?
+
+**User's words.** "baitan will need custom executor" / "no fles in work is correct, this is kind of like how slurm executor works since the workspace is local to compute nodes" / "nextflow is a degenerate case?" / "if we do thread through ... we'd get cross workflow reuse of reference databases for tools like diamond + metasmith native declarations of metric vectors per transform contract (optional without baitan) + it could drive the reviews as well" / "these are dev layers though. Id like for when we go to build for all 3 to be built, but 1 at a time with checkpoints and tests."
+
+**Decided.**
+- A custom Nextflow executor plugin at the task level. `submit` posts one offer set per task, `kill` cancels, the completion check reads promise state kept current by events. Nextflow submits ready tasks as they appear, so offers go out concurrently.
+- Work dirs hold only a manifest of output ids and their providers, like the Slurm executor's node-local workspaces. Downstream tasks get ids; only final targets get a placement step back; intermediates are disposed after.
+- Three dev layers, all three in the build, one at a time with a checkpoint and tests each (or together if easier):
+  1. Plain Nextflow, the degenerate case: the offer key is Nextflow's own task hash; hits only on exact tasks (within a workflow, `-resume`). No import declarations.
+  2. Threaded declarations: metasmith's generator attaches each task's declared set (contract and version, input instance ids from the channel tuples, output-affecting params), e.g. as `task.ext.baitan`. The executor uses it when present, the task hash otherwise. Gives cross-workflow reuse, including reference databases (DIAMOND).
+  3. Contracts declare metric axes and a checker transform (optional; metasmith works without baitan). The executor offers the checker run after a task settles and sends the review. Test 2 of journal 3a6c999a is this layer's acceptance test.
+
+**Landed.** This file.
+
+## compute-market (2026-11-12)
+
+**Question.** The user's pressing issue: a compute market for awm peers, Slurm clusters and spot machines.
+
+**Decided.** baitan, as recorded in the sections from `market-scope` through `nextflow`. Deferred items and mocked test cases: journal 3a6c999a.
+
+**Landed.** This file.
