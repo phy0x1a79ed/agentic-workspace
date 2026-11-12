@@ -1,6 +1,6 @@
 # DEX POC findings
 
-Code: `poc/` (standalone workspace: `dex` lib + `node` binary, `modl` demo cdylib). Raw outputs: `poc/results/e{1..4}.out`.
+Code: `poc/` (standalone workspace: `dex` lib + `node` binary, `modl` demo cdylib), deleted by the baitan build. Read it and the raw outputs `poc/results/e{1..4}.out` at commit 48c840ab.
 Setup: mizar (glibc 2.39) is the caller node, capella (glibc 2.35, builder) is the second node, reached over `ssh` stdio with no listening port. Modules were built on capella and loaded on mizar. Nothing touched the production gateways except read-only `awm status` and `scope search` calls for the baseline.
 
 ## E1 calling mechanism
