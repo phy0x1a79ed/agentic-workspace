@@ -40,6 +40,9 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   - A wait (R51) keeps the job, because the session comes back. The wake resumes that job.
   - A resume of a retired session starts a new job from its transcript, with the same session id.
   - Tony: "Yes" (2026-11-03), to keeping the job only for a wait.
+- **R150.** awm pins every session it starts. Claude Code's daemon retires an unpinned background job after 8 hours idle, and the dead job then reads as live in its own record. A pinned session lives until it retires (R8) or something stops it. Tony: "pin everything, but on restart, dont auto restart unless part of the current seat behaviour" (2026-11-11).
+  - After a host reboot, cch resumes each seat agent (R149) and stops every other pinned session the reboot ended. The stop deletes the job and keeps the transcript, so R10 still resumes the session.
+  - A seat agent is the session whose lineage name starts with `seat:`. The seats plugin names its agents so.
 - **R146.** A session that `start_other` starts has Remote Control on unless the caller turns it off. Its Remote Control name is the session's name, with each `/` written as `-`. Tony: "reflection start_other defaults to remote control on" (2026-11-04).
   - A seat's session follows its seat's Remote Control switch instead, which starts off (`fleet.md` R147 item 7).
   - A switch persists. cch records each switch on the job's lineage record, and a resume starts the session with it. Claude Code's daemon relaunches a job with the flags it was created with. After a relaunch, cch compares the bridge with the record on each bridge change for 2 minutes, and once at 20 s. It puts the switch back at most once, so a later `/rc` in the terminal stands. Tony: "when Claude Code restarted and the session restarted, it shouldn't enter remote control because that was toggled off" (2026-11-09).

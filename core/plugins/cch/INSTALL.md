@@ -14,7 +14,7 @@ cch keeps no database. It reads Claude Code's own files in place under `$CLAUDE_
 |---|---|
 | `<AWM_DIR>/services/cch/pending/` | the promise store: one record per session that owes a follow-up, and `unsent.jsonl`, the events reflection did not take |
 | `<AWM_DIR>/services/cch/hold.json` | the keeper's holds on the Claude Code daemon |
-| `<AWM_DIR>/services/cch/pool.json` | the pool ledger: each session the warm pool made, by canonical session id, as `spare`, `claimed` or `kept`. A session's name carries none of this, so a lost ledger makes every spare look like a person's session |
+| `<AWM_DIR>/services/cch/pool.json` | the pool ledger: each session the warm pool made, by canonical session id, as `spare`, `claimed` or `kept`. A session's name carries none of this, so a lost ledger makes every spare look like a person's session. An entry stays until `claude rm` deletes its job dir. The daemon drops a job from its roster when the job's process dies, so the pool also reads the job dirs the roster no longer lists |
 | `<AWM_DIR>/services/cch/isolated/` | the isolated sessions' tokens, and one Claude home per session |
 | `${AWM_CX_STATE:-~/.claude/cx}/` | lineage records under `starts/`, the warm pool's state and the reboot mark |
 | `~/.claude.json` | trust for an awm worktree that a session moves into |

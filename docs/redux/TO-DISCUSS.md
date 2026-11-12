@@ -48,7 +48,6 @@ Raised before the redux started. Each enters the stack when a thread reaches it.
 - Migrate mira onto mizar or alcor (Tony, 2026-10-30). mira hosts `social` and the seat config today.
 - One always-on shared Chrome on alcor or mizar for agents, and for Tony to solve captchas (Tony, 2026-10-30).
 - Three workstream sessions on altair (`c4455c36`, `bc32a23b`, `e75d93a3`) disappeared after 2026-10-30 03:07Z. Resume them or leave them stopped.
-- The Claude Code daemon does not restart pinned jobs after a host reboot.
 - Armando's machines, after Tony meets him (`fleet.md` R120). Open items: the Windows version, admin rights and UBC IT policy for Tailscale and the node, instrument PCs kept offline, which plugins a Windows station runs, a smoke test of a blind build on a Windows runner, the tailnet tag and its access rules, and an exception for these machines to the rule against ssh to UBC hosts. The interview proposed the last four. Tony has not decided them.
 
 ## Closed
