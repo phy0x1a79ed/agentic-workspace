@@ -6,7 +6,7 @@
 
 ## Current
 
-`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named baitan (摆摊; was braavos). `braavos-offer` and `metasmith-reuse` closed. `promise`, `mutation` and `dependencies` closed (layer 1: exact-match cache, type-agnostic core). `deliverable` closed. Now: `cache-scenarios`, scenario 5. Caching scenarios 1–3 and 6 walked; 4, 5, 7, 8, 9 remain. Deferred items and test cases: journal 3a6c999a.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named baitan (摆摊; was braavos). `braavos-offer` and `metasmith-reuse` closed. `promise`, `mutation` and `dependencies` closed (layer 1: exact-match cache, type-agnostic core). `deliverable` closed. `cache-identity` closed (subset-match cache at providers; id = hash of the declared property set, naming only). Now: `cache-scenarios`, scenario 9. Caching scenarios 1–3 and 6 walked; 4, 5, 7, 8, 9 remain. Deferred items and test cases: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -22,7 +22,7 @@ Nothing.
 - 2026-11-09: MVP is cache, update event and remote fill; bidding after.
 - 2026-11-11: The plugin is named baitan (摆摊).
 - 2026-11-12: Tests mock jobs (CheckM, builds) rather than run them.
-- 2026-11-12: Build in layers: exact match first, subset matching later.
+- 2026-11-12: baitan never hashes content; identity is declared properties (promises).
 - 2026-11-11: No content hashing of bytes; identity is lineage and type.
 - 2026-11-11: The market is standalone, callable without awm.
 - 2026-11-11: "pressing issue is some compute market for awm peers."
@@ -31,8 +31,9 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `cache-scenarios`: walk the rest one at a time: 4 result exists elsewhere, 5 leaf stamped by two origins, 7 nondeterministic tool, 8 dependency bump or script edit, 9 cached result fails its review.
+  - `cache-scenarios`: scenario 9, a cached result that fails its review. (4, 5, 7, 8 closed in `cache-identity`.)
   - `storage`: distributed storage. Results (and maybe inputs) live on chinook in a dedicated folder; altair as a workspace that publishes to chinook; every provider has local workspaces for data and dependencies. Where step 5 pulls inputs from.
+    - `locator`: a service outside baitan that finds instances across nodes.
   - `fronting`: altair bids on behalf of providers that cannot run a live service (HPC clusters) or sleep (spot machines for GTDB-Tk and metabuli, images set up by shogun, spun up by altair). Each machine is its own provider and its own bid; a front submits several bids.
   - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. Largely absorbed by `fronting`.
   - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
@@ -71,4 +72,5 @@ None.
 - `mutation`: one kind of offer; facts as triples of type sets; offer sets bound to one provider; no query engine yet.
 - `dependencies`: layer 1 exact-match offer keys; type-agnostic core; exact dependency names; types as optional facts.
 - `deliverable`: named output slots; compute ends at L; delivery is a separate placement step.
+- `cache-identity`: declared property sets; id names, subset match finds; hits are provider bids.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.

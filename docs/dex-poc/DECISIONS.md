@@ -205,14 +205,13 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 
 **Terms.** An *instance* is one concrete piece of data or software; its *instance id* is its hash identity. A *type* is a property set. A *fact* is a subject–predicate–object triple; the subject is an instance id. An *offer* asks for a fact to become true; its *offer key* is the hash of its canonical content. ("What" and "who" are retired.)
 
-**Decided: layer 1, exact match.**
-- The offer key hashes the contract and its script version, the input instance ids, the output-affecting params, and the dependencies by name and version. Resources, provider, place, dependency format, axes, picker, checker and size estimate stay out. Each contract declares which params affect output (rule 2, as metasmith leaves resources out of identity).
-- A result's instance id is the key of the offer that made it, so ids chain through their inputs to origin-stamped leaves. A result records its parents' ids one level up; full provenance goes in the results package or a log.
-- The cache is one table from offer key to instance. A hit is hash equality: no false positives, only misses when the same work is phrased differently.
-- The baitan core is type-agnostic. Dependencies are matched by exact name and version, through a matcher that can be swapped. Types are optional facts the core stores but does not interpret. No lineage constraints: what-planning, and metasmith's lineage constraints with it, stay with the requester. Hybrid assembly (MEGAHIT then OPERA-MS) gives no false positive, since Prodigal on each assembly has a different key.
+**Decided** (revised by `cache-identity`, below).
+- The baitan core does no planning and runs no metasmith solver. No lineage constraints: what-planning, and metasmith's lineage constraints with it, stay with the requester. Hybrid assembly (MEGAHIT then OPERA-MS) gives no false positive, since Prodigal on each assembly names a different input id.
+- Each contract declares which params affect output (rule 2, as metasmith leaves resources out of identity).
 - A checker may watch for the plan's own evaluation output (e.g. the plan's CheckM result) and report the review after the pipeline, instead of posting a new job.
+- Superseded by `cache-identity`: the exact-match cache keyed on an offer hash, dependencies by exact name and version, and "types as optional facts the core does not interpret". Subset matching is in, not deferred.
 
-**Deferred: layer 2.** Subset matching of dependencies and places by metasmith-style type sets.
+
 
 ## deliverable (2026-11-12)
 
@@ -225,3 +224,22 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - A compute step ends at "the output is at L", where L is the provider's own workspace. Settling reports the fact `(slot id, at, place)` and the true size.
 - Delivery to a specific place is a separate placement step, added to the offer set only when the requester needs it there (an interactive build on mizar: build at L, then move to mizar). A release rollout is one placement offer per node.
 - Keeping compute and delivery apart leaves "built on capella" as a reusable fact and keeps transfer cost visible in bids.
+
+## cache-identity (2026-11-12)
+
+**Question.** How are instances identified and how is a cache hit found, given no content hashing, imports halfway through a pipeline, nondeterministic tools, version bumps, and offers that omit a version?
+
+**User's words.** "scenario 4 points to have a separate thing outside of baitan to find things across nodes, but prolly shouldnt be baitan's responsibility." "there needs to be a way to import things \"half way\" ... reference databases for diamond." "we can use the same index yaml system that metasmith uses ... why 2 modes? ... maybe timestamping isnt important? only what we declare in the type properties set?" "declarations as promises are fine, its how metasmith works." "we dont hash contents, so even if there is variablilty in the output, the promise is the same". "this is the responsiblity of the user not baitan. for checkM, if version is improtant, it goes in the types property set. any version then simply omits it ... I guess we need subsetting after all. can we make this efficient and not a scan?" "Whatver is using baitan can choose to include versioing information like the commit hash, or hash the script themselves and pass it in as a type property". "where do cache hits happen btw? ... prolly only at the provider since we need to knw about partial results." "the hit finds the previous result and the hash is just the identity, not used to determin cache hit, I thikn that holds"
+
+**Decided.**
+- Every instance has a property set. A computed result's set is declared by the provider as specifically as it knows: the contract, the input ids, the output-affecting params, and the dependency versions actually used. An import declares its set in a metasmith-style index YAML. Declarations are promises, as in metasmith. Adoption of an existing result is just an import that declares the computed form.
+- The instance id is the hash of its property set. It names the instance and lets two providers agree without talking; because input ids are inside the set, ids still chain. The hash is never used to find a cache hit.
+- A cache hit is a subset match: the request's property set is a subset of a stored result's expanded set (its own properties plus its input ids, one level deep). A specific stored result answers a looser request (stored version 1.0.2 answers "any version"); never the reverse.
+- Cache hits happen at the provider, as bids. Each provider indexes its own results, running jobs and dependencies (an inverted index of key=value to bitmap; the implementation is the builder's call). A hit bids "already done"; partial results and in-flight duplicates bid "done at T". The caller tracks nothing. No global cache.
+- Inputs are always exact ids. Relaxing an ancestor ("CheckM on bins from any MEGAHIT version") needs a walk over derived-from links; deferred to the query layer.
+- baitan never hashes content. Versions, commit hashes and script hashes are properties the caller chooses to include. Timestamps are bookkeeping in the index, never identity.
+- Nondeterministic tools need no handling: the id is the promise, not the bytes.
+- Finding results across nodes is a locator service outside baitan.
+- Two doors (the same bytes brought in twice) hit only if both imports declare the same set; otherwise it is an accepted miss.
+
+**Open.** Scenario 9: a cached result that fails its review.
