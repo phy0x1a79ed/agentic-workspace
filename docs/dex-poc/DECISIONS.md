@@ -213,3 +213,15 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - A checker may watch for the plan's own evaluation output (e.g. the plan's CheckM result) and report the review after the pipeline, instead of posting a new job.
 
 **Deferred: layer 2.** Subset matching of dependencies and places by metasmith-style type sets.
+
+## deliverable (2026-11-12)
+
+**Question.** How does an offer identify what it sends back? For a build, is the output "binary is built" or "binary@L"?
+
+**User's words.** "makes sense, next?" (on the proposal below)
+
+**Decided.**
+- Outputs are named slots declared by the contract (like metasmith's `AddProduct`). Each slot's instance id is `H(offer key, slot name)`, so a later offer can consume one slot alone.
+- A compute step ends at "the output is at L", where L is the provider's own workspace. Settling reports the fact `(slot id, at, place)` and the true size.
+- Delivery to a specific place is a separate placement step, added to the offer set only when the requester needs it there (an interactive build on mizar: build at L, then move to mizar). A release rollout is one placement offer per node.
+- Keeping compute and delivery apart leaves "built on capella" as a reusable fact and keeps transfer cost visible in bids.

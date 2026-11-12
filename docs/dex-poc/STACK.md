@@ -6,7 +6,7 @@
 
 ## Current
 
-`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named baitan (摆摊; was braavos). `braavos-offer` and `metasmith-reuse` closed. `promise`, `mutation` and `dependencies` closed (layer 1: exact-match cache, type-agnostic core). Now: `deliverable`. Caching scenarios 1–3 and 6 walked; 4, 5, 7, 8, 9 remain. Deferred items and test cases: journal 3a6c999a.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named baitan (摆摊; was braavos). `braavos-offer` and `metasmith-reuse` closed. `promise`, `mutation` and `dependencies` closed (layer 1: exact-match cache, type-agnostic core). `deliverable` closed. Now: `cache-scenarios`, scenario 5. Caching scenarios 1–3 and 6 walked; 4, 5, 7, 8, 9 remain. Deferred items and test cases: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -31,7 +31,6 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `deliverable`: how an offer identifies what it sends back. For a build: "binary is built" or "binary@L"?
   - `cache-scenarios`: walk the rest one at a time: 4 result exists elsewhere, 5 leaf stamped by two origins, 7 nondeterministic tool, 8 dependency bump or script edit, 9 cached result fails its review.
   - `storage`: distributed storage. Results (and maybe inputs) live on chinook in a dedicated folder; altair as a workspace that publishes to chinook; every provider has local workspaces for data and dependencies. Where step 5 pulls inputs from.
   - `fronting`: altair bids on behalf of providers that cannot run a live service (HPC clusters) or sleep (spot machines for GTDB-Tk and metabuli, images set up by shogun, spun up by altair). Each machine is its own provider and its own bid; a front submits several bids.
@@ -71,4 +70,5 @@ None.
 - `promise`: offer, bid, award, started, settled; broadcast events plus pollable remote state; review after the checker.
 - `mutation`: one kind of offer; facts as triples of type sets; offer sets bound to one provider; no query engine yet.
 - `dependencies`: layer 1 exact-match offer keys; type-agnostic core; exact dependency names; types as optional facts.
+- `deliverable`: named output slots; compute ends at L; delivery is a separate placement step.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
