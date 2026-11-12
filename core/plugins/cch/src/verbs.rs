@@ -111,8 +111,8 @@ fn start_params() -> Value {
         opt("restricted", "boolean", "Confine file tools to the worktree and ignore user settings (claude --restricted)."),
         opt("strict_mcp", "boolean", "Load only the awm MCP server, from the workspace config."),
         opt("remote_control", "boolean", "Remote Control, on unless false, named for the session with each `/` as `-`; a plain label names it instead. The result's `link` is the claude.ai link, null with a `link_reason` if it has not connected within a few seconds."),
-        opt("pin", "boolean", "Pin the job, so the daemon's idle retirement passes it over. A pinned job is a kept session: stopping it unpins it and removes it with `claude rm`."),
-        opt("brief", "boolean", "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true. A pinned start never gets it."),
+        opt("pin", "boolean", "Pin the job, so the daemon's idle retirement passes it over. Default true. Stopping a pinned job unpins it and removes it with `claude rm`."),
+        opt("brief", "boolean", "Append the worker lifecycle brief to the system prompt: work in the right scope, ask Tony through the board, sign off and stop when done. Default true."),
         opt("started_by", "string", "Who the brief says started the session when no session called, such as 'Tony from Discord'. A calling session is named instead."),
         opt("replaces", "string", "The session_id this session replaces. Its last turns are appended to the prompt, it is stopped (and removed when pinned) if cx started it, and the new session's lineage records it."),
         opt("tags", "array", "Tags to set on the scope (scope tag), such as ['lab', '<person>'] for work a lab member asked for. A tagging failure is returned as a warning and does not stop the start."),
@@ -216,7 +216,7 @@ pub fn specs() -> Vec<Spec> {
         ),
         spec("link", "A session's claude.ai link.", targeted(vec![]), Some(30)),
         spec("adopt", "Take on a job started outside start.", targeted(vec![]), Some(30)),
-        spec("revive_pinned", "Resume each pinned job whose process is gone.", json!([]), Some(600)),
+        spec("revive_pinned", "Resume each seat agent whose process is gone, and stop every other dead pinned job.", json!([]), Some(600)),
         spec("pending", "The follow-ups cch still owes.", json!([]), None),
         spec(
             "probe",
@@ -529,6 +529,9 @@ where
 pub const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
 /// The file under cx's state dir that records the boot the pinned jobs were last revived in.
 pub const BOOT_MARK: &str = "pinned-revived-boot";
+
+/// How a seat names its agent: `seat:<app>/<server>/<chat>`.
+const SEAT_PREFIX: &str = "seat:";
 pub const REVIVE_TRIES: u32 = 10;
 pub const REVIVE_WAIT: Duration = Duration::from_secs(30);
 
@@ -956,10 +959,11 @@ impl<B: Backend> App<B> {
         Ok(serde_json::to_value(out).unwrap_or_default())
     }
 
-    /// Resume each pinned job whose process is gone, after a reboot (fleet lane).
+    /// Settle each pinned job whose process is gone, after a reboot (fleet lane): resume a seat's
+    /// agent, which its seat expects back, and stop the rest, which keeps their transcripts.
     pub async fn revive_pinned(&self) -> Value {
         let live = self.backend.live_jobs().await;
-        let (mut revived, mut still, mut failed) = (vec![], vec![], vec![]);
+        let (mut revived, mut retired, mut still, mut failed) = (vec![], vec![], vec![], vec![]);
         for job in pins::pinned(self.backend.home()).await {
             let (paths, j) = (self.backend.paths().clone(), job.clone());
             let Some(id) = blocking(move || lifecycle::session_of_job(&paths, &j)).await else {
@@ -972,19 +976,27 @@ impl<B: Backend> App<B> {
             }
             let extra: Map<String, Value> = [("pinned".to_string(), json!(true))].into_iter().collect();
             let (paths, key) = (self.backend.paths().clone(), id.clone());
-            if let Some(error) = blocking(move || lifecycle::ensure_lineage(&paths, &key, "revive_pinned", &extra)).await {
-                failed.push(json!({"session_id": id, "error": error}));
-                continue;
-            }
-            let out = self.backend.lifecycle(Life::Resume, json!({"session_id": id}), None).await;
+            let lineage = blocking(move || match lifecycle::ensure_lineage(&paths, &key, "revive_pinned", &extra) {
+                Some(error) => Err(error),
+                None => Ok(lifecycle::read_lineage(&paths, &key).unwrap_or_default()),
+            });
+            let seat = match lineage.await {
+                Ok(rec) => rec.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with(SEAT_PREFIX)),
+                Err(error) => {
+                    failed.push(json!({"session_id": id, "error": error}));
+                    continue;
+                }
+            };
+            let (life, done) = if seat { (Life::Resume, &mut revived) } else { (Life::Stop, &mut retired) };
+            let out = self.backend.lifecycle(life, json!({"session_id": id}), None).await;
             if truthy(out.get("ok")) {
-                revived.push(id);
+                done.push(id);
             } else {
                 let why = out.get("reason").filter(|r| truthy(Some(r))).or_else(|| out.get("error"));
                 failed.push(json!({"session_id": id, "error": why}));
             }
         }
-        json!({"ok": failed.is_empty(), "revived": revived, "live": still, "failed": failed})
+        json!({"ok": failed.is_empty(), "revived": revived, "retired": retired, "live": still, "failed": failed})
     }
 
     /// Bring back the pinned jobs a host reboot ended, once the daemon is up (fleet.md R139).
@@ -1002,8 +1014,9 @@ impl<B: Backend> App<B> {
             }
             let out = self.revive_pinned().await;
             tracing::info!(
-                "cch: after the reboot, revived {}, still live {}, failed {}",
+                "cch: after the reboot, revived {}, retired {}, still live {}, failed {}",
                 out["revived"],
+                out["retired"],
                 out["live"],
                 out["failed"]
             );
@@ -1461,17 +1474,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_revive_pinned_resumes_only_the_dead_pins() {
+    async fn test_revive_pinned_resumes_the_dead_seat_agents_and_stops_the_other_dead_pins() {
         let b = rig(|f| Fake { live: BTreeSet::from(["aaaa1111".to_string()]), ..f });
         let fake = &b.app.backend;
-        Fake::write(&fake.paths.home.pins(), json!(["aaaa1111", "bbbb2222"]));
-        for job in ["aaaa1111", "bbbb2222"] {
+        Fake::write(&fake.paths.home.pins(), json!(["aaaa1111", "bbbb2222", "cccc3333"]));
+        for (job, name) in [("aaaa1111", "seat:discord/x/y"), ("bbbb2222", "seat:slack/dm/tester"), ("cccc3333", "a worker")] {
             held_job(fake, job);
-            lineage(fake, job, json!({"session_id": sid_of(job), "mode": "worker"}));
+            lineage(fake, job, json!({"session_id": sid_of(job), "mode": "worker", "name": name}));
         }
         let out = run(&b.app, "revive_pinned", json!({})).await;
-        assert_eq!((&out["revived"], &out["live"], &out["failed"]), (&json!([sid_of("bbbb2222")]), &json!([sid_of("aaaa1111")]), &json!([])));
-        assert_eq!(fake.lifes(), [(Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None)]);
+        assert_eq!(
+            (&out["revived"], &out["retired"], &out["live"], &out["failed"]),
+            (&json!([sid_of("bbbb2222")]), &json!([sid_of("cccc3333")]), &json!([sid_of("aaaa1111")]), &json!([]))
+        );
+        assert_eq!(
+            fake.lifes(),
+            [
+                (Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None),
+                (Life::Stop, json!({"session_id": sid_of("cccc3333")}), None)
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1577,7 +1599,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_after_a_reboot_the_pinned_jobs_are_revived() {
+    async fn test_after_a_reboot_the_dead_pinned_jobs_are_settled() {
         let boot = Boot::new();
         boot.set("boot-1");
         boot.first();
@@ -1587,7 +1609,7 @@ mod tests {
         held_job(&b.app.backend, "bbbb2222");
         b.app.revive_after_boot(&boot.id(), &boot.mark()).await;
         assert_eq!(*b.app.backend.ensured.lock().unwrap(), ["revived", "revived"], "it waits for the daemon");
-        assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None)]);
+        assert_eq!(b.app.backend.lifes(), [(Life::Stop, json!({"session_id": sid_of("bbbb2222")}), None)], "no seat names it");
     }
 
     // --- tests/test_manifest_surface.py, the halves that need a handler ---

@@ -210,7 +210,10 @@ impl Job {
             pty_sock: py_opt_str(w.get("ptySock")),
             pty_auth: py_opt_str(w.get("ptyAuth")),
             dec_modes: int_items(w.get("decModes")),
-            session_id: live.and_then(|r| py_opt_str(r.get("sessionId"))).or_else(|| py_opt_str(w.get("sessionId"))),
+            session_id: live
+                .and_then(|r| py_opt_str(r.get("sessionId")))
+                .or_else(|| py_opt_str(w.get("sessionId")))
+                .or_else(|| py_opt_str(st.get("sessionId"))),
             source: py_opt_str(dispatch.get("source")),
             seed_name: py_opt_str(seed.get("name")),
             bridge_session_id: py_truthy_str(st.get("bridgeSessionId")),
@@ -238,6 +241,21 @@ pub fn load(home: &ClaudeHome) -> Vec<Job> {
         .collect();
     jobs.sort_by_key(|j| j.started_at_ms.unwrap_or(0));
     jobs
+}
+
+/// Every job whose directory and record remain under `jobs/` after the roster dropped it: one the
+/// daemon retired for idling, or one whose process died with the host. None of them has a
+/// process. Its session id is the one its record last saw.
+pub fn unlisted(home: &ClaudeHome) -> Vec<Job> {
+    let listed = RosterFile::read(home).workers;
+    let Ok(dirs) = std::fs::read_dir(home.jobs()) else { return Vec::new() };
+    dirs.flatten()
+        .filter(|d| d.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|d| d.file_name().into_string().ok())
+        .filter(|short| !listed.contains_key(short))
+        .map(|short| Job::from_worker(&short, &Value::Null, home))
+        .filter(|j| j.has_record)
+        .collect()
 }
 
 /// The pid of the running Claude Code daemon, or None when there is none.
@@ -332,6 +350,19 @@ mod tests {
             assert_eq!(RosterFile::read_strict(&h).unwrap_err().path, h.roster());
             assert_eq!(RosterFile::read(&h), RosterFile::default());
         }
+    }
+
+    #[test]
+    fn unlisted_holds_the_job_records_the_roster_dropped() {
+        let (_d, h) = home();
+        write_roster(&h, json!({"listed": {"replPid": 7}}), None);
+        write_job(&h, "listed", json!({"name": "a"}));
+        write_job(&h, "dropped", json!({"name": "b", "sessionId": "s9"}));
+        std::fs::create_dir_all(h.jobs().join("bare")).unwrap();
+        std::fs::write(h.jobs().join("pins.json"), "[]").unwrap();
+        let got = unlisted(&h);
+        assert_eq!(got.iter().map(|j| j.short.as_str()).collect::<Vec<_>>(), ["dropped"]);
+        assert_eq!((got[0].session_id.as_deref(), got[0].repl_pid), (Some("s9"), None));
     }
 
     #[test]

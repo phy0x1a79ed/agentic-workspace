@@ -561,7 +561,7 @@ pub fn parse(args: &Value) -> Result<Spec, Refused> {
     if scope.is_some() && project.is_none() {
         return refuse("a scope needs its project");
     }
-    let suggest = flag(given("suggest"), "suggest")?;
+    let suggest = flag(given("suggest"), "suggest", false)?;
     let lobby = scope.is_none() || suggest;
     let task_id = match set("task_id") {
         None => None,
@@ -616,11 +616,7 @@ pub fn parse(args: &Value) -> Result<Spec, Refused> {
         }
         Some(_) => return refuse("started_by must be a short printable string"),
     };
-    let brief = match given("brief") {
-        None => None,
-        Some(Value::Bool(b)) => Some(*b),
-        Some(_) => return refuse("brief must be true or false"),
-    };
+    let brief = flag(given("brief"), "brief", true)?;
     let replaces = match given("replaces") {
         None => None,
         Some(Value::String(r)) if SessionId::parse(r).is_ok_and(|id| id.platform() == Platform::Claude) => Some(r.clone()),
@@ -630,10 +626,10 @@ pub fn parse(args: &Value) -> Result<Spec, Refused> {
     let disallowed_tools = tool_list(given("disallowed_tools"), "disallowed_tools")?;
     let allowed_tools = tool_list(given("allowed_tools"), "allowed_tools")?;
     let tools = tool_list(given("tools"), "tools")?;
-    let restricted = flag(given("restricted"), "restricted")?;
-    let strict_mcp = flag(given("strict_mcp"), "strict_mcp")?;
+    let restricted = flag(given("restricted"), "restricted", false)?;
+    let strict_mcp = flag(given("strict_mcp"), "strict_mcp", false)?;
     let remote_control = remote_control(given("remote_control"), &name)?;
-    let pin = flag(given("pin"), "pin")?;
+    let pin = flag(given("pin"), "pin", true)?;
     let tags = tag_list(given("tags"))?;
     Ok(Spec {
         project,
@@ -657,7 +653,7 @@ pub fn parse(args: &Value) -> Result<Spec, Refused> {
         strict_mcp,
         remote_control,
         pin,
-        brief: brief != Some(false) && !pin,
+        brief,
         started_by,
         replaces,
         tags,
@@ -682,9 +678,9 @@ fn optional_text(value: Option<&Value>, why: &str) -> Result<Option<String>, Ref
     }
 }
 
-fn flag(value: Option<&Value>, field: &str) -> Result<bool, Refused> {
+fn flag(value: Option<&Value>, field: &str, default: bool) -> Result<bool, Refused> {
     match value {
-        None => Ok(false),
+        None => Ok(default),
         Some(Value::Bool(b)) => Ok(*b),
         Some(_) => Err(Refused::new(format!("{field} must be true or false"))),
     }
@@ -2663,7 +2659,7 @@ mod tests {
             "project": "awm", "scope": "demo", "lobby": false,
             "cwd": w.projects().join("awm/demo").display().to_string(),
             "attach": format!("claude attach {}", chosen_job(&w)), "parent": id_of(PARENT_JOB), "mode": "rep",
-            "pinned": false, "link": null, "link_reason": out["link_reason"],
+            "pinned": true, "link": null, "link_reason": out["link_reason"],
         });
         assert_eq!(out, expected);
         let rec = read_lineage(&w.paths, &chosen_id(&w)).unwrap();

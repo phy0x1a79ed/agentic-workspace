@@ -551,7 +551,7 @@ impl Seats {
         let mut spec = json!({
             "project": settings.project, "scope": seat.decl.scope, "name": seat.decl.name, "prompt": brief::brief(&facts, &lines),
             "trust": seat.decl.level, "model": model, "effort": effort, "remote_control": seat.remote_control,
-            "pin": true,
+            "pin": true, "brief": false,
         });
         let here = previous.as_ref().filter(|p| !p.adopted && p.node == seat.decl.node);
         // A host reboot can bring the old agent back after its seat emptied: the new one takes its place.
