@@ -162,3 +162,20 @@ Each mutable name has one origin. Whether that sits within C3 is still to confir
 - Deferred items and test cases are journalled in 3a6c999a (tag `deferred`), to be edited as they change.
 
 **Landed.** New tool; no metasmith fork.
+
+## promise (2026-11-11)
+
+**Question.** What is the back-and-forth between a requester and providers, in what order, and where does state live?
+
+**User's words.** "we would need a new baitan executor, which is why I pushed for the plugin to be more stand alone". "the key offer, bid, award, started, settled is good. events being broadcasts back also makes sense, but may also need remote state that is pollable for catchup. review after 2nd checker transaction is also right." "we can take some liberties during implementation like we may not need to explicitly push events back to CLI."
+
+**Decided.**
+- The key messages are offer, bid, award, started and settled. The requester's daemon holds the promise; the provider holds the job.
+- Events are broadcast back to the requester. The provider also keeps remote state that the requester can poll to catch up after a disconnect.
+- The promise settles on the result. The review follows after the checker's own transaction (which may be more offers, e.g. CheckM).
+- Implementation may take liberties, e.g. the CLI need not receive pushed events.
+- A baitan Nextflow executor is in scope (it routes each Nextflow task through baitan), and is why baitan is standalone. This amends `standalone`, which had it as later.
+
+Sequence drawn in the session: run → offer to all → bids → picker → award/decline → provider pulls inputs → started/progress → settled → requester fetches outputs → checker → review.
+
+**Open, moved to new topics.** Where inputs come from and where outputs go (`storage`); whether data transfer, deployment and dependency acquisition are offers (`mutation`, `dependencies`); fronting sleeping providers (`fronting`).

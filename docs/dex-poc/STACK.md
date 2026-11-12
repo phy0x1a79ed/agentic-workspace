@@ -6,7 +6,7 @@
 
 ## Current
 
-`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named baitan (摆摊; was braavos). `braavos-offer` and `metasmith-reuse` closed. Next: `promise`. Deferred items and test cases: journal 3a6c999a.
+`compute-market`: a compute market for awm peers. The user's pressing issue (2026-11-11). Evidence: journal 7ab424c3 (cold builds on mizar, full disk from per-worktree targets, contention) and E4 in `FINDINGS.md`. `market-scope` closed: a general job, HPC clusters as providers, standalone, Nextflow later. `standalone` closed: CLI, MCP and HTTP generated from one verb set; callers shell, awm agents, Nextflow as a whole job. The plugin is named baitan (摆摊; was braavos). `braavos-offer` and `metasmith-reuse` closed. `promise` closed. Next: `mutation`. Deferred items and test cases: journal 3a6c999a.
 
 ## Waiting on the user
 
@@ -29,8 +29,11 @@ Nothing.
 ## Stack
 
 - `compute-market`: see Current.
-  - `promise`: the event-driven back-and-forth that reads as a long-running call, plus `status`. Proposal on the table: daemon-held promise, sequenced events, catch-up on reconnect.
-  - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. A cluster login node cannot host a daemon.
+  - `mutation`: work that changes a place rather than producing a new who: data transfer, deployment, publishing. Offers or something else, and if else, what.
+  - `dependencies`: how installs, containers and reference databases are acquired per provider. Metasmith uses transforms with no inputs. Case: metabuli and GTDB-Tk, with large, many-file reference databases that suit memory-heavy dedicated machines, not HPC.
+  - `storage`: distributed storage. Results (and maybe inputs) live on chinook in a dedicated folder; altair as a workspace that publishes to chinook; every provider has local workspaces for data and dependencies. Where step 5 pulls inputs from.
+  - `fronting`: altair bids on behalf of providers that cannot run a live service (HPC clusters) or sleep (spot machines for GTDB-Tk and metabuli, images set up by shogun, spun up by altair). Each machine is its own provider and its own bid; a front submits several bids.
+  - `providers`: awm peers and Slurm clusters (sockeye, fir, nibi, trillium) behind one abstraction. Largely absorbed by `fronting`.
   - `fair-share`: Slurm fair-use quotas as an allocation input, "as a system".
   - `tool-surface`: the narrow exposed tool, roughly submit, status, result, cancel. A 15 to 50 minute build cannot be one blocking call.
   - `bids`: what a bid vector holds, how bids move as a provider reaches capacity, the scoring algorithm.
@@ -63,4 +66,5 @@ None.
 - `standalone`: three generated surfaces; shell, awm agents, Nextflow as a whole job.
 - `braavos-offer`: what + who; lineage identity; offer carries axes, picker and checker; reviews; size feedback.
 - `metasmith-reuse`: take the ideas into a new tool; no fork. Renamed baitan.
+- `promise`: offer, bid, award, started, settled; broadcast events plus pollable remote state; review after the checker.
 - `poc-build`: E1 to E4 run; results in `FINDINGS.md`.
