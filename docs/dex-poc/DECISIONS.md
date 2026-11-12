@@ -381,7 +381,18 @@ Sequence drawn in the session: run → offer to all → bids → picker → awar
 - No duplicate runs of one offer, ever.
 - When an awarded offer breaks its promise, baitan runs a fresh bid round without the failed provider (the runner-up with current state). No bids: the promise errors.
 - No baitan-side deadlines. Hang detection belongs to the provider: a dead provider shows as a dropped connection (`unavailable`); a dead or stuck job is the provider's watcher's to settle (process exit, Slurm job state, its own walltime and retries). The caller can always `cancel`.
+- Sign of life, not deadlines (Tony: "no deadlines, but need \"sign of life\""): `status` on an awarded promise asks the provider, which answers from its watcher (process alive, Slurm job state from its cached calls, last progress). The answer is a fact, never a trigger; the caller decides to `cancel`. No heartbeat timer.
 - baitan keeps, per (provider, contract), the success rate (settled against broken) and, per axis, the error between the bid's value and the measured value (time from the settle, quality axes from the review). Lateness is the time axis's case of this error.
 - The picker scores bids corrected by that history: a provider's bid on an axis is adjusted by its error record there, and its expected cost includes its failure rate.
 
 **Landed.** This file. Test 3 of journal 3a6c999a now reads without duplication: the flaky provider's failures cost one fresh round each, and its success rate pushes later awards to the reliable one.
+
+## build-repro (2026-11-12)
+
+**Question.** Do real builds (kb, lance, musl release) give byte-identical output?
+
+**User's words.** "drop"
+
+**Decided.** Dropped. Identity is the declared property set and baitan never compares bytes, so byte-identity does not affect the market. A caller who needs it adds a property (e.g. a lockfile hash).
+
+**Landed.** This file.
