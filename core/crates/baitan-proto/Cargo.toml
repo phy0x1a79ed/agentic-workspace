@@ -1,0 +1,13 @@
+[package]
+name = "baitan-proto"
+description = "baitan's wire contract: envelope, messages, offer sets, facts and declared-identity hashing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true
