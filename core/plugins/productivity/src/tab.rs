@@ -34,7 +34,7 @@ impl Tab {
     /// still loading, as on its first use after Chrome starts, gets one more try.
     pub async fn eval(&self, prelude: &str, f: &str, args: &[Value]) -> R {
         match self.eval_once(prelude, f, args).await {
-            Err(e) if e.message.contains("about:blank") || e.message.contains("context") => {
+            Err(e) if ["about:blank", "context", "navigated"].iter().any(|m| e.message.contains(m)) => {
                 tokio::time::sleep(Duration::from_secs(4)).await;
                 self.eval_once(prelude, f, args).await
             }
