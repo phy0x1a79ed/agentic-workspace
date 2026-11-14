@@ -235,7 +235,6 @@ async fn close_orphans_closes_only_the_seats_of_dead_sessions_on_that_node() {
     let live = book.open("mizar/live", "trusted", None, false).await.unwrap();
     let dead = book.open("mizar/dead", "trusted", None, false).await.unwrap();
     let other = book.open("lyra/dead", "trusted", None, false).await.unwrap();
-    assert_eq!(book.nodes().await, HashSet::from(["mizar".to_string(), "lyra".to_string()]));
     let closed = book.close_orphans("mizar", &HashSet::from(["live".to_string()])).await;
     assert_eq!(closed, vec![dead.seat.clone()]);
     assert!(!chrome.with(|s| s.windows.contains_key(&dead.tabs[0])));

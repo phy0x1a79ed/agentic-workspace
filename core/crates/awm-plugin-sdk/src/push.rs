@@ -85,16 +85,8 @@ pub async fn reflect(hub: &Hub, node: &str, session: &str, text: &str) -> Outcom
 }
 
 /// The `list_other` row of each running background session on `node`, by session id, or None
-/// when it cannot tell.
+/// when it cannot tell. Any `errors[]` entry means some harness did not answer, so it cannot tell.
 pub async fn live_rows(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> {
-    let mut rows = live_sessions(hub, node).await?;
-    rows.retain(|_, r| r.get("kind").and_then(Value::as_str).is_some_and(|k| ["bg", "web"].contains(&k)));
-    Some(rows)
-}
-
-/// The `list_other` row of each live session of any kind on `node`, by session id, or None when
-/// it cannot tell. Any `errors[]` entry means some harness did not answer, so it cannot tell.
-pub async fn live_sessions(hub: &Hub, node: &str) -> Option<HashMap<String, Value>> {
     let opts = CallOpts { peer: peer_for(node), timeout: Duration::from_secs(60), ..CallOpts::default() };
     let mut reply = hub.call_with("reflection", "list_other", json!({}), &opts).await.ok()?;
     if reply.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty()) {
@@ -104,7 +96,11 @@ pub async fn live_sessions(hub: &Hub, node: &str) -> Option<HashMap<String, Valu
     Some(
         rows.into_iter()
             .filter(row_live)
-            .filter_map(|r| Some((r.get("session_id").and_then(Value::as_str).filter(|j| !j.is_empty())?.to_string(), r)))
+            .filter_map(|r| {
+                ["bg", "web"].contains(&r.get("kind").and_then(Value::as_str)?).then_some(())?;
+                let session = r.get("session_id").and_then(Value::as_str).filter(|j| !j.is_empty())?.to_string();
+                Some((session, r))
+            })
             .collect(),
     )
 }
