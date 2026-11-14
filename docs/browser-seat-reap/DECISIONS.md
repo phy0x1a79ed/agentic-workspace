@@ -47,3 +47,13 @@ User picked "Owner's node reports", then said "clean up the old reaper if obsole
 Decided: each node's reflection sends its live session ids and names to the hidden browser verb `sessions_live`, on every session start and stop and once at boot. A stopped session is left out even if its provider still lists it. A list with a provider error is not sent. The browser closes the calling node's seats whose session is not named. Only a caller that is no session and did not hop may call the verb, so a node speaks for its own seats alone. The alcor-side session watch was removed.
 
 Landed: release 8435a1ab. Verified: capella and altair report `ok` in alcor's port.log, altair's refusals stopped, the live altair seats stayed open, a session's call to the verb was refused, and a node-level call from mizar closed a test seat.
+
+## fullscreen-windows — 2026-11-14
+
+Question: should alcor's Chrome windows be full screen, and open that way?
+
+User: "I meant maximized. 1920 x 1080?"
+
+Decided: every window opens maximized with no title bar, keeping Chrome's tab strip and address bar, on a 1920×1080 display. An openbox rule in the image does it, so seats, service tabs and pop-ups all follow. Raising a seat's window maximizes it instead of restoring it to normal. Duplicate tabs came from the Teams redirect (productivity-tab-leak). The role's Teams default now carries the fix, so a role run keeps it.
+
+Landed: cloud f371785 on dev (feat/browser-maximized 0786535), applied to alcor with a recheck of changed=0. Not in cloud release, because dev holds unverified commits from other scopes. awm release 9e69278d for the raise. Verified: a new seat window measures 1919×1079 at (0,0) on a 1920×1080 screen. The raise path is not seen live.
