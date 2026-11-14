@@ -504,4 +504,4 @@ awm's generator stays in the gateway crates. Only the `awm` feature of `core/plu
 
 **Design.** Each node that needs a cluster holds its own ControlMaster, opened by its awm `ssh` service under an arbiter lease. mizar gets edges to nibi and trillium beside fir and sockeye; the `hpc_ssh` role renders its `awm-hpc.conf` from them. mizar's refused sockeye connect is a bug to fix, not to route around. The market dials clusters from mizar directly; the `ssh altair ssh <cluster>` hop goes away.
 
-**Landed.** Worker: cloud edges.yml + `hpc_ssh` run on mizar + sockeye connect fix (see STACK.md Workers).
+**Landed.** cloud efff18b on dev (feat/mizar-hpc-direct): mizar edges to nibi and trillium; `hpc_ssh` pins the four clusters' host keys. sockeye's refusal was an unknown host key that the Duo askpass would not accept. `site.yml --limit mizar --tags hpc_ssh` applied; `ssh <host> hostname` works for all four from mizar.

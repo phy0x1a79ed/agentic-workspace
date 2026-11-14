@@ -39,7 +39,7 @@ Nothing.
 
 ## Workers
 
-- `ssh-direct` worker: mizar edges to nibi and trillium in cloud edges.yml, `hpc_ssh` on mizar, diagnose and fix mizar's refused sockeye connect, verify one connect per host.
+None.
 
 ## Closed
 
