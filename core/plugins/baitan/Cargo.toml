@@ -1,6 +1,6 @@
 [package]
 name = "awm-plugin-baitan"
-description = "The baitan binary: market, provider, front, connect and caller surfaces; the awm feature adds the awm plugin mode."
+description = "The baitan binary: market, provider, connect and caller surfaces; the awm feature adds the awm plugin mode."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

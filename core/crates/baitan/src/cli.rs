@@ -12,13 +12,7 @@ pub fn command() -> Command {
         .about("baitan (摆摊): a compute market. Caller verbs talk to the market at BAITAN_CONNECT or ~/.baitan/market.sock.")
         .subcommand_required(true)
         .subcommand(Command::new("serve").about("Run the market: listen on the socket and dial the links in ~/.baitan/baitan.toml."))
-        .subcommand(Command::new("provider").about("Run a provider over stdio (~/.baitan/provider.toml).").arg(config()))
-        .subcommand(
-            Command::new("front")
-                .about("Run a Slurm front over stdio (~/.baitan/front.toml).")
-                .arg(config())
-                .arg(Arg::new("cluster").long("cluster").help("Register only this cluster")),
-        )
+        .subcommand(Command::new("provider").about("Run a provider, and one per [[cluster]], over stdio (~/.baitan/provider.toml).").arg(config()))
         .subcommand(
             Command::new("connect")
                 .about("Bridge stdio to the market socket.")
@@ -40,7 +34,6 @@ pub async fn run(m: ArgMatches) -> anyhow::Result<()> {
     match name {
         "serve" => roles::serve(baitan_market::Market::new("market"), roles::MarketConfig::load()?).await,
         "provider" => roles::provider(sub.get_one::<PathBuf>("config").cloned()).await,
-        "front" => roles::front(sub.get_one::<PathBuf>("config").cloned(), sub.get_one::<String>("cluster").cloned()).await,
         "connect" => roles::connect(sub.get_one::<PathBuf>("socket").cloned().unwrap_or_else(roles::default_socket)).await,
         "mcp" => surfaces::mcp_stdio(Arc::new(roles::client(&caller_name()).await?)).await,
         "http" => {

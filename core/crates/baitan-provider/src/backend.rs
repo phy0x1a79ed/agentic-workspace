@@ -1,6 +1,6 @@
-//! Where a provider's jobs run. The provider turns every step into a shell script in a work dir;
-//! a backend only runs scripts. `Local` runs them detached on this host; the Slurm front runs them
-//! as job-array tasks.
+//! Where a provider's jobs run. The provider turns every compute step into a shell script; a
+//! backend writes it to the work dir as `run.sh` and runs it. `Local` runs them detached on this
+//! host; the Slurm backend runs them as job-array tasks on a cluster.
 
 use async_trait::async_trait;
 use baitan_proto::{PromiseId, Resources};
@@ -11,9 +11,11 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub struct JobSpec {
     pub promise: PromiseId,
-    /// Holds `run.sh`. The script writes its outputs here. The backend writes `exit` here when the
+    /// Gets `run.sh`. The script writes its outputs here. The backend writes `exit` here when the
     /// script ends, holding its exit code, so a restarted provider can recover the result.
     pub workdir: PathBuf,
+    /// The content of `run.sh`.
+    pub script: String,
     pub res: Resources,
 }
 

@@ -1,0 +1,68 @@
+# altair's ~/.baitan/provider.toml: altair's own provider plus one provider per Slurm cluster.
+# Each cluster's state_dir defaults to ~/.baitan/<id> on altair (state.json, jobs.json).
+# work_dir is the old cluster state_dir + /work, so instances made by the retired fronts still
+# resolve once their state.json is copied to ~/.baitan/<id>/state.json on altair.
+
+id = "altair"
+slots = 16
+[props]
+name = "altair"
+
+[[cluster]]
+[cluster.provider]
+id = "fir"
+ssh = "fir"
+work_dir = "/scratch/phyberos/baitan/state/work"
+slots = 16
+[cluster.provider.props]
+name = "fir"
+[cluster.slurm]
+account = "def-shallam"
+walltime = "01:00:00"
+scratch = "/scratch/phyberos/baitan"
+bin_dir = "/opt/software/slurm/bin"
+
+[[cluster]]
+[cluster.provider]
+id = "nibi"
+ssh = "nibi"
+work_dir = "/scratch/phyberos/baitan/state/work"
+slots = 16
+[cluster.provider.props]
+name = "nibi"
+[cluster.slurm]
+account = "def-shallam"
+walltime = "01:00:00"
+scratch = "/scratch/phyberos/baitan"
+bin_dir = "/opt/software/slurm/25.11.8/bin"
+
+[[cluster]]
+[cluster.provider]
+id = "trillium"
+ssh = "trillium"
+work_dir = "/scratch/phyberos/baitan/state/work"
+slots = 16
+[cluster.provider.props]
+name = "trillium"
+[cluster.slurm]
+account = "def-shallam"
+walltime = "01:00:00"
+scratch = "/scratch/phyberos/baitan"
+bin_dir = "/opt/slurm/bin"
+whole_node = true
+
+[[cluster]]
+# Index YAMLs are read on the cluster; already-held entries cost no ssh.
+imports = ["/scratch/st-shallam-1/txyliu/baitan-data/ecoli.index.yml", "/scratch/st-shallam-1/txyliu/baitan-data/uniref50.index.yml"]
+[cluster.provider]
+id = "sockeye"
+ssh = "sockeye"
+work_dir = "/scratch/st-shallam-1/txyliu/baitan/state/work"
+slots = 16
+[cluster.provider.props]
+name = "sockeye"
+[cluster.slurm]
+account = "st-shallam-1"
+walltime = "08:00:00"
+scratch = "/scratch/st-shallam-1/txyliu/baitan"
+bin_dir = "/arc/system/opt/slurm/bin"

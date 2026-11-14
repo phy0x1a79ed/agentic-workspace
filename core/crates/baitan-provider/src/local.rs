@@ -76,7 +76,7 @@ impl Backend for LocalBackend {
     /// Idempotent per work dir: a finished job reports its `exit` file, a live one is awaited
     /// again, and only a job with neither is started.
     async fn launch(&self, job: JobSpec) -> anyhow::Result<()> {
-        let JobSpec { promise, workdir, .. } = job;
+        let JobSpec { promise, workdir, script, .. } = job;
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Some(code) = read_exit(&workdir) {
             let _ = self.done.send((promise, code));
@@ -89,6 +89,8 @@ impl Backend for LocalBackend {
                 return Ok(());
             }
         }
+        std::fs::create_dir_all(&workdir)?;
+        std::fs::write(workdir.join("run.sh"), script)?;
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg("sh ./run.sh >log 2>&1; echo $? > exit.tmp; mv exit.tmp exit")

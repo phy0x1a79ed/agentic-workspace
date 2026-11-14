@@ -1,4 +1,4 @@
-//! baitan's wire contract, shared by the market, providers, fronts, surfaces and the Nextflow executor.
+//! baitan's wire contract, shared by the market, providers, surfaces and the Nextflow executor.
 //!
 //! Design: `docs/dex-poc/DECISIONS.md`. The envelope and reply selectors follow `envelope-mapping`,
 //! versions follow `version-policy`, offer sets and facts follow `mutation`, `storage` and

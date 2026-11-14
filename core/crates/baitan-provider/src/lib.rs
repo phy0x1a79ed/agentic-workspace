@@ -2,6 +2,7 @@
 
 pub mod backend;
 mod config;
+mod host;
 mod import;
 mod index;
 mod jobs;
@@ -11,7 +12,8 @@ mod serve;
 
 pub use backend::{Backend, Done, DoneTx, JobSpec};
 pub use config::ProviderConfig;
-pub use jobs::find_cargo;
+pub use host::Host;
+pub use jobs::{find_cargo, q};
 pub use local::LocalBackend;
 pub use provider::{DoneRx, Provider};
 pub use serve::serve;

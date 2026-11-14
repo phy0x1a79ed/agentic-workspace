@@ -1,5 +1,6 @@
 //! Provider settings: identity, capacity, routes to other providers and pricing defaults.
 
+use crate::host::Host;
 use baitan_proto::{PropSet, ProviderId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -9,8 +10,13 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct ProviderConfig {
     pub id: ProviderId,
-    /// Empty means `~/.baitan/<id>`.
+    /// Holds `state.json`, always on this host. Empty means `~/.baitan/<id>`.
     pub state_dir: PathBuf,
+    /// ssh destination that holds the work dirs and instances; every file operation and placement
+    /// runs there. Empty means this host.
+    pub ssh: Option<String>,
+    /// Where work dirs go, on the `ssh` host. Empty means `<state_dir>/work`.
+    pub work_dir: PathBuf,
     /// Registered properties; an offer's place type must be a subset of them.
     pub props: PropSet,
     pub versions: [u32; 2],
@@ -34,6 +40,8 @@ impl Default for ProviderConfig {
         ProviderConfig {
             id: String::new(),
             state_dir: PathBuf::new(),
+            ssh: None,
+            work_dir: PathBuf::new(),
             props: PropSet::new(),
             versions: [baitan_proto::SUPPORTED[0], baitan_proto::SUPPORTED[1]],
             slots: 4,
@@ -57,5 +65,9 @@ impl ProviderConfig {
             return self.state_dir.clone();
         }
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".baitan").join(&self.id)
+    }
+
+    pub fn host(&self) -> Host {
+        Host::new(self.ssh.clone())
     }
 }

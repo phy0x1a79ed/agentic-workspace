@@ -3,10 +3,12 @@ use baitan_provider::backend::Done;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::sleep;
 
 struct Rig {
     dir: tempfile::TempDir,
     cfg: SlurmConfig,
+    saved: PathBuf,
     be: SlurmBackend,
     rx: UnboundedReceiver<Done>,
 }
@@ -41,12 +43,12 @@ fn rig() -> Rig {
         ("scancel", "echo \"scancel $*\" >> $D/calls.log"),
     ] {
         let p = bin.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\nD={d}\n{body}\n")).unwrap();
+        // `down` stands for a dead ssh master: every call fails.
+        std::fs::write(&p, format!("#!/bin/sh\nD={d}\n[ -e $D/down ] && exit 255\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let cfg = SlurmConfig {
-        cluster: "fir".into(),
         account: "acct".into(),
         partition: Some("cpu".into()),
         walltime: "01:00:00".into(),
@@ -54,7 +56,8 @@ fn rig() -> Rig {
         bin_dir: Some(bin),
         whole_node: false,
     };
-    Rig { be: SlurmBackend::new(cfg.clone(), tx), cfg, dir, rx }
+    let saved = dir.path().join("state/jobs.json");
+    Rig { be: SlurmBackend::new(cfg.clone(), Host::default(), saved.clone(), tx), cfg, saved, dir, rx }
 }
 
 impl Rig {
@@ -70,9 +73,7 @@ impl Rig {
     }
     fn job(&self, name: &str, cpus: u32, mem_mb: u64, script: &str) -> JobSpec {
         let workdir = self.dir.path().join("work").join(name);
-        std::fs::create_dir_all(&workdir).unwrap();
-        std::fs::write(workdir.join("run.sh"), script).unwrap();
-        JobSpec { promise: name.into(), workdir, res: Resources { cpus, mem_mb } }
+        JobSpec { promise: name.into(), workdir, script: script.into(), res: Resources { cpus, mem_mb } }
     }
     async fn done(&mut self) -> Done {
         self.rx.recv().await.unwrap()
@@ -161,7 +162,7 @@ async fn every_job_reports_its_exit_code() {
     }
     assert_eq!(got, HashMap::from([("ok".into(), 0), ("bad".into(), 3), ("ok2".into(), 0)]));
     // Each job reported once.
-    sleep(EXIT_POLL * 3).await;
+    sleep(GATE * 3).await;
     assert!(r.rx.try_recv().is_err());
 }
 
@@ -248,7 +249,7 @@ async fn kill_cancels_locally_before_submit_and_via_scancel_after() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn life_reports_cached_state_and_exit() {
+async fn life_reports_cached_state() {
     let mut r = rig();
     let j = r.job("a", 1, 1024, "exit 0");
     assert_eq!(r.be.life("a").await["state"], "unknown");
@@ -282,20 +283,21 @@ async fn vanished_task_without_exit_is_settled_as_failed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn restarted_front_recovers_persisted_jobs() {
+async fn restarted_provider_recovers_persisted_jobs() {
     let r = rig();
     let x = r.job("x", 1, 1024, "sleep 1000");
     r.be.launch(x).await.unwrap();
     while r.be.life("x").await["state"] == "queued" {
         sleep(Duration::from_secs(1)).await;
     }
-    let path = r.cfg.scratch.join("fir/jobs.json");
+    let path = r.saved.clone();
     let mut saved: Vec<Saved> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].promise, "x");
 
-    // The front dies; two more tasks ended meanwhile, one with an exit file and one without.
+    // The provider dies; two more tasks ended meanwhile, one with an exit file and one without.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let again = r.job("x", 1, 1024, "sleep 1000");
     drop(r.be);
     let done = r.dir.path().join("work/done");
     let lost = r.dir.path().join("work/lost");
@@ -306,7 +308,9 @@ async fn restarted_front_recovers_persisted_jobs() {
     saved.push(Saved { key: "900_1".into(), promise: "lost".into(), workdir: lost });
     std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
 
-    let _be = SlurmBackend::new(r.cfg.clone(), tx);
+    let _be = SlurmBackend::new(r.cfg.clone(), Host::default(), path, tx);
+    // The restarted provider launches its open promise again; it is already submitted.
+    _be.launch(again).await.unwrap();
     let mut got = HashMap::new();
     for _ in 0..2 {
         let (p, c) = rx.recv().await.unwrap();
@@ -317,4 +321,22 @@ async fn restarted_front_recovers_persisted_jobs() {
     sleep(GATE * 3).await;
     assert!(rx.try_recv().is_err());
     assert_eq!(_be.life("x").await["state"], "RUNNING");
+    let log = std::fs::read_to_string(r.dir.path().join("calls.log")).unwrap();
+    assert_eq!(log.lines().filter(|l| l.starts_with("sbatch")).count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dead_master_fails_calls_at_the_gate_and_shows_in_life() {
+    let mut r = rig();
+    std::fs::write(r.dir.path().join("down"), "").unwrap();
+    r.be.start_eta(&Resources::default()).await;
+    until(|| r.be.calls().len() >= 3).await;
+    assert_gated(&r.be.calls());
+    let j = r.job("a", 1, 1024, "exit 0");
+    r.be.launch(j).await.unwrap();
+    assert!(r.be.life("a").await["error"].as_str().is_some_and(|e| !e.is_empty()));
+    std::fs::remove_file(r.dir.path().join("down")).unwrap();
+    assert_eq!(r.done().await, ("a".to_string(), 0));
+    assert!(r.be.life("a").await["state"] == "unknown");
+    assert_gated(&r.be.calls());
 }
