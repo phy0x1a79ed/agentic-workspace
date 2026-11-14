@@ -29,14 +29,16 @@ pub struct App<G: Gateway> {
     pub store: Store,
     pub(crate) table: Table,
     pub(crate) sweeping: AtomicBool,
-    /// Held while a report of the live sessions runs, so a stale list never lands after a newer one.
+    /// A report of the live sessions is due, with the sessions that stopped since the last one.
+    pub(crate) report_due: Mutex<Option<Vec<String>>>,
+    /// Held while a report runs, so a stale list never lands after a newer one.
     pub(crate) reporting: tokio::sync::Mutex<()>,
     background: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl<G: Gateway> App<G> {
     pub fn new(gw: G, node: Arc<dyn Node>, policy: Arc<dyn TrustLib>, store: Store) -> Self {
-        Self { gw, node, policy, store, table: Table::default(), sweeping: AtomicBool::new(false), reporting: tokio::sync::Mutex::default(), background: Mutex::default() }
+        Self { gw, node, policy, store, table: Table::default(), sweeping: AtomicBool::new(false), report_due: Mutex::default(), reporting: tokio::sync::Mutex::default(), background: Mutex::default() }
     }
 
     /// Run `work` detached from the verb that started it, such as a retire's notices to peers.
