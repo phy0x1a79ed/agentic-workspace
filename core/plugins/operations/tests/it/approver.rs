@@ -9,17 +9,13 @@ use awm_trust::grant::{b64u, unb64u, verify_grant, verify_order, Expect, GrantEr
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use crate::vault_common::{env, s, AGENT_NODE, ORIGIN, PORTAL, PORTAL_NODE, RP_ID};
+use crate::common::ssh_pubkey;
 
 const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 fn code<T: std::fmt::Debug>(r: Result<T, ApproverError>) -> &'static str {
     r.expect_err("expected a refusal").code
-}
-
-fn ssh_pubkey() -> String {
-    let k = ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519).unwrap();
-    format!("{} user@laptop", k.public_key().to_openssh().unwrap())
 }
 
 fn trust_payload() -> Value {

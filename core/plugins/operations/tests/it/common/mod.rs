@@ -233,26 +233,22 @@ impl Outside for FakeOutside {
     }
 }
 
-/// Arbutus's ways out: each Slack post, approve-script run and session line.
+/// Arbutus's ways out: each Slack post and session line recorded, and decisions made on a
+/// real approver, which holds the check that matters.
 pub struct FakeArbutus {
-    pub rc: i32,
+    pub ap: Arc<Approver>,
     pub posts: Mutex<Vec<(String, String, String, String)>>,
     pub quiet: Mutex<Vec<bool>>,
-    pub runs: Mutex<Vec<(String, PathBuf, String)>>,
     pub lines: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeArbutus {
-    pub fn new(rc: i32) -> Arc<FakeArbutus> {
-        Arc::new(FakeArbutus { rc, posts: Mutex::new(vec![]), quiet: Mutex::new(vec![]), runs: Mutex::new(vec![]), lines: Mutex::new(vec![]) })
+    pub fn new(ap: Arc<Approver>) -> Arc<FakeArbutus> {
+        Arc::new(FakeArbutus { ap, posts: Mutex::new(vec![]), quiet: Mutex::new(vec![]), lines: Mutex::new(vec![]) })
     }
 
     pub fn posts(&self) -> Vec<(String, String, String, String)> {
         self.posts.lock().unwrap().clone()
-    }
-
-    pub fn runs(&self) -> Vec<(String, PathBuf, String)> {
-        self.runs.lock().unwrap().clone()
     }
 
     pub fn lines(&self) -> Vec<(String, String)> {
@@ -269,11 +265,12 @@ impl ArbutusIo for FakeArbutus {
         })
     }
 
-    fn run<'a>(&'a self, name: &'a str, bundles: &'a Path, approved_by: &'a str) -> BoxFut<'a, (i32, String)> {
-        Box::pin(async move {
-            self.runs.lock().unwrap().push((name.into(), bundles.to_path_buf(), approved_by.into()));
-            (self.rc, "Approved grow for 60 minutes".into())
-        })
+    fn request<'a>(&'a self, request_id: &'a str) -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { self.ap.approval_get(request_id).map_err(|e| e.message) })
+    }
+
+    fn decide<'a>(&'a self, request_id: &'a str, admin: &'a str, approve: bool) -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { self.ap.decide_by_admin(request_id, admin, approve).await.map_err(|e| e.message) })
     }
 
     fn tell<'a>(&'a self, session: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
@@ -282,6 +279,12 @@ impl ArbutusIo for FakeArbutus {
             Ok(())
         })
     }
+}
+
+/// One OpenSSH public key line, as a session's admin key.
+pub fn ssh_pubkey() -> String {
+    let k = ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519).unwrap();
+    format!("{} user@laptop", k.public_key().to_openssh().unwrap())
 }
 
 /// The number of rows in one table of the store's database, read on a second connection.

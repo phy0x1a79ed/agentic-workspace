@@ -693,6 +693,20 @@ impl Approver {
         self.grant(request_id, &r, &payload, &device).await
     }
 
+    /// Decide one request on an Arbutus admin's Slack reply (users.md R123). It grants only
+    /// what `slack_grantable` allows, so the reply never reaches past admin@shogun.
+    pub async fn decide_by_admin(&self, request_id: &str, admin: &str, approve: bool) -> AResult<Value> {
+        self.sweep().await;
+        crate::arbutus::slack_grantable(&self.approval_get(request_id)?).map_err(|e| ApproverError::new("refused", e))?;
+        let device = format!("slack:{admin}");
+        if !approve {
+            return self.finish(request_id, "denied", Some(&device), &[]).await;
+        }
+        let r = self.request_row(request_id)?;
+        let payload: Value = r["payload"].as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or(json!({}));
+        self.grant(request_id, &r, &payload, &device).await
+    }
+
     /// The passkey options for one request's approval.
     pub fn approve_options(&self, request_id: &str) -> AResult<Value> {
         let r = self.request_row(request_id)?;

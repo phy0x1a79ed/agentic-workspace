@@ -1,6 +1,6 @@
 # operations (port T11). On alcor HOME is /var/lib/awm/operations, so the queue sits in
-# its .awm/operations/ and the approver in AWM_APPROVER_DIR. snapshot.rs adds the Arbutus
-# pending dir as an extra, from the same setting the approval path reads.
+# its .awm/operations/ (the Arbutus Slack records in arbutus/) and the approver in
+# AWM_APPROVER_DIR.
 dirs = ["${HOME}/.awm/operations", "${AWM_APPROVER_DIR:-${HOME}/.awm/approver}"]
 
 [[additive]]
