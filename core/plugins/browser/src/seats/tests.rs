@@ -1,7 +1,7 @@
 //! Browser seats against a fake Chrome: confinement, trust, the viewer, and a restart.
 
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex as SyncMutex;
 
@@ -241,5 +241,3 @@ async fn close_orphans_closes_only_the_seats_of_dead_sessions_on_that_node() {
     let left: Vec<String> = book.list(None).await.iter().map(|s| s["seat"].as_str().unwrap().to_string()).collect();
     assert_eq!(left, vec![live.seat, other.seat]);
 }
-
-use std::collections::HashSet;

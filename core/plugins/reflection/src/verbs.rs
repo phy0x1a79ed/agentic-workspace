@@ -31,7 +31,6 @@ pub const ROW_KEYS: [&str; 8] = ["session_id", "parent", "state", "live", "alive
 
 /// The model and effort of a start that names neither.
 const DEFAULT_MODEL: &str = "opus";
-const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DEFAULT_EFFORT: &str = "medium";
 const OWN_STOP: &str = "that is your own session; stopping it ends this conversation. Pass confirm=true to proceed.";
 const TERMINAL_WAIT: &str =
@@ -704,10 +703,8 @@ impl<G: Gateway> App<G> {
         let event = declared(args);
         let out = match event.get("kind").and_then(Value::as_str) {
             Some(kind) if LIFECYCLE.contains(&kind) => {
-                if matches!(kind, "started" | "stopped") {
-                    let gone = event.get("session_id").and_then(Value::as_str).filter(|_| kind == "stopped").map(str::to_string);
-                    let app = self.clone();
-                    self.detach(async move { app.report_live(gone.as_deref()).await });
+                if kind == "stopped" {
+                    self.kick_report(event.get("session_id").and_then(Value::as_str));
                 }
                 return self.lifecycle(&event).await;
             }
@@ -738,9 +735,18 @@ impl<G: Gateway> App<G> {
 
     /// Name this node's live sessions, by id and by name, to the browser, which closes the seats
     /// of the rest (fleet.md R102). `gone` just stopped, though a provider may still list it. A
-    /// list with a provider error is not sent: a missing row would close a live seat.
-    pub async fn report_live(&self, gone: Option<&str>) {
+    /// burst of kicks costs one report, or two when it lands while one runs.
+    pub fn kick_report(self: &Arc<Self>, gone: Option<&str>) {
+        self.report_due.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_default().extend(gone.map(str::to_string));
+        let app = self.clone();
+        self.detach(async move { app.report_live().await });
+    }
+
+    /// A list with a provider error is not sent: a missing row would close a live seat.
+    async fn report_live(&self) {
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let _turn = self.reporting.lock().await;
+        let Some(gone) = self.report_due.lock().unwrap_or_else(|p| p.into_inner()).take() else { return };
         let out = self.list_other(&Frame::default(), &json!({})).await;
         if out.get("errors").is_some() {
             return;
@@ -749,11 +755,11 @@ impl<G: Gateway> App<G> {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|r| awm_plugin_sdk::holders::row_live(r) && text(r, "session_id") != gone)
+            .filter(|r| awm_plugin_sdk::holders::row_live(r) && !text(r, "session_id").is_some_and(|id| gone.iter().any(|g| g == id)))
             .flat_map(|r| [text(r, "session_id"), text(r, "name")])
             .flatten()
             .collect();
-        if let Err(e) = self.gw.call(Call::new("browser", "sessions_live", json!({"live": live}), REPORT_TIMEOUT)).await {
+        if let Err(e) = self.gw.call(Call::new("browser", "sessions_live", json!({"live": live}), TIMEOUT)).await {
             tracing::debug!("reflection: the browser did not take this node's live sessions: {e}");
         }
     }
@@ -784,7 +790,6 @@ impl<G: Gateway> App<G> {
             tracing::warn!("reflection: {} waited-on sessions are lost", lost.len());
         }
         self.kick_sweep();
-        let app = self.clone();
-        self.detach(async move { app.report_live(None).await });
+        self.kick_report(None);
     }
 }
