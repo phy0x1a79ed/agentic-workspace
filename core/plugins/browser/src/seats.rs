@@ -207,7 +207,7 @@ impl SeatBook {
             return Err(BookError::Usage("profile is one of ('tony', 'blank')".into()));
         }
         if profile == "tony" && lvl != Level::Trusted {
-            return Err(seat_err("only a trusted session gets Tony's profile (fleet.md R102 item 6)"));
+            return Err(BookError::Seat(format!("this session is {}, and only a trusted session gets Tony's profile", lvl.as_str())));
         }
         if session.is_empty() {
             return Err(seat_err("a seat belongs to a session: no calling session reached the browser"));

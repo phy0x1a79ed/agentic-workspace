@@ -35,11 +35,12 @@ fn rid() -> Value {
 /// Opened only by the Ops page, so a session can never ask for it.
 pub const VAULT_ONLY_KIND: &str = "service_window";
 
-pub const PAYLOADS: [(&str, &[&str]); 7] = [
+pub const PAYLOADS: [(&str, &[&str]); 8] = [
     ("admin_ssh", &["pubkey", "nodes"]),
     ("trust_raise", &["session_id", "from", "to"]),
     ("invite", &["perm", "reason", "holder_pubkey"]),
     ("browser_signin", &["seat", "site"]),
+    ("browser_profile", &["node", "session_id"]),
     ("vault_hold", &[]),
     ("plugin_commits", &["plugins"]),
     ("service_window", &[]),
