@@ -39,7 +39,7 @@ pub const ORDER_KINDS: [&str; 3] = ["agent", "retire", "service"];
 /// How long one passkey approval keeps the Ops service switches open.
 pub const SERVICE_WINDOW_S: f64 = 300.0;
 /// The kinds whose grant opens a window for its minutes, so the summary names them.
-const WINDOW_KINDS: [&str; 4] = ["admin_ssh", "trust_raise", "browser_signin", "vault_hold"];
+const WINDOW_KINDS: [&str; 5] = ["admin_ssh", "trust_raise", "browser_signin", "browser_profile", "vault_hold"];
 
 /// A note or session id: up to 64 letters, digits, `-` and `_`.
 fn is_id(s: &str) -> bool {
@@ -510,6 +510,12 @@ impl Approver {
             }
             if !payload["pubkey"].as_str().is_some_and(ssh_pub_line) {
                 return Err(bad("pubkey is one OpenSSH public key line"));
+            }
+        }
+        if kind == "browser_profile" {
+            let pn = payload["node"].as_str();
+            if !pn.is_some_and(valid_node) || pn != node || !payload["session_id"].as_str().is_some_and(is_id) {
+                return Err(bad("browser_profile names the request's node and one session id"));
             }
         }
         if kind == "plugin_commits" {

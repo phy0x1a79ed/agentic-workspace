@@ -214,6 +214,9 @@ async fn request_validation() {
         ("trust_raise", Some("mizar"), 30, json!({"session_id": "cc-1", "from": "low"}), None),
         ("trust_raise", Some("Bad Node"), 30, trust_payload(), None),
         ("browser_signin", None, 30, json!({"seat": "s1"}), None),
+        ("browser_profile", Some("altair"), 30, json!({"node": "mizar", "session_id": "cc-1"}), None),
+        ("browser_profile", None, 30, json!({"node": "altair", "session_id": "cc-1"}), None),
+        ("browser_profile", Some("altair"), 30, json!({"node": "altair", "session_id": "cc 1"}), None),
         ("vault_hold", Some("deneb"), 30, json!(["not", "an", "object"]), None),
         ("plugin_commits", None, 30, json!({"plugins": []}), None),
         ("plugin_commits", None, 30, json!({"plugins": [{"plugin": "zotero", "commit": "abc"}]}), None),
@@ -231,8 +234,9 @@ async fn request_validation() {
     for m in [15, 1440] {
         e.ap.approval_request("trust_raise", Some("mizar"), "r", m, trust_payload(), None, None).await.unwrap();
     }
+    e.ap.approval_request("browser_profile", Some("altair"), "r", 480, json!({"node": "altair", "session_id": "cc-1"}), None, None).await.unwrap();
     let kinds = request_kinds();
-    for k in ["admin_ssh", "trust_raise", "invite", "browser_signin", "vault_hold", "plugin_commits", "device_enrol"] {
+    for k in ["admin_ssh", "trust_raise", "invite", "browser_signin", "browser_profile", "vault_hold", "plugin_commits", "device_enrol"] {
         assert!(kinds.contains(&k), "{k}");
     }
 }

@@ -2,6 +2,7 @@
 
 mod chrome;
 mod containers;
+mod grants;
 mod seats;
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::chrome::Chrome;
 use crate::containers::Containers;
+use crate::grants::{Grant, Grants};
 use crate::seats::{BookError, SeatBook};
 
 const TOOL: &str = "browser";
@@ -129,7 +131,7 @@ macro_rules! verb {
     }};
 }
 
-fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>) -> Service {
+fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>, grants: Arc<Grants>) -> Service {
     let seat = || p("seat", "string", true, "The seat id that seat_open returned.");
     let tab = || p("tab", "string", true, "A tab id of this seat's window.");
     let url = || p("url", "string", true, "");
@@ -137,13 +139,28 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
     let node = svc.context().env().node.clone();
     let svc = svc.api("description", json!(DESCRIPTION)).api("emitters", json!([])).api("sessions", json!([]));
     let (c, s) = (chrome.clone(), settings.clone());
-    let svc = verb!(svc, book, [c, s], "seat_open", "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. Any other session gets a blank one. Returns the seat id.",
+    let svc = verb!(svc, book, [c, s, grants], "seat_open", "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. A trusted session on another node gets it once Tony approves that session: asking for profile tony files the request and answers pending until he does. Any other session gets a blank one. Returns the seat id.",
         json!([p("profile", "string", false, "tony or blank."), p("own_container", "boolean", false, "Run this seat in its own container.")]),
         |b, call, who| {
             c.ensure().await?;
             let own = call.args.get("own_container").map(truthy).unwrap_or(false);
-            let level = profile_level(&s.profile_nodes, &call, &who.1);
-            b.open(&who.0, level, call.str_arg("profile"), own).await.map(|s| s.view())
+            let asked = call.str_arg("profile");
+            let mut level = profile_level(&s.profile_nodes, &call, &who.1);
+            let mut why = None;
+            if let Some((node, session)) = who.0.split_once('/').filter(|_| level != who.1) {
+                let unlisted = format!("{node} is not in the browser's profile_nodes");
+                match grants.check(node, session, asked == Some("tony")).await? {
+                    Grant::Live => level = "trusted",
+                    Grant::Pending(rid) => return Ok(json!({"pending": true, "request_id": rid,
+                        "why": format!("{unlisted}, so Tony approves this session's use of his profile. Request {rid} waits for him; call seat_open again once he approves.")})),
+                    Grant::None => why = Some(format!("{unlisted}, so this seat is blank. Call seat_open with profile tony to ask Tony to approve this session.")),
+                }
+            }
+            let mut view = b.open(&who.0, level, asked, own).await?.view();
+            if let Some(w) = why {
+                view["why"] = json!(w);
+            }
+            Ok(view)
         });
     let svc = verb!(svc, book, "seat_close", "Close this seat's window, tabs and container.", json!([seat()]), |b, call, who| {
         let id = req(&call, "seat").map_err(|e| BookError::Usage(e.to_string()))?;
@@ -283,8 +300,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(seats = loaded, "read the recorded seats");
     let chrome = Arc::new(Chrome::new(settings.chrome.clone(), &settings.cdp));
     let ctx = svc.context();
+    let grants = Arc::new(Grants::load(Arc::new(ctx.hub().clone()), Some(dir.join("profile-grants.json"))));
     let (b, c) = (book.clone(), chrome.clone());
-    service(svc, book, settings, chrome)
+    service(svc, book, settings, chrome, grants)
         .on_ready(async move {
             let (b2, c2) = (b.clone(), c.clone());
             ctx.spawn("settle", async move {
@@ -303,6 +321,8 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use awm_plugin_sdk::{Caller, Env};
 
     fn env() -> Env {
@@ -313,10 +333,58 @@ mod tests {
         Arc::new(Settings { dir: "/nonexistent".into(), cdp: String::new(), viewer: "https://viewer".into(), service_sites: vec![("teams".into(), "https://teams.microsoft.com".into())], seat_image: String::new(), tony_profile: None, profile_nodes: vec!["mizar".into()], chrome: None })
     }
 
-    fn built(book: Book) -> Service {
+    /// The approver as operations answers it, with a test grant key. `approve` signs a grant.
+    #[derive(Default)]
+    struct FakeApprover {
+        requests: std::sync::Mutex<Vec<(String, Value)>>,
+        decided: std::sync::Mutex<HashMap<String, (String, Value)>>,
+    }
+
+    const SIGNER: [u8; 32] = [7; 32];
+
+    impl FakeApprover {
+        fn approve(&self, rid: &str, node: &str, session: &str, minutes: i64) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let body = json!({"grant_id": "g1", "request_id": rid, "kind": grants::KIND, "node": node, "subject": "tony",
+                "payload_sha256": awm_trust::grant::payload_digest(&json!({"node": node, "session_id": session})),
+                "not_before": now - 60, "not_after": now + minutes * 60, "approved_by_device": "d"});
+            let env = awm_trust::grant::sign_envelope(&ed25519_dalek::SigningKey::from_bytes(&SIGNER), "grant", body);
+            self.decided.lock().unwrap().insert(rid.into(), ("approved".into(), env));
+        }
+    }
+
+    impl grants::Approver for FakeApprover {
+        fn call<'a>(&'a self, verb: &'a str, args: Value) -> grants::Reply<'a> {
+            Box::pin(async move {
+                Ok(match verb {
+                    "keys" => json!({"grant_pub": awm_trust::grant::b64u(ed25519_dalek::SigningKey::from_bytes(&SIGNER).verifying_key().as_bytes())}),
+                    "approval_request" => {
+                        let mut r = self.requests.lock().unwrap();
+                        let rid = format!("q{}", r.len());
+                        r.push((rid.clone(), args));
+                        json!({"request_id": rid})
+                    }
+                    "approval_get" => {
+                        let rid = args["request_id"].as_str().unwrap();
+                        match self.decided.lock().unwrap().get(rid) {
+                            Some((status, grant)) => json!({"status": status, "grant": grant}),
+                            None => json!({"status": "pending", "grant": null}),
+                        }
+                    }
+                    _ => anyhow::bail!("no verb {verb}"),
+                })
+            })
+        }
+    }
+
+    fn built_with(book: Book, approver: Arc<FakeApprover>) -> Service {
         let s = settings();
         let chrome = Arc::new(Chrome::new(s.chrome.clone(), &s.cdp));
-        service(Service::new(env()), book, s, chrome)
+        service(Service::new(env()), book, s, chrome, Arc::new(Grants::load(approver, None)))
+    }
+
+    fn built(book: Book) -> Service {
+        built_with(book, Arc::default())
     }
 
     #[test]
@@ -351,11 +419,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tonys_profile_goes_only_to_trusted_sessions_on_listed_nodes() {
+    async fn tonys_profile_goes_to_trusted_sessions_on_listed_nodes_or_with_tonys_approval() {
         let book = Arc::new(SeatBook::new(Arc::new(seats::tests::FakeChrome::new("shared")), None, None));
-        let svc = built(book).into_test().await.unwrap();
+        let ap = Arc::new(FakeApprover::default());
+        let svc = built_with(book, ap.clone()).into_test().await.unwrap();
         let open = |caller: Caller, profile: Option<&str>| {
-            let mut args = json!({"_caller_trust": "trusted"});
+            let mut args = json!({"_caller_trust": caller.trust.clone()});
             if let Some(p) = profile {
                 args["profile"] = json!(p);
             }
@@ -365,10 +434,38 @@ mod tests {
         assert_eq!(open(who(Some("trusted")), None).await["profile"], "tony", "mizar is listed");
         let altair = Caller { node: "altair".into(), ..who(Some("trusted")) };
         let relayed = Caller { origin: Some("altair".into()), session: Some("sess-r".into()), ..who(Some("trusted")) };
-        for (name, c) in [("altair", altair), ("relayed from altair", relayed)] {
-            assert_eq!(open(c.clone(), None).await["profile"], "blank", "{name}");
-            assert!(open(c, Some("tony")).await["error"].as_str().unwrap().contains("trusted"), "{name}");
+        for (name, c) in [("altair", altair.clone()), ("relayed from altair", relayed)] {
+            let blank = open(c.clone(), None).await;
+            assert_eq!(blank["profile"], "blank", "{name}");
+            assert!(blank["why"].as_str().unwrap().contains("not in the browser's profile_nodes"), "{name}: {blank}");
+            let asked = open(c, Some("tony")).await;
+            assert_eq!(asked["pending"], true, "{name}: {asked}");
+            assert!(asked["why"].as_str().unwrap().contains("not in the browser's profile_nodes"), "{name}");
         }
+        assert_eq!(ap.requests.lock().unwrap().len(), 2);
+        let again = open(altair.clone(), Some("tony")).await;
+        assert_eq!((again["pending"].clone(), again["request_id"].clone()), (json!(true), json!("q0")), "a pending request is not filed twice");
+
+        let (rid, args) = ap.requests.lock().unwrap()[0].clone();
+        assert_eq!((args["kind"].clone(), args["node"].clone(), args["payload"].clone()), (json!("browser_profile"), json!("altair"), json!({"node": "altair", "session_id": "sess-j"})));
+        for (name, node, session, minutes) in [("another session", "altair", "sess-x", 30), ("another node", "lyra", "sess-j", 30), ("expired", "altair", "sess-j", -1)] {
+            ap.approve(&rid, node, session, minutes);
+            let out = open(altair.clone(), Some("tony")).await;
+            assert_eq!(out["pending"], true, "{name}: a grant that does not fit files a new request: {out}");
+            assert_ne!(out["request_id"], json!(rid), "{name}");
+        }
+        let rid = ap.requests.lock().unwrap().last().unwrap().0.clone();
+        ap.approve(&rid, "altair", "sess-j", 30);
+        let seat = open(altair.clone(), Some("tony")).await;
+        assert_eq!((seat["profile"].clone(), seat["level"].clone()), (json!("tony"), json!("trusted")), "{seat}");
+        assert_eq!(open(altair.clone(), None).await["profile"], "tony", "the grant holds without asking again");
+        let other = Caller { session: Some("sess-y".into()), ..altair };
+        assert_eq!(open(other, None).await["profile"], "blank", "the grant is for one session");
+
+        let filed = ap.requests.lock().unwrap().len();
+        let coop = Caller { node: "altair".into(), ..who(Some("cooperative")) };
+        assert!(open(coop, Some("tony")).await["error"].as_str().unwrap().contains("this session is cooperative"));
+        assert_eq!(ap.requests.lock().unwrap().len(), filed, "a cooperative session files no request");
     }
 
     #[tokio::test]
