@@ -495,3 +495,13 @@ awm's generator stays in the gateway crates. Only the `awm` feature of `core/plu
 **Decided.** No separate session. The user directed this session to build, test and deploy baitan itself. `JOBS.md` holds the wire contract that the build added to this file.
 
 **Landed.** Live on mizar since release cab01b96. Journal 3a6c999a records the test cases and what passed.
+
+## ssh-direct (2026-11-14)
+
+**Question.** Does mizar reach the HPC clusters with its own ssh logins, or through the masters altair holds?
+
+**User.** "direct, this was decided in previous journals" (journal e9f609ba, ssh-slot, 2026-11-09: "ssh is direct ssh"; locking lives only in ssh-arbiter on alcor).
+
+**Design.** Each node that needs a cluster holds its own ControlMaster, opened by its awm `ssh` service under an arbiter lease. mizar gets edges to nibi and trillium beside fir and sockeye; the `hpc_ssh` role renders its `awm-hpc.conf` from them. mizar's refused sockeye connect is a bug to fix, not to route around. The market dials clusters from mizar directly; the `ssh altair ssh <cluster>` hop goes away.
+
+**Landed.** Worker: cloud edges.yml + `hpc_ssh` run on mizar + sockeye connect fix (see STACK.md Workers).

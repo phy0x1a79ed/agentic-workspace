@@ -6,7 +6,7 @@
 
 ## Current
 
-`ssh-direct`: HPC ssh from mizar works for all four clusters. Asked: hold masters on mizar, or ride altair's.
+`front-stateless`: no persistent baitan process on HPC.
 
 ## Waiting on the user
 
@@ -33,17 +33,17 @@ Nothing.
 
 ## Stack
 
-- `ssh-direct`: "the ssh should work... if not, we should fix rather than wrking around". Survey 2026-11-14: mizar's `awm-hpc.conf` (hpc_ssh role, edges.yml) has fir and sockeye only; nibi and trillium are altair-only edges, so `ssh nibi` on mizar fails name resolution. mizar `ssh connect sockeye` is refused before auth although `vpn_ubc` works; cause not found yet.
 - `front-stateless`: "baitan HPC front needs to work without actually running a persistent process on HPC." Fronts stopped 2026-11-14; links removed from mizar `~/.baitan/baitan.toml` (backup `baitan.toml.with-fronts`). Survey: the front's state is all logic over sbatch/squeue/sshare/scancel output plus exit files on scratch; the `Backend` trait and `SlurmBackend::slurm()` are the seam to run those commands over ssh from the market side.
 - `prove-rust`: prove baitan on a simple Rust build job. Evidence: journal 47b79693 "Live: an agent-posted Rust build (L1)", no provider or promise detail; FINDINGS E4 was the pre-baitan prototype.
 - `prove-metasmith`: prove baitan on a metasmith pipeline; journal evidence is fine. Evidence: journal 47b79693 L3 on sockeye (prodigal + DIAMOND vs UniRef50, cache reuse on rerun), 3a6c999a.
 
 ## Workers
 
-None.
+- `ssh-direct` worker: mizar edges to nibi and trillium in cloud edges.yml, `hpc_ssh` on mizar, diagnose and fix mizar's refused sockeye connect, verify one connect per host.
 
 ## Closed
 
+- `ssh-direct`: mizar holds its own masters to all four clusters; no altair hop.
 - `freshness`: event-driven; subscribed or disconnected.
 - `keepalive`: dropped from the design; a socket option.
 - `mvp-scope`: cache, update event, remote fill first; bidding after.
