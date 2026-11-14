@@ -142,6 +142,7 @@ fn guarded(rid: &str, device: &str) -> Vec<(Method, String, Option<Value>)> {
     vec![
         p(Method::GET, "/api/session".into(), None),
         p(Method::POST, "/api/agent".into(), Some(json!({"node": AGENT_NODE}))),
+        p(Method::POST, "/api/session/retire".into(), Some(json!({"node": AGENT_NODE, "session_id": "cc01"}))),
         p(Method::POST, "/api/card/AAAAAAAA/close".into(), Some(json!({}))),
         p(Method::POST, "/api/seat/remote_control".into(), Some(json!({"seat": "s1", "on": true}))),
         p(Method::POST, "/api/seat/refresh".into(), Some(json!({"seat": "s1", "model": "sonnet", "effort": "low"}))),

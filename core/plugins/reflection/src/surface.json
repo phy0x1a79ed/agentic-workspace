@@ -207,7 +207,7 @@
   {
    "name": "stop",
    "tool": "reflection_stop",
-   "description": "Retire a background session on this node: stop it and remove its job (`claude stop`, then `claude rm`). The transcript stays, so the session is still resumable by its session id. A retire wakes each session that waits on it (`wait`), on any node. Retiring is the last step of every finished session: one that ends its work and sits idle never wakes its waiters. Works on any session, and on a stopped session whose job is left. Your own session is refused unless confirm is true, and is then stopped after this call returns. A terminal session is refused.",
+   "description": "Retire a session on this node. A background session is stopped and its job removed (`claude stop`, then `claude rm`). The transcript stays, so the session is still resumable by its session id. A terminal session gets `/exit` typed into it, which needs confirm, and `ok` means typed: it ends once its running turn does. A retire wakes each session that waits on it (`wait`), on any node. Retiring is the last step of every finished session: one that ends its work and sits idle never wakes its waiters. Works on any session, and on a stopped session whose job is left. Your own session is refused unless confirm is true, and is then stopped after this call returns.",
    "timeout": 60,
    "params": [
     {

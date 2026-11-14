@@ -1147,10 +1147,11 @@ async fn remove_job<R: Remover>(remove: &R, job: &str) -> StopOutcome {
     }
 }
 
-/// Stop a background session and remove its job through `remove`.
+/// Stop a background session and remove its job through `remove`, or type `/exit` into a
+/// terminal session.
 ///
-/// The caller's own session is refused without `confirm`, and is stopped after this call has
-/// returned. A terminal session the caller retires itself is left open for its terminal to close.
+/// The caller's own session and every terminal session are refused without `confirm`. The
+/// caller's own background session is stopped after this call has returned.
 pub async fn stop<E: Effects, R: Remover>(
     fx: &E,
     session: Option<&str>,
@@ -1172,21 +1173,8 @@ pub async fn stop<E: Effects, R: Remover>(
         return Ok(out);
     }
     let terminal = t.kind != SessionKind::Background || t.job.as_deref().is_none_or(str::is_empty);
-    if terminal && t.is_self && confirm {
-        // The caller learns of it, so the sessions that wait on it wake. Its terminal closes it.
-        return Ok(with(
-            ok_for(&t),
-            json!({
-                "terminal": true,
-                "stopped": false,
-                "note": "a terminal session is retired but still open: type /exit into it, or end the turn and let \
-                         its owner close it",
-            }),
-        ));
-    }
     if terminal {
-        let why = format!("{} is a terminal session, not a background job; close its terminal instead", describe(&t));
-        return Ok(refused(&t, &why));
+        return exit_terminal(fx, &t, confirm).await;
     }
     if t.is_self && !confirm {
         let why = "that is your own session; stopping it ends this conversation. Pass confirm=true to proceed.";
@@ -1215,6 +1203,22 @@ pub async fn stop<E: Effects, R: Remover>(
         out = with(out, json!({"reason": stop_failure(&result)}));
     }
     Ok(out)
+}
+
+/// Type `/exit` into a terminal session. It queues behind a running turn, so `ok` means typed.
+async fn exit_terminal<E: Effects>(fx: &E, t: &Target, confirm: bool) -> Result<Value, ControlError> {
+    if !confirm {
+        let why = format!("{} is a terminal session; pass confirm=true to type /exit into it", describe(t));
+        return Ok(with(refused(t, &why), json!({"terminal": true})));
+    }
+    require_running(t)?;
+    if !t.is_self {
+        if let Some(no) = check_clear(fx, t).await? {
+            return Ok(no);
+        }
+    }
+    let out = command(fx, t, Command { confirm: true, ..Command::new("/exit", "the exit") }).await?;
+    Ok(with(out, json!({"terminal": true})))
 }
 
 // --- Remote Control ----------------------------------------------------------
@@ -2443,6 +2447,23 @@ mod tests {
         assert!(ok(&out) && out["stopping"] == json!(true) && rm.calls().is_empty());
         run_spawned(&w).await;
         assert_eq!(rm.calls(), [SELF_JOB]);
+    }
+
+    #[tokio::test]
+    async fn test_stop_types_exit_into_a_terminal_session_only_with_confirm() {
+        const TTY: &str = "dddddddd";
+        let w = World::new();
+        let mut tty = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        w.record(tty.id(), "interactive", "tty", json!({"sessionId": uuid(TTY)}));
+        let rm = FakeRemover::new(true);
+        let refused = stop(&w, Some(sid(TTY).as_str()), me_(), false, rm.clone()).await.unwrap();
+        assert!(refused["refused"] == json!(true) && refused["terminal"] == json!(true), "{refused}");
+        assert!(w.typed().is_empty());
+        let out = stop(&w, Some(sid(TTY).as_str()), me_(), true, rm.clone()).await.unwrap();
+        assert!(ok(&out) && out["terminal"] == json!(true) && out["session_id"] == json!(sid(TTY)), "{out}");
+        assert_eq!(w.typed_texts(), ["/exit"]);
+        assert!(rm.calls().is_empty());
+        tty.kill().unwrap();
     }
 
     // A subscriber that keeps each event as "LEVEL message".

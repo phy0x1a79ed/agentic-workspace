@@ -296,7 +296,11 @@ fn grant() -> ed25519_dalek::SigningKey {
 }
 
 fn order(id: &str, node: &str, not_after: i64, payload: Value) -> Value {
-    awm_trust::grant::sign_envelope(&grant(), "order", json!({"order_id": id, "kind": "agent", "node": node, "payload": payload, "not_after": not_after}))
+    order_of("agent", id, node, not_after, payload)
+}
+
+fn order_of(kind: &str, id: &str, node: &str, not_after: i64, payload: Value) -> Value {
+    awm_trust::grant::sign_envelope(&grant(), "order", json!({"order_id": id, "kind": kind, "node": node, "payload": payload, "not_after": not_after}))
 }
 
 fn order_dones(fx: &Fx) -> Vec<Value> {
@@ -324,6 +328,21 @@ async fn an_order_runs_once_reports_once_and_a_bad_one_starts_nothing() {
     fx.app.take_orders(&key, vec![order("o5", "here", later, json!({"task_id": "T2", "model": "haiku", "effort": "low"}))]).await;
     let picked = &fx.cc().calls_of("start")[1];
     assert_eq!((picked["model"].clone(), picked["effort"].clone()), (json!("haiku"), json!("low")));
+}
+
+#[tokio::test]
+async fn a_retire_order_stops_the_named_session_as_the_retire_skill_does() {
+    let fx = Fx::new();
+    let key = grant().verifying_key().to_bytes();
+    let later = awm_pycompat::time::now_ms() / 1000 + 600;
+    fx.cc().answer("stop", json!({"ok": true, "session_id": other()}));
+    fx.app.take_orders(&key, vec![order_of("retire", "r1", "here", later, json!({"session_id": other()}))]).await;
+    let stops = fx.cc().calls_of("stop");
+    assert_eq!(stops.len(), 1, "{stops:?}");
+    assert_eq!((&stops[0]["session_id"], &stops[0]["keep"], &stops[0]["confirm"]), (&json!(other()), &json!(false), &json!(true)));
+    let dones = order_dones(&fx);
+    assert_eq!((&dones[0]["order_id"], &dones[0]["ok"]), (&json!("r1"), &json!(true)), "{dones:?}");
+    fx.app.settle().await;
 }
 
 #[tokio::test]

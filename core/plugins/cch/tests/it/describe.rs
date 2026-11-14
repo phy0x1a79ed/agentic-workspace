@@ -61,7 +61,7 @@ fn differences() -> Vec<String> {
 }
 
 /// The listed changes against the baseline. `start` drops its duplicate `task_id`, `role` and
-/// `suggest`. `resume` gains `model` and `effort`. The rows of `list` gain `session_id`, `parent`, `alive`, `transcript` and `task_id`,
+/// `suggest`. `stop` also types /exit into a terminal session. `resume` gains `model` and `effort`. The rows of `list` gain `session_id`, `parent`, `alive`, `transcript` and `task_id`,
 /// which the describe does not show: `verbs.rs` tests them.
 #[test]
 fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
@@ -69,6 +69,7 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
         "start: drops param task_id",
         "start: drops param role",
         "start: drops param suggest",
+        "stop: description",
         r#"resume: param "model" changed or moved"#,
         r#"resume: param "effort" changed or moved"#,
     ];

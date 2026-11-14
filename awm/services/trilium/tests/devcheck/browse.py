@@ -190,6 +190,19 @@ def main() -> int:
         ref = [c for c in calls() if c.get("path") == "/api/seat/refresh"]
         check("Refresh posts {seat, model, effort}",
               ref and ref[-1]["body"] == {"seat": "acct/111", "model": "sonnet", "effort": "high"}, str(ref))
+        retire = ".awm-node[data-node=mizar] .awm-retire"
+        retires = lambda: [c for c in calls() if c.get("path") == "/api/session/retire"]
+        page.click(retire)
+        page.wait_for_timeout(300)
+        armed = page.inner_text(retire)
+        check("the first Retire press arms it and calls nothing", armed == "Confirm retire?" and not retires(), armed)
+        page.mouse.move(0, 0)
+        check("leaving the armed Retire disarms it", page.inner_text(retire) == "Retire", page.inner_text(retire))
+        page.click(retire)
+        page.click(retire)
+        page.wait_for_timeout(800)
+        check("the second press posts {node, session_id}",
+              [c["body"] for c in retires()] == [{"node": "mizar", "session_id": "ccdaf676e8000040008000000000000000"}], str(retires()))
         page.evaluate("document.querySelector('.awm-sections').scrollTop = 1e9")
         page.wait_for_timeout(800)
         n2 = page.eval_on_selector_all("details[data-section=history] .awm-card", "e => e.length")

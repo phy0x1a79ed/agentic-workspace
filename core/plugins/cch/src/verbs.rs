@@ -160,7 +160,7 @@ pub fn specs() -> Vec<Spec> {
         spec("start", "Start a named background session in a scope's worktree.", start_params(), Some(1800)),
         spec(
             "stop",
-            "Stop a session and remove its job. With keep, the job stays and a resume brings it back: only a wait keeps it.",
+            "Stop a background session and remove its job, or type /exit into a terminal session, which needs confirm. With keep, the job stays and a resume brings it back: only a wait keeps it.",
             targeted(vec![opt("keep", "boolean", ""), opt("confirm", "boolean", "")]),
             Some(30),
         ),

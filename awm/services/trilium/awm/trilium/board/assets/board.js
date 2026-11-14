@@ -205,8 +205,32 @@ function nodeSection(n, q) {
       el("small", {}, `${up}/${services.length} services up`)),
     sessions.length ? el("ul", {}, ...sessions.map((s) => el("li", {}, show(s.name || "(unnamed)"), " ",
       s.card ? el("span", { class: "awm-chip" }, show(s.card)) : null, " ",
-      s.project || s.scope ? el("small", {}, [s.project, s.scope].filter(Boolean).join("/")) : null, " ", rc(s.rc_url))))
+      s.project || s.scope ? el("small", {}, [s.project, s.scope].filter(Boolean).join("/")) : null, " ", rc(s.rc_url),
+      " ", retireButton(n.name, s.session_id))))
       : empty("no sessions"));
+}
+
+// Retire takes two presses. The first arms the button. Leaving it, or a redraw, disarms it.
+function retireButton(node, sid) {
+  if (!node || !sid) return null;
+  const idle = () => { b.removeAttribute("data-armed"); b.textContent = "Retire"; };
+  const b = el("button", { class: "awm-btn danger awm-retire", type: "button", "data-session": sid,
+    onpointerleave: (e) => { if (e.pointerType === "mouse" && !b.disabled) idle(); },
+    onblur: () => { if (!b.disabled) idle(); },
+    onclick: async () => {
+      if (!b.hasAttribute("data-armed")) { b.setAttribute("data-armed", ""); b.textContent = "Confirm retire?"; return; }
+      b.disabled = true;
+      b.textContent = "Retiring…";
+      try {
+        await swarmCall(origin, "/api/session/retire", { node, session_id: sid });
+        toast(`Retiring the session on ${node}`);
+      } catch (e) {
+        b.disabled = false;
+        idle();
+        toast(e.message, true);
+      }
+    } }, "Retire");
+  return b;
 }
 
 // A flip or a Refresh waits for the seat's answer: a seat event newer than the row it was sent on.
@@ -474,7 +498,7 @@ async function panel(n) {
         el("td", {}, show(s.name || "(unnamed)")), el("td", {}, [s.project, s.scope].filter(Boolean).join(" / ")),
         el("td", {}, show(s.role)), el("td", {}, show(s.node)),
         el("td", {}, s.active ? "active" : "ended"),
-        el("td", {}, s.active ? rc(s.rc_url) : null))))
+        el("td", {}, s.active ? [rc(s.rc_url), " ", retireButton(s.node, s.session_id)] : null))))
       : empty("No sessions yet.", "p"),
     el("h4", {}, `Approvals${pending.length ? ` (${pending.length} pending)` : ""}`),
     ...(approvals.length ? pending.map(approvalRow).concat(past.map(approvalRow))

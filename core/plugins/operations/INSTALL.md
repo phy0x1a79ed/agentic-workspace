@@ -27,6 +27,7 @@ On alcor `HOME` is `/var/lib/awm/operations` and `AWM_APPROVER_DIR` is `/var/lib
 - `board_origins`: the vault's origins. Only these and the approver's own origin may call `/api/*`, and only these may frame the modal and the sign-in.
 - `portals`: `{host: node}` for every surface the sign-in lists and grants into.
 - `allowed_orders.agent`: the nodes an `agent` order may go to. The default is alcor alone, because only a node that runs the relay pulls its orders.
+- `allowed_orders.retire` and `allowed_orders.service`: the nodes the Control panel may retire a session on or switch a service on. Each defaults to every node.
 - `card_url`: the board's link to one card, with `{task_id}` in it. Without it, `card_url` answers null.
 - `rate_max`: the everyday actions one device may take in a minute.
 

@@ -53,7 +53,7 @@ def _node(row: dict[str, Any], portals: dict[str, str]) -> dict[str, Any]:
     if not portal:
         host = next((h for h, n in portals.items() if n == name), "")
         portal = f"https://{host}/" if host else ""
-    sessions = [{"name": text(s.get("name")), "rc_url": text(s.get("link") or s.get("rc_url")),
+    sessions = [{"session_id": text(s.get("session_id")), "name": text(s.get("name")), "rc_url": text(s.get("link") or s.get("rc_url")),
                  "scope": text(s.get("scope")), "project": text(s.get("project")),
                  "task_id": text(s.get("task_id")), "kind": text(s.get("kind")),
                  "remote_control": bool(s.get("remote_control"))}
