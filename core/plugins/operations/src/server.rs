@@ -371,6 +371,13 @@ fn everyday(v: &Vault, method: &Method, h: &HeaderMap, action: &str) -> Result<S
     Ok(d)
 }
 
+async fn retire(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
+    if let Err(r) = everyday(&v, &method, &h, "retire") {
+        return r;
+    }
+    ok(v.approver.retire(sv(&b, "node"), sv(&b, "session_id")))
+}
+
 async fn agent(State(v): S, method: Method, h: HeaderMap, Json(b): Json<Value>) -> Response {
     if let Err(r) = everyday(&v, &method, &h, "agent") {
         return r;
@@ -529,6 +536,7 @@ pub fn router(v: Arc<Vault>) -> Router {
         .route("/api/session", get(session))
         .route("/api/signout", post(signout))
         .route("/api/agent", post(agent))
+        .route("/api/session/retire", post(retire))
         .route("/api/card/{task_id}/{action}", post(card_action))
         .route("/api/seat/remote_control", post(seat_rc))
         .route("/api/seat/refresh", post(seat_refresh))

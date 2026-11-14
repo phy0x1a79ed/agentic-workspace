@@ -59,6 +59,7 @@ def test_render_writes_one_roster_note_that_the_pages_read(world):
     mizar = next(n for n in roster["nodes"] if n["name"] == "mizar")
     assert mizar["portal"] == "https://mizar.test/" and mizar["sessions_7d"] == 12
     assert mizar["sessions"][0]["rc_url"] == "https://claude.ai/code/s1"
+    assert mizar["sessions"][0]["session_id"] == "cc00000000000040008000000000ab12"  # the Retire button names it
     assert roster["services"][0]["health"] == "up" and roster["services"][0]["service"] == "journal"
     assert [(u["service"], u["enabled"]) for u in mizar["services"]] == [("trilium", None)]  # an older node sends no enabled
     assert mizar["sessions"][0]["remote_control"] is True

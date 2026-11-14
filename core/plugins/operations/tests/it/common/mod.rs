@@ -103,7 +103,7 @@ pub fn approver(dir: &Path, store: Arc<Store>, clock: Clock) -> Approver {
     let keys = Keys::generate(&dir.join("keys")).unwrap();
     let cfg = Config {
         origin: ORIGIN.into(),
-        allowed_orders: HashMap::from([("agent".to_string(), vec!["*".to_string()]), ("service".to_string(), vec!["*".to_string()])]),
+        allowed_orders: HashMap::from([("agent".to_string(), vec!["*".to_string()]), ("retire".to_string(), vec!["*".to_string()]), ("service".to_string(), vec!["*".to_string()])]),
         rate_max: 30,
         portals: HashMap::new(),
     };

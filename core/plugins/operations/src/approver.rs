@@ -35,11 +35,16 @@ pub const MINUTES_MIN: i64 = 15;
 pub const MINUTES_MAX: i64 = 1440;
 pub const BURST_COUNTS: [i64; 3] = [1, 2, 4];
 /// The order kinds alcor signs. `agent` replaces spawn and new_from (CONTRACT.md b11adebc).
-pub const ORDER_KINDS: [&str; 2] = ["agent", "service"];
+pub const ORDER_KINDS: [&str; 3] = ["agent", "retire", "service"];
 /// How long one passkey approval keeps the Ops service switches open.
 pub const SERVICE_WINDOW_S: f64 = 300.0;
 /// The kinds whose grant opens a window for its minutes, so the summary names them.
 const WINDOW_KINDS: [&str; 4] = ["admin_ssh", "trust_raise", "browser_signin", "vault_hold"];
+
+/// A note or session id: up to 64 letters, digits, `-` and `_`.
+fn is_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
 
 /// What a relay may ask for, and device_enrol, which only `enrol_ask` opens.
 pub fn payload_fields(kind: &str) -> Option<&'static [&'static str]> {
@@ -845,7 +850,7 @@ impl Approver {
         }
         effort.map(awm_trust::trust::check_effort).transpose().map_err(|e| bad(e.to_string()))?;
         if let Some(n) = note_id {
-            if n.is_empty() || n.len() > 64 || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            if !is_id(n) {
                 return Err(bad("note_id is a vault note id"));
             }
         }
@@ -864,6 +869,16 @@ impl Approver {
         }
         let env = self.issue_order("agent", &node, payload)?;
         Ok(json!({"task_id": task_id, "order_id": env["order"]["order_id"]}))
+    }
+
+    /// Retire a session on `node` from the vault: a signed `retire` order its reflection runs as `stop`.
+    pub fn retire(&self, node: &str, session_id: &str) -> AResult<Value> {
+        let node = self.order_node("retire", Some(node))?;
+        if !is_id(session_id) {
+            return Err(bad("session_id is a session id"));
+        }
+        let env = self.issue_order("retire", &node, json!({"session_id": session_id}))?;
+        Ok(json!({"order_id": env["order"]["order_id"]}))
     }
 
     pub async fn order_pull(&self, node: &str, kinds: Option<&[String]>, wait_s: f64) -> AResult<Value> {

@@ -1,4 +1,4 @@
-//! The `agent` and `service` orders alcor holds for this node. One held `order_pull` is the push channel. Each
+//! The `agent`, `retire` and `service` orders alcor holds for this node. One held `order_pull` is the push channel. Each
 //! order is checked against alcor's grant key, recorded before anything starts, and reported once.
 
 use std::sync::Arc;
@@ -61,6 +61,11 @@ fn order_start(body: &Value) -> Value {
     start
 }
 
+/// The `stop` args of one `retire` order. A `to` always names the session: an order has no caller to fall back on.
+fn order_stop(body: &Value) -> Value {
+    json!({"to": {"id": body["payload"]["session_id"]}, "confirm": true})
+}
+
 fn clip(note: String) -> String {
     note.chars().take(NOTE_MAX).collect()
 }
@@ -91,7 +96,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn pull(&self) -> Result<Vec<Value>, CallError> {
-        let ask = json!({"node": self.node.name(), "kinds": ["agent", "service"], "wait_s": WAIT_S});
+        let ask = json!({"node": self.node.name(), "kinds": ["agent", "retire", "service"], "wait_s": WAIT_S});
         let out = self.gw.call(Call::new("operations", "order_pull", ask, PULL_TIMEOUT)).await?;
         Ok(out.as_array().cloned().unwrap_or_default())
     }
@@ -138,13 +143,13 @@ impl<G: Gateway> App<G> {
     }
 
     async fn run_order(self: &Arc<Self>, body: &Value) -> (bool, String) {
-        if body["kind"] == "service" {
-            return run_service(&body["payload"]).await;
-        }
-        if body["kind"] != "agent" {
-            return (false, format!("this node takes agent and service orders only, not {}", body["kind"]));
-        }
-        let out = self.handle("start_other", &Frame::order(), &order_start(body)).await;
+        let out = match body["kind"].as_str() {
+            Some("service") => return run_service(&body["payload"]).await,
+            Some("agent") => self.handle("start_other", &Frame::order(), &order_start(body)).await,
+            // The verb the retire skill calls, so claims and waiters end the same way.
+            Some("retire") => self.handle("stop", &Frame::order(), &order_stop(body)).await,
+            _ => return (false, format!("this node takes agent, retire and service orders only, not {}", body["kind"])),
+        };
         if is_ok(&out) {
             (true, format!("session {}", text(&out, "session_id").unwrap_or("?")))
         } else {

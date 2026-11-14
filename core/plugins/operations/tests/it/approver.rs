@@ -482,6 +482,20 @@ async fn agent_opens_a_card_and_an_order_the_node_verifies() {
 }
 
 #[tokio::test]
+async fn retire_issues_an_order_naming_the_session_and_opens_no_card() {
+    let e = env();
+    for bad in ["", "has space", "x/../y"] {
+        assert_eq!(code(e.ap.retire(AGENT_NODE, bad)), "bad_request", "{bad:?}");
+    }
+    assert_eq!(code(e.ap.retire("Bad Node", "cc01")), "not_allowed");
+    let out = e.ap.retire(AGENT_NODE, "cc01").unwrap();
+    let envs = e.ap.order_pull(AGENT_NODE, None, 0.0).await.unwrap();
+    let body = verify_order(&envs[0], &e.grant_pub(), AGENT_NODE, e.now()).unwrap();
+    assert_eq!((body["kind"].as_str(), &body["payload"], &body["order_id"]), (Some("retire"), &json!({"session_id": "cc01"}), &out["order_id"]));
+    assert_eq!(e.ap.order_done(s(&out["order_id"]), false, "gone").unwrap()["recorded"], true, "a failed retire touches no card");
+}
+
+#[tokio::test]
 async fn a_failed_agent_order_retires_its_card_only_when_no_session_reached_it() {
     let e = env();
     let out = e.ap.agent(AGENT_NODE, None, None, None).await.unwrap();
