@@ -3,7 +3,7 @@
   "functions": [
     {
       "name": "seat_open",
-      "description": "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. A trusted session on another node gets it once Tony approves that session: asking for profile tony files the request and answers pending until he does. Any other session gets a blank one. Returns the seat id.",
+      "description": "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. A trusted session on another node gets it once Tony approves that session: asking for profile tony files the request and answers pending until he does. Any other session gets a blank one. Returns the seat id. Call seat_close with this seat when you are done. The browser also closes it when this session ends.",
       "params": [
         {
           "name": "profile",

@@ -4,6 +4,7 @@
 //! reaches the raw debug port: `cdp` runs a page-level method on a tab the seat owns, from an
 //! allow-list. The trust level decides the profile (item 6).
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -268,6 +269,31 @@ impl SeatBook {
         }
         self.save(&*self.state.lock().await);
         Ok(())
+    }
+
+    /// The nodes whose sessions hold a seat. A seat's session reads `node/session_id`.
+    pub async fn nodes(&self) -> HashSet<String> {
+        self.state.lock().await.seats.iter().filter_map(|s| s.session.split_once('/')).map(|(n, _)| n.to_string()).collect()
+    }
+
+    /// Close each seat on `node` whose session is not in `live`, and return the closed seat ids.
+    pub async fn close_orphans(&self, node: &str, live: &HashSet<String>) -> Vec<String> {
+        let orphans: Vec<(String, String)> = {
+            let st = self.state.lock().await;
+            st.seats
+                .iter()
+                .filter(|s| s.session.split_once('/').is_some_and(|(n, id)| n == node && !live.contains(id)))
+                .map(|s| (s.seat.clone(), s.session.clone()))
+                .collect()
+        };
+        let mut closed = vec![];
+        for (seat, session) in orphans {
+            match self.close(&seat, &session).await {
+                Ok(()) | Err(BookError::Seat(_)) => closed.push(seat),
+                Err(e) => tracing::warn!(%seat, %session, error = ?e, "could not close the seat of a retired session"),
+            }
+        }
+        closed
     }
 
     /// The seat, checked against its owner, with its tabs attached on the current connection.

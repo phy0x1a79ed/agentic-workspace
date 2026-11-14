@@ -6,10 +6,12 @@ mod grants;
 mod seats;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use awm_plugin_sdk::{Call, Lane, Service, VerbError};
+use awm_plugin_sdk::sessions::SessionWatch;
+use awm_plugin_sdk::{Call, Hub, Lane, Service, VerbError};
 use serde_json::{json, Value};
 
 use crate::chrome::Chrome;
@@ -21,6 +23,7 @@ const TOOL: &str = "browser";
 const DESCRIPTION: &str = "alcor's browser (fleet.md R102): each session drives its own Chrome window, its seat. One viewer shows them all.";
 /// How long an approval request for a sign-in stays open, the shortest grant there is.
 const SIGNIN_MINUTES: u64 = 15;
+const WHEN_DONE: &str = "Call seat_close with this seat when you are done. The browser also closes it when this session ends.";
 
 /// `<AWM_DIR>/browser.json`, as the cloud role writes it.
 #[derive(Debug, Clone)]
@@ -112,6 +115,8 @@ fn req(call: &Call, name: &str) -> Result<String, VerbError> {
 }
 
 type Book = Arc<SeatBook>;
+/// Set once the service is ready. Each node it watches reaps its retired sessions' seats.
+type Watch = Arc<OnceLock<Arc<SessionWatch>>>;
 
 macro_rules! verb {
     ($svc:expr, $book:expr, $name:literal, $desc:expr, $params:expr, |$b:ident, $call:ident, $who:ident| $body:expr) => {
@@ -131,7 +136,7 @@ macro_rules! verb {
     }};
 }
 
-fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>, grants: Arc<Grants>) -> Service {
+fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>, grants: Arc<Grants>, watch: Watch) -> Service {
     let seat = || p("seat", "string", true, "The seat id that seat_open returned.");
     let tab = || p("tab", "string", true, "A tab id of this seat's window.");
     let url = || p("url", "string", true, "");
@@ -139,7 +144,7 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
     let node = svc.context().env().node.clone();
     let svc = svc.api("description", json!(DESCRIPTION)).api("emitters", json!([])).api("sessions", json!([]));
     let (c, s) = (chrome.clone(), settings.clone());
-    let svc = verb!(svc, book, [c, s, grants], "seat_open", "Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. A trusted session on another node gets it once Tony approves that session: asking for profile tony files the request and answers pending until he does. Any other session gets a blank one. Returns the seat id.",
+    let svc = verb!(svc, book, [c, s, grants, watch], "seat_open", &format!("Attach this session to its own browser window. A trusted session on a node the browser lists gets Tony's profile unless it asks for a blank one. A trusted session on another node gets it once Tony approves that session: asking for profile tony files the request and answers pending until he does. Any other session gets a blank one. Returns the seat id. {WHEN_DONE}"),
         json!([p("profile", "string", false, "tony or blank."), p("own_container", "boolean", false, "Run this seat in its own container.")]),
         |b, call, who| {
             c.ensure().await?;
@@ -157,6 +162,10 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
                 }
             }
             let mut view = b.open(&who.0, level, asked, own).await?.view();
+            if let (Some(w), Some((node, _))) = (watch.get(), who.0.split_once('/')) {
+                w.ensure(node);
+            }
+            view["when_done"] = json!(WHEN_DONE);
             if let Some(w) = why {
                 view["why"] = json!(w);
             }
@@ -278,6 +287,19 @@ async fn settle(book: Book, boxes: Arc<Containers>, chrome: Arc<Chrome>) {
     }
 }
 
+/// Close the seats on `node` whose sessions retired. A node reflection cannot answer for keeps
+/// all its seats.
+async fn reap(book: &SeatBook, hub: &Hub, node: &str) {
+    if !book.nodes().await.contains(node) {
+        return;
+    }
+    let Some(live) = awm_plugin_sdk::push::live_sessions(hub, node).await else { return };
+    let closed = book.close_orphans(node, &live.into_keys().collect::<HashSet<_>>()).await;
+    if !closed.is_empty() {
+        tracing::info!(%node, seats = ?closed, "closed the seats of retired sessions");
+    }
+}
+
 /// Stop the shared Chrome once no seat sits on it and nothing has used it for the idle period.
 async fn idle_stop(book: Book, chrome: Arc<Chrome>) {
     loop {
@@ -302,12 +324,24 @@ async fn main() -> anyhow::Result<()> {
     let chrome = Arc::new(Chrome::new(settings.chrome.clone(), &settings.cdp));
     let ctx = svc.context();
     let grants = Arc::new(Grants::load(Arc::new(ctx.hub().clone()), Some(dir.join("profile-grants.json"))));
-    let (b, c) = (book.clone(), chrome.clone());
-    service(svc, book, settings, chrome, grants)
+    let watch: Watch = Arc::default();
+    let (b, c, w) = (book.clone(), chrome.clone(), watch.clone());
+    service(svc, book, settings, chrome, grants, watch)
         .on_ready(async move {
             let (b2, c2) = (b.clone(), c.clone());
+            let (hub, b3) = (ctx.hub().clone(), b.clone());
+            let watch = w.get_or_init(|| {
+                SessionWatch::new(hub.clone(), "browser", move |node| {
+                    let (b, hub) = (b3.clone(), hub.clone());
+                    async move { reap(&b, &hub, &node).await }
+                })
+            });
+            let watch = watch.clone();
             ctx.spawn("settle", async move {
-                settle(b, boxes, c).await;
+                settle(b.clone(), boxes, c).await;
+                for node in b.nodes().await {
+                    watch.ensure(&node);
+                }
                 Ok(())
             });
             ctx.spawn("idle_stop", async move {
@@ -381,7 +415,7 @@ mod tests {
     fn built_with(book: Book, approver: Arc<FakeApprover>) -> Service {
         let s = settings();
         let chrome = Arc::new(Chrome::new(s.chrome.clone(), &s.cdp));
-        service(Service::new(env()), book, s, chrome, Arc::new(Grants::load(approver, None)))
+        service(Service::new(env()), book, s, chrome, Arc::new(Grants::load(approver, None)), Arc::default())
     }
 
     fn built(book: Book) -> Service {
@@ -414,7 +448,7 @@ mod tests {
         let untrusted = call(&svc, "seat_open", json!({}), Some("untrusted")).await;
         assert!(unstamped.get("error").is_some() && unstamped == untrusted);
         let seat = call(&svc, "seat_open", json!({}), Some("cooperative")).await;
-        assert_eq!(seat["profile"], "blank");
+        assert_eq!((seat["profile"].as_str(), seat["when_done"].as_str()), (Some("blank"), Some(WHEN_DONE)));
         let refused = call(&svc, "seat_open", json!({"profile": "tony"}), Some("cooperative")).await;
         assert!(refused["error"].as_str().unwrap().contains("trusted"));
     }

@@ -228,3 +228,19 @@ async fn seats_survive_a_restart_and_a_chrome_reconnect() {
 }
 
 use std::os::unix::fs::PermissionsExt;
+
+#[tokio::test]
+async fn close_orphans_closes_only_the_seats_of_dead_sessions_on_that_node() {
+    let (chrome, book) = book();
+    let live = book.open("mizar/live", "trusted", None, false).await.unwrap();
+    let dead = book.open("mizar/dead", "trusted", None, false).await.unwrap();
+    let other = book.open("lyra/dead", "trusted", None, false).await.unwrap();
+    assert_eq!(book.nodes().await, HashSet::from(["mizar".to_string(), "lyra".to_string()]));
+    let closed = book.close_orphans("mizar", &HashSet::from(["live".to_string()])).await;
+    assert_eq!(closed, vec![dead.seat.clone()]);
+    assert!(!chrome.with(|s| s.windows.contains_key(&dead.tabs[0])));
+    let left: Vec<String> = book.list(None).await.iter().map(|s| s["seat"].as_str().unwrap().to_string()).collect();
+    assert_eq!(left, vec![live.seat, other.seat]);
+}
+
+use std::collections::HashSet;
