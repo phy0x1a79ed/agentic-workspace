@@ -36,7 +36,6 @@ Send one line with the journal id and the outcome to whoever started you:
 
 Your last call is always `reflection stop` or `reflection wait`. A session that ends its work and sits idle never wakes the sessions that wait on it: only `reflection stop` tells them you retired.
 
-1. Run `reflection whoami`. It names your session, your job and your task.
+1. Run `reflection whoami`. It names your session and your task.
 2. When you wait on other sessions, compact first. Then run `reflection wait {until:[<their session ids>]}` as your last call. It takes no job and acts on you. A background session stops and keeps its job. A terminal session stays open. awm wakes you when every listed session has retired.
-3. Otherwise, run `reflection stop {job, confirm:true}` as your last call. For a background session it removes the job, frees the scope and wakes the sessions that wait on you. The transcript stays, so a later resume by session id still works.
-4. A terminal session has no job: pass your session id as `job`. First run `reflection message_self {text:"/exit", confirm:true}`, which runs when the turn ends. Then run `reflection stop` as above, so that your waiters wake.
+3. Otherwise, run `reflection stop {confirm:true}` as your last call. With no `to` it acts on you. A background session stops and its job is removed. A terminal session gets `/exit` typed into it, which runs when the turn ends. Either way the stop frees the scope and wakes the sessions that wait on you. The transcript stays, so a later resume by session id still works.
