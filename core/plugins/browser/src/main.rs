@@ -207,7 +207,8 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
             if reason.trim().is_empty() {
                 return Err(BookError::Usage("a request needs a reason Tony can read".into()));
             }
-            let args = json!({"kind": "browser_signin", "node": node, "reason": reason, "minutes": SIGNIN_MINUTES, "payload": {"seat": id, "site": site}});
+            let session = who.0.split_once('/').map(|(_, s)| s);
+            let args = json!({"kind": "browser_signin", "node": node, "reason": reason, "minutes": SIGNIN_MINUTES, "payload": {"seat": id, "site": site}, "session_id": session});
             let filed = call.hub().call("operations", "approval_request", args, None).await.map_err(|e| BookError::Other(e.into()))?;
             b.raise_window(&id, &who.0).await?;
             Ok(json!({"request_id": filed.get("request_id").cloned().unwrap_or(Value::Null), "viewer": v}))
@@ -448,6 +449,7 @@ mod tests {
 
         let (rid, args) = ap.requests.lock().unwrap()[0].clone();
         assert_eq!((args["kind"].clone(), args["node"].clone(), args["payload"].clone()), (json!("browser_profile"), json!("altair"), json!({"node": "altair", "session_id": "sess-j"})));
+        assert_eq!(args["session_id"], "sess-j", "the request goes on the asking session's card");
         for (name, node, session, minutes) in [("another session", "altair", "sess-x", 30), ("another node", "lyra", "sess-j", 30), ("expired", "altair", "sess-j", -1)] {
             ap.approve(&rid, node, session, minutes);
             let out = open(altair.clone(), Some("tony")).await;

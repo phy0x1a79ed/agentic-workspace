@@ -69,6 +69,8 @@ pub struct Stamp {
     pub claim: Option<Value>,
     /// The node a call from another node's service came from, by its `as` stamp.
     pub peer: Option<String>,
+    /// The plugin of this node that made the call, as the gateway's frame names it.
+    pub plugin: Option<String>,
 }
 
 impl Stamp {
@@ -599,10 +601,13 @@ impl Front {
     // -- approvals (fleet.md R97) -----------------------------------------------------------
 
     pub async fn approval_request(&self, a: &Value, st: &Stamp) -> Answer {
-        let c = self.identify(st).await;
+        let session = match (&st.plugin, str_of(a, "session_id")) {
+            (Some(_), Some(s)) => Some(norm_arg(&s)?),
+            _ => self.identify(st).await.session_id,
+        };
         let out = self.relay.write("approval_request", json!({
             "kind": a.get("kind"), "node": a.get("node"), "reason": a.get("reason").cloned().unwrap_or(json!("")),
-            "minutes": a.get("minutes").cloned().unwrap_or(json!(15)), "payload": a.get("payload"), "session_id": c.session_id,
+            "minutes": a.get("minutes").cloned().unwrap_or(json!(15)), "payload": a.get("payload"), "session_id": session,
         })).await.map_err(err)?;
         let modal = out.get("request_id").and_then(Value::as_str).map(|r| format!("{}/modal/approve/{r}", self.approver_origin.trim_end_matches('/')));
         Ok(merge(merge(json!({"ok": true}), out), json!({"modal_url": modal})))
