@@ -19,6 +19,8 @@ const SERVICE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Long past any order's `not_after` (10 min), so a replay still finds its record.
 const KEEP_MS: i64 = 24 * 3600 * 1000;
 const NOTE_MAX: usize = 500;
+/// The order kinds `run_order` carries out.
+const KINDS: [&str; 3] = ["agent", "retire", "service"];
 
 /// The `awm services` arguments of a `service` order. Disabling reflection would end the process
 /// that reports the order, so a node's reflection stays on from here.
@@ -96,7 +98,7 @@ impl<G: Gateway> App<G> {
     }
 
     async fn pull(&self) -> Result<Vec<Value>, CallError> {
-        let ask = json!({"node": self.node.name(), "kinds": ["agent", "retire", "service"], "wait_s": WAIT_S});
+        let ask = json!({"node": self.node.name(), "kinds": KINDS, "wait_s": WAIT_S});
         let out = self.gw.call(Call::new("operations", "order_pull", ask, PULL_TIMEOUT)).await?;
         Ok(out.as_array().cloned().unwrap_or_default())
     }
@@ -148,7 +150,7 @@ impl<G: Gateway> App<G> {
             Some("agent") => self.handle("start_other", &Frame::order(), &order_start(body)).await,
             // The verb the retire skill calls, so claims and waiters end the same way.
             Some("retire") => self.handle("stop", &Frame::order(), &order_stop(body)).await,
-            _ => return (false, format!("this node takes agent, retire and service orders only, not {}", body["kind"])),
+            _ => return (false, format!("this node takes {} orders only, not {}", KINDS.join(", "), body["kind"])),
         };
         if is_ok(&out) {
             (true, format!("session {}", text(&out, "session_id").unwrap_or("?")))
