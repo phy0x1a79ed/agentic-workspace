@@ -209,8 +209,6 @@
 "ssh-file:shaula.pub" = "key for a shaula login; keys are never copied between nodes"
 "ssh-file:shaula-peer" = "key for a shaula login; keys are never copied between nodes"
 "ssh-file:shaula-peer.pub" = "key for a shaula login; keys are never copied between nodes"
-"ssh-file:admin-approvals" = "admin-gate state for shaula, which only altair reaches"
-"ssh-file:admin-unlock" = "admin-gate state for shaula, which only altair reaches"
 
 "system-unit:awmpeer-cred.service" = "the awmpeer account; Tony declined it on capella"
 "system-unit:awmpeer-egress.service" = "the awmpeer account; Tony declined it on capella"
