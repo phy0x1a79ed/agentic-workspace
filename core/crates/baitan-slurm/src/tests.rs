@@ -340,3 +340,74 @@ async fn a_dead_master_fails_calls_at_the_gate_and_shows_in_life() {
     assert!(r.be.life("a").await["state"] == "unknown");
     assert_gated(&r.be.calls());
 }
+
+/// Prints what each cluster would be sent for a metasmith-shaped burst, through a fake `ssh`
+/// that records every script and answers sbatch. No real host is reached.
+/// `cargo test -p baitan-slurm mock_submissions -- --ignored --nocapture`
+#[tokio::test(start_paused = true)]
+#[ignore]
+async fn mock_submissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("ssh");
+    std::fs::create_dir(&log).unwrap();
+    let fake = dir.path().join("ssh-bin");
+    std::fs::create_dir(&fake).unwrap();
+    let ssh = fake.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nL={}\nn=$(ls $L | wc -l); f=$L/$(printf %03d $n)-$3.sh\necho \"# argv: $*\" > $f; cat >> $f\ngrep -q sbatch $f && echo \"Submitted batch job $((9000+n))\"\ntrue\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("PATH", format!("{}:{}", fake.display(), std::env::var("PATH").unwrap()));
+
+    let clusters = [
+        ("fir", "def-shallam", false),
+        ("nibi", "def-shallam", false),
+        ("trillium", "def-shallam", true),
+        ("sockeye", "st-shallam-1", false),
+    ];
+    let mut backends = Vec::new();
+    for (name, account, whole_node) in clusters {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = SlurmConfig {
+            account: account.into(),
+            partition: None,
+            walltime: "02:00:00".into(),
+            scratch: format!("/scratch/baitan/{name}").into(),
+            bin_dir: None,
+            whole_node,
+        };
+        let saved = dir.path().join(format!("{name}/jobs.json"));
+        backends.push((name, SlurmBackend::new(cfg, Host::new(Some(name.into())), saved, tx), _rx));
+    }
+    // One msm run split across the four: prodigal per genome (2 cpu, 4 GiB) and a DIAMOND
+    // search per protein set (16 cpu, 64 GiB).
+    for (c, (name, be, _)) in backends.iter().enumerate() {
+        for g in 0..3 {
+            let w = format!("/scratch/baitan/{name}/work/prodigal-g{}", c * 3 + g);
+            let script = format!("prodigal -i genome_{}.fna -a proteins.faa\n", c * 3 + g);
+            be.launch(JobSpec { promise: format!("prodigal-{c}-{g}"), workdir: w.into(), script, res: Resources { cpus: 2, mem_mb: 4096 } })
+                .await
+                .unwrap();
+        }
+        let w = format!("/scratch/baitan/{name}/work/diamond-{c}");
+        let script = "diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16\n".to_string();
+        be.launch(JobSpec { promise: format!("diamond-{c}"), workdir: w.into(), script, res: Resources { cpus: 16, mem_mb: 65536 } })
+            .await
+            .unwrap();
+    }
+    // Paused time races ahead of the real ssh subprocesses, so step both clocks together.
+    for _ in 0..300 {
+        sleep(Duration::from_secs(1)).await;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut files: Vec<_> = std::fs::read_dir(&log).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    for f in files {
+        println!("===== {}\n{}", f.file_name().unwrap().to_string_lossy(), std::fs::read_to_string(&f).unwrap());
+    }
+}

@@ -6,7 +6,7 @@
 
 ## Current
 
-`prove-rust`: prove baitan on a simple Rust build job.
+`arrays`: array shape under a multi-cluster msm burst.
 
 ## Waiting on the user
 
@@ -33,8 +33,8 @@ Nothing.
 
 ## Stack
 
-- `prove-rust`: prove baitan on a simple Rust build job. Evidence: journal 47b79693 "Live: an agent-posted Rust build (L1)", no provider or promise detail; FINDINGS E4 was the pre-baitan prototype.
-- `prove-metasmith`: prove baitan on a metasmith pipeline; journal evidence is fine. Evidence: journal 47b79693 L3 on sockeye (prodigal + DIAMOND vs UniRef50, cache reuse on rerun), 3a6c999a.
+- `test-cases`: after the rework, run an msm job and a Rust build live. "Want to try msm job distributed across hpc clusters, not just 1".
+- `arrays`: mock submissions (docs/dex-poc/mock-submissions.txt) show one array per (cpus, mem) profile per cluster, sized by the burst, with no cap or throttle; a second profile waits one gate; trillium's whole_node gives every task a whole node.
 - `arbutus-spot`: "we can think about offering spot general compute instances on arbutus as well". GTDB-Tk and Metabuli on-demand services exist (arbutus-infra, July 2026); only their reference volumes are live (gtdb-ref-r232, metabuli-ref-gtdb232).
 - `backend-hardening`: issues the front-stateless worker reported (bb75af6c): no timeout on a hung master freezes that cluster's scheduler; ssh dropping right after a good sbatch marks running jobs failed; a failed scancel is not retried; one extra ssh per finished job and per new import for its file listing; `awm` feature in plugins/baitan now unused.
 
@@ -44,6 +44,7 @@ None.
 
 ## Closed
 
+- `prove-rust`, `prove-metasmith`: closed on journal evidence; both become test cases for the rework.
 - `front-stateless`: altair's provider hosts one provider per cluster over one-shot ssh; no HPC process.
 - `ssh-direct`: mizar holds its own masters to all four clusters; no altair hop.
 - `freshness`: event-driven; subscribed or disconnected.

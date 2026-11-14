@@ -515,3 +515,13 @@ awm's generator stays in the gateway crates. Only the `awm` feature of `core/plu
 **Design.** The `baitan provider` on altair hosts every Slurm cluster. It registers one provider per cluster, so the picker, reviews and success rates stay per cluster. Its Slurm backend keeps the front's logic (gate ≤1/min, squeue and sshare caches, arrays, promise map, missing grace) in the altair process, with state on altair. Every cluster-side action is a one-shot `ssh <cluster> …` over altair's own ControlMaster: sbatch with its job files sent on stdin, scancel, and one gated tick that runs squeue and lists the exit files together. Nothing baitan runs on the cluster except the job scripts on the compute nodes. The market keeps dialling `ssh altair baitan provider`; the `ssh altair ssh <cluster> baitan front` links and the cluster `~/.local/bin/baitan` binaries go away. A dead master shows up as a failed tick; the backend never opens a login.
 
 **Landed.** bb75af6c on feat/dex-poc: shell runner `baitan-provider/src/host.rs` (local or one-shot ssh); `front` role, `front.toml` loader and exit watcher deleted; cluster providers take `ssh` and `work_dir`; config in `docs/dex-poc/altair-provider.toml.example`. Not yet shipped.
+
+## prove-rust, prove-metasmith (2026-11-14)
+
+**Question.** Do the earlier live runs prove baitan on a Rust build and a metasmith pipeline?
+
+**User.** "Close. We will use these as trst cases after and rework though. Msm and rust build. Want to try msm job distributed across hpc clusters, not just 1".
+
+**Design.** Closed on the journal record: a live agent-posted Rust build and an msm prodigal + DIAMOND run on sockeye with cache reuse (journals 47b79693, 3a6c999a, e546113e), all through the old persistent fronts. After the rework both run again as test cases, and the msm run spreads across several clusters (topic `test-cases`).
+
+**Landed.** Nothing to build.
