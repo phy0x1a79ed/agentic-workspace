@@ -289,6 +289,20 @@ async fn each_lifecycle_kind_emits_once_and_keeps_no_ledger_row() {
     assert_eq!(fx.node.emitted.lock().unwrap().len(), before, "a restart emits nothing");
 }
 
+#[tokio::test]
+async fn a_stop_names_the_sessions_left_to_the_browser() {
+    let fx = Fx::new();
+    let other = new_id();
+    fx.cc().set("j7", json!({"session_id": other, "name": "keeper", "pid": 91}));
+    fx.cc().set("j8", json!({"session_id": my_id(), "name": "leaver", "pid": 92}));
+    assert!(ok(&fx.run("harness_event", json!({"session_id": my_id(), "kind": "stopped"})).await));
+    fx.app.settle().await;
+    let reports = fx.gw().calls_to("browser");
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    let (verb, args) = &reports[0];
+    assert_eq!((verb.as_str(), &args["live"]), ("sessions_live", &json!([other, "keeper"])));
+}
+
 // --- orders ------------------------------------------------------------------------
 
 fn grant() -> ed25519_dalek::SigningKey {

@@ -241,6 +241,23 @@
       "tool": "browser_service_cdp"
     },
     {
+      "name": "sessions_live",
+      "description": "A node's reflection names its live sessions: the browser closes that node's seats whose session is not named. Only a node's own service, never a session, may call it.",
+      "params": [
+        {
+          "name": "live",
+          "type": "array",
+          "required": true,
+          "description": "The session ids live on the calling node."
+        }
+      ],
+      "tool": "browser_sessions_live",
+      "surfaces": [
+        "cli",
+        "http"
+      ]
+    },
+    {
       "name": "service_close",
       "description": "Close the site's tab in the service window. Only the productivity service may call it.",
       "params": [

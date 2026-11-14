@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use awm_pycompat::repr::str_repr;
 use crate::app::{declared, is_false, is_ok, merged, object, ok_or_absent, text, truthy, App, Failure};
 use crate::caller::Frame;
-use crate::gateway::Gateway;
+use crate::gateway::{Call, Gateway};
 use crate::ledger::Ticket;
 use crate::providers::{HarnessError, Provider, Ref, DOWN_FOR};
 use crate::trust::recorded_in;
@@ -31,6 +31,7 @@ pub const ROW_KEYS: [&str; 8] = ["session_id", "parent", "state", "live", "alive
 
 /// The model and effort of a start that names neither.
 const DEFAULT_MODEL: &str = "opus";
+const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DEFAULT_EFFORT: &str = "medium";
 const OWN_STOP: &str = "that is your own session; stopping it ends this conversation. Pass confirm=true to proceed.";
 const TERMINAL_WAIT: &str =
@@ -702,7 +703,14 @@ impl<G: Gateway> App<G> {
     pub async fn harness_event(self: &Arc<Self>, args: &Value) -> Value {
         let event = declared(args);
         let out = match event.get("kind").and_then(Value::as_str) {
-            Some(kind) if LIFECYCLE.contains(&kind) => return self.lifecycle(&event).await,
+            Some(kind) if LIFECYCLE.contains(&kind) => {
+                if matches!(kind, "started" | "stopped") {
+                    let gone = event.get("session_id").and_then(Value::as_str).filter(|_| kind == "stopped").map(str::to_string);
+                    let app = self.clone();
+                    self.detach(async move { app.report_live(gone.as_deref()).await });
+                }
+                return self.lifecycle(&event).await;
+            }
             Some("clear") => self.cleared(&event).await,
             _ => self.record_event(event).await,
         };
@@ -726,6 +734,28 @@ impl<G: Gateway> App<G> {
         }
         self.node.emit(SESSIONS_TOPIC, out);
         json!({"ok": true})
+    }
+
+    /// Name this node's live sessions, by id and by name, to the browser, which closes the seats
+    /// of the rest (fleet.md R102). `gone` just stopped, though a provider may still list it. A
+    /// list with a provider error is not sent: a missing row would close a live seat.
+    pub async fn report_live(&self, gone: Option<&str>) {
+        let _turn = self.reporting.lock().await;
+        let out = self.list_other(&Frame::default(), &json!({})).await;
+        if out.get("errors").is_some() {
+            return;
+        }
+        let live: Vec<&str> = out["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| awm_plugin_sdk::holders::row_live(r) && text(r, "session_id") != gone)
+            .flat_map(|r| [text(r, "session_id"), text(r, "name")])
+            .flatten()
+            .collect();
+        if let Err(e) = self.gw.call(Call::new("browser", "sessions_live", json!({"live": live}), REPORT_TIMEOUT)).await {
+            tracing::debug!("reflection: the browser did not take this node's live sessions: {e}");
+        }
     }
 
     /// A session cleared itself: its new id takes the old one as its parent (sessions.md R13).
@@ -754,5 +784,7 @@ impl<G: Gateway> App<G> {
             tracing::warn!("reflection: {} waited-on sessions are lost", lost.len());
         }
         self.kick_sweep();
+        let app = self.clone();
+        self.detach(async move { app.report_live(None).await });
     }
 }

@@ -271,11 +271,6 @@ impl SeatBook {
         Ok(())
     }
 
-    /// The nodes whose sessions hold a seat. A seat's session reads `node/session_id`.
-    pub async fn nodes(&self) -> HashSet<String> {
-        self.state.lock().await.seats.iter().filter_map(|s| s.session.split_once('/')).map(|(n, _)| n.to_string()).collect()
-    }
-
     /// Close each seat on `node` whose session is not in `live`, and return the closed seat ids.
     pub async fn close_orphans(&self, node: &str, live: &HashSet<String>) -> Vec<String> {
         let orphans: Vec<(String, String)> = {
