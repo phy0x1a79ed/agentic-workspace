@@ -197,6 +197,11 @@ async fn only_the_requesting_session_cancels() {
     let rid = s(&r["request_id"]);
     assert_eq!(r["modal_url"], json!(format!("{ORIGIN}/modal/approve/{rid}")));
     assert_eq!(h.env.ap.approval_get(&rid).unwrap()["requester_session"], A, "a named session is ignored");
+    let browser = Stamp { plugin: Some("browser".into()), ..none() };
+    let filed = h.call("approval_request", browser, json!({"kind": "vault_hold", "reason": "r", "session_id": B})).await;
+    let theirs = s(&filed["request_id"]);
+    assert_eq!(h.env.ap.approval_get(&theirs).unwrap()["requester_session"], B, "a plugin files for the session it names");
+    assert!(ok(&h.call("approval_cancel", pid(22), json!({"request_id": theirs})).await));
     assert!(!ok(&h.call("approval_cancel", pid(22), json!({"request_id": rid})).await));
     assert!(!ok(&h.call("approval_cancel", none(), json!({"request_id": rid})).await));
     let lie = h.call("approval_cancel", pid(22), json!({"request_id": rid, "session_id": A})).await;

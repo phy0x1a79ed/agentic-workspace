@@ -86,7 +86,10 @@ impl Grants {
         }
         let reason = format!("{session} on {node} asks for your browser profile, with your sign-ins, for {} h", MINUTES / 60);
         let req = Request { kind: KIND, node, reason: &reason, minutes: MINUTES, payload };
-        let rid = file_request(&req, |verb, args| async move { self.approver.call(verb, args).await.map_err(|e| e.to_string()) }).await?;
+        let rid = file_request(&req, |verb, mut args| async move {
+            args["session_id"] = json!(session);
+            self.approver.call(verb, args).await.map_err(|e| e.to_string())
+        }).await?;
         requests.insert(key, rid.clone());
         self.save(&requests);
         Ok(Grant::Pending(rid))
