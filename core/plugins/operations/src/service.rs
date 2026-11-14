@@ -147,6 +147,7 @@ impl Outside for HubOutside {
 
 pub struct HubArbutus {
     pub hub: Hub,
+    pub approver: Arc<Approver>,
 }
 
 impl ArbutusIo for HubArbutus {
@@ -168,8 +169,12 @@ impl ArbutusIo for HubArbutus {
         })
     }
 
-    fn run<'a>(&'a self, name: &'a str, bundles: &'a std::path::Path, approved_by: &'a str) -> BoxFut<'a, (i32, String)> {
-        Box::pin(arbutus::run_approve(name, bundles, approved_by))
+    fn request<'a>(&'a self, request_id: &'a str) -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { self.approver.approval_get(request_id).map_err(|e| e.message) })
+    }
+
+    fn decide<'a>(&'a self, request_id: &'a str, admin: &'a str, approve: bool) -> BoxFut<'a, Result<Value, String>> {
+        Box::pin(async move { self.approver.decide_by_admin(request_id, admin, approve).await.map_err(|e| e.message) })
     }
 
     fn tell<'a>(&'a self, session: &'a str, line: &'a str) -> BoxFut<'a, Result<(), String>> {
@@ -434,20 +439,14 @@ pub async fn serve() -> anyhow::Result<()> {
         Arc::new(crate::door::DoorClient { argv, timeout: crate::door::TIMEOUT })
     };
     let relay = Arc::new(Relay::open(&node, &s.relay_db, client)?);
-    let arb = arbutus::approval_channel().map(|_| Arc::new(Approvals::new(Arc::new(HubArbutus { hub: hub.clone() }))));
+    let arb = home.as_ref().filter(|_| arbutus::approval_channel().is_some())
+        .map(|h| Arc::new(Approvals::new(Arc::new(HubArbutus { hub: hub.clone(), approver: h.approver.clone() }))));
     let outside: Arc<dyn Outside> = Arc::new(HubOutside { hub: hub.clone(), node: node.clone() });
     let front = Arc::new(Front {
         relay: relay.clone(), node: node.clone(), outside, arbutus: arb.clone(), card_url: s.card_url.clone(),
         approver_origin: s.origin.clone(), remind_s: s.remind_s, clock: Arc::new(crate::now),
         link_wait: Duration::from_secs(15), asking: Default::default(), roster_moved: Default::default(),
     });
-    if let Some(a) = &arb {
-        let f = front.clone();
-        a.set_on_decided(Arc::new(move |task: String, line: String| {
-            let f = f.clone();
-            Box::pin(async move { f.arbutus_decided(&task, &line).await })
-        }));
-    }
     let ops = Arc::new(Ops { front: front.clone(), home: home.clone() });
     let service = register(service, ops);
 

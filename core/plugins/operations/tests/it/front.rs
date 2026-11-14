@@ -24,8 +24,9 @@ struct H {
     clock: TestClock,
 }
 
-fn harness_with(arbutus: Option<Arc<Approvals>>, card_url: Option<&str>) -> H {
+fn harness_with(arbutus: impl FnOnce(&Env) -> Option<Arc<Approvals>>, card_url: Option<&str>) -> H {
     let env = Env::new();
+    let arbutus = arbutus(&env);
     let relay = Arc::new(Relay::open("mizar", &env.path("r.db"), Arc::new(LocalClient { home: env.home.clone() })).unwrap());
     let out = FakeOutside::new();
     let clock = TestClock::at(1000.0);
@@ -38,7 +39,7 @@ fn harness_with(arbutus: Option<Arc<Approvals>>, card_url: Option<&str>) -> H {
 }
 
 fn harness() -> H {
-    harness_with(None, Some(CARD_URL))
+    harness_with(|_| None, Some(CARD_URL))
 }
 
 fn pid(p: u32) -> Stamp {
@@ -204,29 +205,27 @@ async fn only_the_requesting_session_cancels() {
     assert!(ok(&out) && out["status"] == "cancelled", "{out}");
 }
 
-const BUNDLE: &str = "reason\tGrow altair's root\nminutes\t60\nssh\tshaula-admin\n";
-
 #[tokio::test]
-async fn arbutus_approval_blocks_the_card_until_slack_decides() {
+async fn arbutus_approval_posts_the_callers_shogun_request() {
     let h = harness();
-    assert!(!ok(&h.call("request_human", pid(11), json!({"kind": "approval", "bundle": "grow"})).await), "no Arbutus here");
+    assert!(!ok(&h.call("request_human", pid(11), json!({"kind": "approval", "request_id": "q1"})).await), "no Arbutus here");
     let dir = tempfile::tempdir().unwrap();
-    let (pending, bundles) = (dir.path().join("pending"), dir.path().join("bundles"));
-    std::fs::create_dir_all(&bundles).unwrap();
-    std::fs::write(bundles.join("grow.bundle"), BUNDLE).unwrap();
-    let io = FakeArbutus::new(0);
-    let arb = Arc::new(Approvals::with_dirs(io.clone(), pending.clone(), bundles));
-    let h = harness_with(Some(arb), Some(CARD_URL));
-    let out = h.call("request_human", pid(11), json!({"kind": "approval", "bundle": "grow"})).await;
+    let mut fake = None;
+    let h = harness_with(|e| {
+        let io = FakeArbutus::new(e.ap.clone());
+        fake = Some(io.clone());
+        Some(Arc::new(Approvals::with_dir(io, dir.path().to_path_buf())))
+    }, Some(CARD_URL));
+    let io = fake.unwrap();
+    let req = h.call("approval_request", pid(11), json!({"kind": "admin_ssh", "reason": "grow altair", "minutes": 60,
+                                                          "payload": {"pubkey": crate::common::ssh_pubkey(), "nodes": ["shogun"]}})).await;
+    let rid = s(&req["request_id"]);
+    let out = h.call("request_human", pid(11), json!({"kind": "approval", "request_id": rid})).await;
     assert!(ok(&out), "{out}");
-    let r = s(&out["approval"]);
-    assert_eq!(out["status"], "blocked");
-    let req: Value = serde_json::from_str(&std::fs::read_to_string(pending.join(&r).join("request.json")).unwrap()).unwrap();
-    assert_eq!((req["task"].clone(), s(&req["agent"]), s(&req["session"]), s(&req["node"])), (out["task_id"].clone(), "fix-tunnel".into(), A.into(), "mizar".into()));
-    assert!(s(&h.card(&out["task_id"])["meta"]["reason"]).contains("Tony or Ryan"));
     assert_eq!(io.posts().len(), 1);
-    h.front.arbutus_decided(&s(&out["task_id"]), "Approved by ryan in Slack.").await;
-    assert_eq!(h.card(&out["task_id"])["section"], "working");
+    let rec: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join(format!("{rid}.json"))).unwrap()).unwrap();
+    assert_eq!((s(&rec["agent"]), s(&rec["session"]), s(&rec["node"])), ("fix-tunnel".into(), A.into(), "mizar".into()));
+    assert!(!ok(&h.call("request_human", pid(22), json!({"kind": "approval", "request_id": rid})).await), "another session's request");
 }
 
 #[tokio::test]

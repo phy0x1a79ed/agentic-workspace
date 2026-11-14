@@ -322,20 +322,7 @@ impl Front {
 
     // -- Tony (queue.md R61 item 2) --------------------------------------------------------
 
-    async fn card_for(&self, session: Option<&str>, c: &Caller, reason: &str) -> Result<String, String> {
-        if let Some(t) = self.task_of(session).await? {
-            return Ok(t);
-        }
-        let title = c.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| {
-            let t = title_of(reason);
-            if t.is_empty() { "A session needs Tony".into() } else { t }
-        });
-        let out = self.relay.write("task_open", merge(json!({"title": title, "session_id": session, "name": c.name}), Front::whereabouts(c)))
-            .await.map_err(err)?;
-        Ok(out["task_id"].as_str().unwrap_or_default().to_string())
-    }
-
-    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval. A caller with a
+    /// Tell Tony you need him: blocked, review, or an Arbutus admin approval in Slack. A caller with a
     /// card puts it in Needs you. One with none reaches him by DM, with a link to its session.
     pub async fn request_human(&self, a: &Value, st: &Stamp) -> Answer {
         let kind = match str_of(a, "kind").map(|k| k.trim().to_string()).filter(|k| !k.is_empty()) {
@@ -514,20 +501,10 @@ impl Front {
         let Some(arb) = self.arbutus.clone() else { return Err("this node takes no admin approvals".into()) };
         let agent = c.name.clone().unwrap_or_else(|| "a session".into());
         let node = c.node.clone().unwrap_or_else(|| self.node.clone());
-        let req = arb.open(&str_of(a, "bundle").unwrap_or_default(), &agent, &node, session.unwrap_or("")).await?;
-        let (name, r) = (req["name"].as_str().unwrap_or_default(), req["ref"].as_str().unwrap_or_default().to_string());
-        let reason = format!("Admin approval {name} (ref {r}) waits for Tony or Ryan in Slack.");
-        let task_id = self.card_for(session, c, &reason).await?;
-        let out = self.report(&task_id, session, "blocked", Some(json!(reason))).await?;
-        arb.attach(&r, &task_id).map_err(|e| e.to_string())?;
-        Ok(merge(out, json!({"approval": r, "notice": "A line is typed into this session when an admin decides."})))
-    }
-
-    /// An Arbutus decision moves its card back to Working.
-    pub async fn arbutus_decided(&self, task_id: &str, line: &str) {
-        if let Err(e) = self.relay.write("task_report", json!({"task_id": task_id, "state": "working", "reason": line})).await {
-            tracing::warn!("operations: an Arbutus decision could not move card {task_id}: {e}");
-        }
+        let rid = str_of(a, "request_id").unwrap_or_default();
+        arb.open(&rid, &agent, &node, session.unwrap_or("")).await?;
+        Ok(json!({"ok": true, "request_id": rid,
+                  "notice": "Posted for Tony or Ryan in Slack. A line is typed into this session when an admin decides. A passkey tap still works."}))
     }
 
     // -- the plan, todo and clear hooks, and a session's own card ---------------------------

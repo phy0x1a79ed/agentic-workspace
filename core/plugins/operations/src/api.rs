@@ -78,9 +78,9 @@ pub fn verbs() -> Vec<VerbSpec> {
         v("request_human", "Tell Tony you need him: kind blocked with a reason, or review with a summary. Tony answers in your \
 session, so end your turn after this call. When he might not see it otherwise, it goes to his Discord DM and turns on your Remote \
 Control so he can reach you. If Remote Control was off, its link follows in a second DM when you end your turn. urgent:true on a \
-block also posts to his notifications. kind approval posts an Arbutus admin bundle to Slack for Tony or Ryan.",
+block also posts to his notifications. kind approval posts your pending admin_ssh request for shogun alone to Slack, where Tony or Ryan can approve it.",
           json!([p("kind", "string", false, "blocked, review or approval."), s("reason"), s("summary"),
-                 p("urgent", "boolean", false, ""), p("bundle", "string", false, "kind approval: the bundle's name.")])),
+                 p("urgent", "boolean", false, ""), p("request_id", "string", false, "kind approval: your approval_request's id.")])),
         h("task_open", "Open a card for new work and make the session its main session. Works while alcor is down: the id is minted \
 here and the write waits in the outbox.", json!([p("title", "string", true, ""), sid(), s("peer"), p("tags", "array", false, ""), name()])),
         h("task_attach", "Put a session on an existing card, as cch start does for a task id.",
