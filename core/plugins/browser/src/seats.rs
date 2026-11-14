@@ -442,7 +442,7 @@ impl SeatBook {
         let seat = self.fresh(&mut st, seat_id, session).await?;
         let cdp = seat.cdp();
         if let Some(w) = seat.window {
-            cdp.send("Browser.setWindowBounds", json!({"windowId": w, "bounds": {"windowState": "normal"}}), None).await?;
+            cdp.send("Browser.setWindowBounds", json!({"windowId": w, "bounds": {"windowState": "maximized"}}), None).await?;
         }
         if let Some(t) = seat.tabs.first() {
             cdp.send("Target.activateTarget", json!({"targetId": t}), None).await?;
