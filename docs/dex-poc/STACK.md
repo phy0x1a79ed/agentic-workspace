@@ -6,7 +6,7 @@
 
 ## Current
 
-Nothing. The stack is empty; baitan is built and live.
+`ssh-direct`: HPC ssh from mizar works for all four clusters. Asked: hold masters on mizar, or ride altair's.
 
 ## Waiting on the user
 
@@ -28,10 +28,15 @@ Nothing.
 - 2026-11-12: dex is no longer relevant; take its useful ideas only.
 - 2026-11-11: "pressing issue is some compute market for awm peers."
 - Standing: one report at the end, no interim status reports.
+- 2026-11-14: Fix broken ssh rather than work around it.
+- 2026-11-14: No persistent baitan process on HPC.
 
 ## Stack
 
-None.
+- `ssh-direct`: "the ssh should work... if not, we should fix rather than wrking around". Survey 2026-11-14: mizar's `awm-hpc.conf` (hpc_ssh role, edges.yml) has fir and sockeye only; nibi and trillium are altair-only edges, so `ssh nibi` on mizar fails name resolution. mizar `ssh connect sockeye` is refused before auth although `vpn_ubc` works; cause not found yet.
+- `front-stateless`: "baitan HPC front needs to work without actually running a persistent process on HPC." Fronts stopped 2026-11-14; links removed from mizar `~/.baitan/baitan.toml` (backup `baitan.toml.with-fronts`). Survey: the front's state is all logic over sbatch/squeue/sshare/scancel output plus exit files on scratch; the `Backend` trait and `SlurmBackend::slurm()` are the seam to run those commands over ssh from the market side.
+- `prove-rust`: prove baitan on a simple Rust build job. Evidence: journal 47b79693 "Live: an agent-posted Rust build (L1)", no provider or promise detail; FINDINGS E4 was the pre-baitan prototype.
+- `prove-metasmith`: prove baitan on a metasmith pipeline; journal evidence is fine. Evidence: journal 47b79693 L3 on sockeye (prodigal + DIAMOND vs UniRef50, cache reuse on rerun), 3a6c999a.
 
 ## Workers
 
