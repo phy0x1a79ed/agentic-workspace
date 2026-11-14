@@ -33,7 +33,7 @@ A cross-node call is an ordinary awm request carried inside plain ssh to the oth
 3. On the other node, `awm edge-serve` takes the calling node from `AWM_EDGE_FROM`, or from a service key's forced `--from`. It refuses a node that holds no edge to it. It hands each call to the loopback gateway with the calling node in `X-Awm-Caller`. The gateway honours that header only beside the edge token in `<AWM_DIR>/edge.token`.
 4. The service sees the caller stamped `peer:<node>`.
 
-A dropped link fails the calls in flight, and the next call reopens it. A sleeping node fails like any unreachable node, and callers treat that as normal (R93). A call to a node with no edge fails with `no edge from <here> to <node>`. It never runs locally.
+A dropped link fails the calls in flight, and the next call reopens it. A sleeping node fails like any unreachable node, and callers treat that as normal (R93). Only a call that names `peer=<node>` may wake a sleeper. The edge client gives that channel's ssh child `AWM_EDGE_WAKE=1` and every other child `AWM_EDGE_WAKE=0` with a short connect timeout. ssh hands the variable to the sleeper's `Match exec` wake hook, such as shogun's `shogun-up` from the cloud project. **CAUTION** The hook and `core/crates/awm-edge/src/client.rs` (`WAKE_VAR`, `WAKE_GRACE`) must agree on the name and on how long a wake takes. A mismatch makes every sweep wake the sleeper, or makes a woken call time out. A call to a node with no edge fails with `no edge from <here> to <node>`. It never runs locally.
 
 The `table_changed` frame tells the nodes across each edge that this node's tool table changed, so their `peer` enums follow.
 
