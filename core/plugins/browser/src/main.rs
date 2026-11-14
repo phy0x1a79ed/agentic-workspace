@@ -344,7 +344,7 @@ mod tests {
 
     impl FakeApprover {
         fn approve(&self, rid: &str, node: &str, session: &str, minutes: i64) {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            let now = grants::now();
             let body = json!({"grant_id": "g1", "request_id": rid, "kind": grants::KIND, "node": node, "subject": "tony",
                 "payload_sha256": awm_trust::grant::payload_digest(&json!({"node": node, "session_id": session})),
                 "not_before": now - 60, "not_after": now + minutes * 60, "approved_by_device": "d"});
