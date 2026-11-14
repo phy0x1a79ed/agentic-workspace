@@ -1,5 +1,5 @@
 # The baitan core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/baitan.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=baitan-f5d1df9b9539
-file=awm-plugin-baitan-f5d1df9b9539-linux-x86_64-musl
-sha256=f830ec619b0f042b2ec781234cfbdced79deea02ab46e230380ab198214e8223
+version=baitan-0234964ebe47
+file=awm-plugin-baitan-0234964ebe47-linux-x86_64-musl
+sha256=17e09c3029fbcbfff393cdf53074ff3ad88fa2f35f7a92305bdba5a1813482f1
