@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use crate::chrome::Chrome;
+
 pub const PROFILES: [&str; 2] = ["tony", "blank"];
 
 pub use awm_cdp::page_method_allowed as seat_may_run;
@@ -136,6 +138,8 @@ pub struct SeatBook {
     launcher: Option<Arc<dyn Launcher>>,
     store: Option<PathBuf>,
     state: Mutex<State>,
+    /// Started again when a seat on the shared Chrome is used while it is down.
+    chrome: Option<Arc<Chrome>>,
 }
 
 fn new_seat_id() -> String {
@@ -152,7 +156,12 @@ fn origin(url: &str) -> &str {
 
 impl SeatBook {
     pub fn new(shared: Arc<dyn Cdp>, launcher: Option<Arc<dyn Launcher>>, store: Option<PathBuf>) -> Self {
-        SeatBook { shared, launcher, store, state: Mutex::new(State::default()) }
+        SeatBook { shared, launcher, store, state: Mutex::new(State::default()), chrome: None }
+    }
+
+    pub fn with_chrome(mut self, chrome: Arc<Chrome>) -> Self {
+        self.chrome = Some(chrome);
+        self
     }
 
     /// Read the seats a previous run recorded. Each is checked against Chrome on first use.
@@ -294,6 +303,9 @@ impl SeatBook {
     /// The seat, checked against its owner, with its tabs attached on the current connection.
     async fn fresh<'s>(&self, st: &'s mut State, seat_id: &str, session: &str) -> Result<&'s mut Seat, BookError> {
         let i = st.seats.iter().position(|s| s.seat == seat_id && s.session == session).ok_or_else(|| seat_err("no such seat for this session"))?;
+        if let (None, Some(chrome)) = (&st.seats[i].container, &self.chrome) {
+            chrome.ensure().await?;
+        }
         let seat = &mut st.seats[i];
         let cdp = seat.cdp();
         if seat.generation == Some(cdp.generation()) {
@@ -316,7 +328,7 @@ impl SeatBook {
                 l.forget(&gone.seat);
             }
             self.save(st);
-            return Err(seat_err("no such seat for this session"));
+            return Err(seat_err("this seat's window is gone, as after a Chrome restart: call seat_open for a new one"));
         }
         self.save(st);
         Ok(&mut st.seats[i])
