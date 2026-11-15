@@ -24,7 +24,7 @@ Question: why are there two Teams tabs, and is productivity leaking tabs?
 
 Decided: yes, but only for Teams. `service_tab` reconnects to an existing tab by matching its origin against `service_sites`. Teams was configured as https://teams.microsoft.com, which redirects to https://teams.cloud.microsoft, so the match missed and each reconnect opened a new Teams tab. The other sites stay on their configured origin.
 
-Landed: on alcor, /var/lib/awm/browser/browser.json now sets `service_sites.teams` to https://teams.cloud.microsoft. The backup is browser.json.bak-20261113. This file is edited by hand and is not in the repo. Both Teams tabs were closed; productivity `chat_read teams` reopened one tab and works. The new URL takes effect at the next browser-plugin restart.
+Landed: on alcor, /var/lib/awm/browser/browser.json now sets `service_sites.teams` to https://teams.cloud.microsoft. The backup is browser.json.bak-20261113. fullscreen-windows later put the same URL in the browser_chrome role's defaults, so a role run keeps it. Both Teams tabs were closed; productivity `chat_read teams` reopened one tab and works. The new URL takes effect at the next browser-plugin restart.
 
 ## seat-close-instructions — 2026-11-14
 
@@ -67,3 +67,13 @@ User: "Why cant they just pick the account?", then "Can we build something that 
 Decided: the browser verb `pick_login(seat, tab, selector, choice)` clicks the field and picks the Nth entry of Chrome's saved-login list with xdotool on the container's display. Chrome draws that list outside the page, so page-level key events never reach it. Chrome fills the value, and the caller never sees it. The verb answers an error when the field stays empty. A username-first site takes one pick per page. No generic display-input verb exists, so an agent can fill only what Chrome already saved.
 
 Landed: awm release 1d928f90 (421ed358). cloud 96b44e8 adds xdotool to the image, merged to cloud dev as 03f4b8b and applied to alcor with a recheck of changed=0. Verified: a seat signed in to mzio through two `pick_login` calls and two clicks on Sign In.
+
+## chrome-on-demand — 2026-11-15
+
+Question: what happens when alcor's shared Chrome stops under live seats? It stops when its Docker restarts, as alcor's daily unattended upgrade did at 06:03 on 2026-11-14, and when the browser_chrome role rebuilds the image. Its windows die with it. Only seat_open started it again, so every call on a recorded seat failed with a 502.
+
+User picked "Restart, clear error".
+
+Decided: every call on a seat of the shared Chrome starts Chrome when it is down. A seat whose window died answers "this seat's window is gone, as after a Chrome restart: call seat_open for a new one", and the browser forgets it. Lost windows are not reopened. The role keeps dropping a Chrome that runs an older image.
+
+Landed: awm release feba644d. Verified: with awm-chrome removed under a live seat, `tab_list` on that seat started Chrome in under 3 seconds and answered the message above.
