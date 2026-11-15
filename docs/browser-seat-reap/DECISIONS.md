@@ -24,7 +24,7 @@ Question: why are there two Teams tabs, and is productivity leaking tabs?
 
 Decided: yes, but only for Teams. `service_tab` reconnects to an existing tab by matching its origin against `service_sites`. Teams was configured as https://teams.microsoft.com, which redirects to https://teams.cloud.microsoft, so the match missed and each reconnect opened a new Teams tab. The other sites stay on their configured origin.
 
-Landed: on alcor, /var/lib/awm/browser/browser.json now sets `service_sites.teams` to https://teams.cloud.microsoft. The backup is browser.json.bak-20261113. This file is edited by hand and is not in the repo. Both Teams tabs were closed; productivity `chat_read teams` reopened one tab and works. The new URL takes effect at the next browser-plugin restart.
+Landed: on alcor, /var/lib/awm/browser/browser.json now sets `service_sites.teams` to https://teams.cloud.microsoft. The backup is browser.json.bak-20261113. fullscreen-windows later put the same URL in the browser_chrome role's defaults, so a role run keeps it. Both Teams tabs were closed; productivity `chat_read teams` reopened one tab and works. The new URL takes effect at the next browser-plugin restart.
 
 ## seat-close-instructions — 2026-11-14
 
