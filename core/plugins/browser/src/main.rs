@@ -209,6 +209,21 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
         let (id, t) = (usage(req(&call, "seat"))?, usage(req(&call, "tab"))?);
         b.cdp(&id, &who.0, &t, "Page.captureScreenshot", json!({"format": "png"})).await
     });
+    let c = chrome.clone();
+    let svc = verb!(svc, book, [c], "pick_login", "Fill a login field from the logins Chrome saved for this site, as a person picks one from Chrome's list. Chrome fills the value, so the caller never sees a password. Pick on the username field, submit, then pick on the password field when the site asks for it on its own page.",
+        json!([seat(), tab(), p("selector", "string", true, "A CSS selector for the username or password field."), p("choice", "integer", false, "Which saved login to pick, counting from 1 at the top of Chrome's list. Defaults to 1.")]),
+        |b, call, who| {
+            let (id, t, sel) = (usage(req(&call, "seat"))?, usage(req(&call, "tab"))?, usage(req(&call, "selector"))?);
+            let choice = call.args.get("choice").and_then(Value::as_u64).unwrap_or(1).clamp(1, 20);
+            let (container, x, y) = b.screen_point(&id, &who.0, &t, &sel).await?;
+            c.pick_at(container.as_deref(), x, y, choice).await?;
+            let check = format!("document.querySelector({}).value.length > 0", serde_json::to_string(&sel).unwrap_or_default());
+            let filled = b.cdp(&id, &who.0, &t, "Runtime.evaluate", json!({"expression": check, "returnByValue": true})).await?;
+            if filled["result"]["value"] != json!(true) {
+                return Err(BookError::Seat("Chrome offered no saved login for that field".into()));
+            }
+            Ok(json!({"filled": true}))
+        });
     let (v, c) = (viewer.clone(), chrome.clone());
     let svc = verb!(svc, book, [node, v, c], "signin", "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
         json!([seat(), p("site", "string", true, ""), p("reason", "string", true, "")]),
