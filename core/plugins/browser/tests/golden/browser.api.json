@@ -185,6 +185,37 @@
       "tool": "browser_screenshot"
     },
     {
+      "name": "pick_login",
+      "description": "Fill a login field from the logins Chrome saved for this site, as a person picks one from Chrome's list. Chrome fills the value, so the caller never sees a password. Pick on the username field, submit, then pick on the password field when the site asks for it on its own page.",
+      "params": [
+        {
+          "name": "seat",
+          "type": "string",
+          "required": true,
+          "description": "The seat id that seat_open returned."
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "required": true,
+          "description": "A tab id of this seat's window."
+        },
+        {
+          "name": "selector",
+          "type": "string",
+          "required": true,
+          "description": "A CSS selector for the username or password field."
+        },
+        {
+          "name": "choice",
+          "type": "integer",
+          "required": false,
+          "description": "Which saved login to pick, counting from 1 at the top of Chrome's list. Defaults to 1."
+        }
+      ],
+      "tool": "browser_pick_login"
+    },
+    {
       "name": "signin",
       "description": "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
       "params": [

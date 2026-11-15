@@ -450,6 +450,29 @@ impl SeatBook {
         Ok(())
     }
 
+    /// Bring a tab to the front and find where the element `selector` matches sits on the
+    /// display: the seat's container (None for the shared Chrome) and the element's centre.
+    pub async fn screen_point(&self, seat_id: &str, session: &str, target: &str, selector: &str) -> Result<(Option<String>, i64, i64), BookError> {
+        let (cdp, flat, container) = {
+            let mut st = self.state.lock().await;
+            let seat = self.fresh(&mut st, seat_id, session).await?;
+            let flat = seat.flat(target).ok_or_else(|| seat_err("that tab is not in this seat's window"))?.to_string();
+            (seat.cdp(), flat, seat.container.clone())
+        };
+        cdp.send("Target.activateTarget", json!({"targetId": target}), None).await?;
+        let sel = serde_json::to_string(selector).unwrap_or_default();
+        let expression = format!(
+            "(() => {{ const e = document.querySelector({sel}); if (!e) return null; e.scrollIntoView({{block: 'center'}}); const r = e.getBoundingClientRect(); \
+             return [Math.round(screenX + outerWidth - innerWidth + r.x + r.width / 2), Math.round(screenY + outerHeight - innerHeight + r.y + r.height / 2)]; }})()"
+        );
+        let out = cdp.send("Runtime.evaluate", json!({"expression": expression, "returnByValue": true}), Some(&flat)).await?;
+        let xy = &out["result"]["value"];
+        match (xy[0].as_i64(), xy[1].as_i64()) {
+            (Some(x), Some(y)) => Ok((container, x, y)),
+            _ => Err(seat_err("no element on that tab matches the selector")),
+        }
+    }
+
     pub async fn seat_exists(&self, seat_id: &str, session: &str) -> Result<(), BookError> {
         let mut st = self.state.lock().await;
         self.fresh(&mut st, seat_id, session).await.map(|_| ())

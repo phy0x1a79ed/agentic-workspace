@@ -73,6 +73,18 @@ impl Chrome {
         Ok(())
     }
 
+    /// Click the display point as a person would, then pick the `choice`th entry of the list
+    /// Chrome opens there. Chrome draws that list outside the page, so only display input
+    /// reaches it. `container` is a seat's own, or None for the shared Chrome.
+    pub async fn pick_at(&self, container: Option<&str>, x: i64, y: i64, choice: u64) -> anyhow::Result<()> {
+        let (x, y, n) = (x.to_string(), y.to_string(), choice.to_string());
+        #[rustfmt::skip]
+        let args = ["exec", container.unwrap_or(NAME), "xdotool", "mousemove", &x, &y, "click", "1", "sleep", "1",
+                    "key", "--delay", "200", "--repeat", &n, "Down", "sleep", "0.3", "key", "Return"];
+        self.docker.run(&args).await?;
+        Ok(())
+    }
+
     /// Stop the shared Chrome when nothing has used it for the idle period. True when it stopped.
     pub async fn stop_if_idle(&self, seats_on_it: usize) -> bool {
         let Some(run) = &self.run else { return false };
