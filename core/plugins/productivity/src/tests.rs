@@ -49,6 +49,17 @@ fn no_verb_sends() {
     }
 }
 
+/// The gateway rewrites `file` into `files` before its own argument check, so a verb missing `files` refuses every upload.
+#[test]
+fn every_file_verb_takes_the_inlined_files() {
+    for f in manifest() {
+        let params: Vec<&str> = f["params"].as_array().into_iter().flatten().map(|p| p["name"].as_str().unwrap()).collect();
+        if params.contains(&"file") {
+            assert!(params.contains(&"files"), "{} takes `file` but not the `files` the gateway inlines it into", f["name"]);
+        }
+    }
+}
+
 #[tokio::test]
 async fn every_verb_refuses_every_node_but_the_callers_and_every_seat() {
     let s = svc().await;

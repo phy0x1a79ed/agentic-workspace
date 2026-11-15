@@ -360,6 +360,11 @@
           "required": false
         },
         {
+          "name": "files",
+          "type": "array",
+          "required": false
+        },
+        {
           "name": "src",
           "type": "string",
           "required": false
