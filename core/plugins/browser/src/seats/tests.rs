@@ -219,6 +219,8 @@ async fn seats_survive_a_restart_and_a_chrome_reconnect() {
     let book = SeatBook::new(chrome.clone(), None, Some(store.clone()));
     assert_eq!(book.load().await.unwrap(), 2);
     let closes_before = chrome.calls().iter().filter(|c| c.0 == "Target.closeTarget").count();
+    let lost = book.navigate(&gone.seat, "mizar/job-b", &gone.tabs[0], "https://example.org").await;
+    assert!(matches!(lost, Err(BookError::Seat(m)) if m.contains("call seat_open")), "a lost window tells its session to open a new seat");
     book.verify().await.unwrap();
     assert_eq!(chrome.calls().iter().filter(|c| c.0 == "Target.closeTarget").count(), closes_before, "a restart closes no window");
     let seats = book.list(None).await;

@@ -57,3 +57,13 @@ User: "I meant maximized. 1920 x 1080?"
 Decided: every window opens maximized with no title bar, keeping Chrome's tab strip and address bar, on a 1920×1080 display. An openbox rule in the image does it, so seats, service tabs and pop-ups all follow. Raising a seat's window maximizes it instead of restoring it to normal. Duplicate tabs came from the Teams redirect (productivity-tab-leak). The role's Teams default now carries the fix, so a role run keeps it.
 
 Landed: cloud f371785 on dev (feat/browser-maximized 0786535), applied to alcor with a recheck of changed=0. Not in cloud release, because dev holds unverified commits from other scopes. awm release 9e69278d for the raise. Verified: a new seat window measures 1919×1079 at (0,0) on a 1920×1080 screen. The raise path is not seen live.
+
+## chrome-saved-login — 2026-11-15
+
+Question: alcor's Chrome saves Tony's mzio login. How does an agent use it without typing the password?
+
+User: "Why cant they just pick the account?", then "Can we build something that would let the interaction work?", then picked "pick_login only".
+
+Decided: the browser verb `pick_login(seat, tab, selector, choice)` clicks the field and picks the Nth entry of Chrome's saved-login list with xdotool on the container's display. Chrome draws that list outside the page, so page-level key events never reach it. Chrome fills the value, and the caller never sees it. The verb answers an error when the field stays empty. A username-first site takes one pick per page. No generic display-input verb exists, so an agent can fill only what Chrome already saved.
+
+Landed: awm release 1d928f90 (421ed358). cloud 96b44e8 adds xdotool to the image, merged to cloud dev as 03f4b8b and applied to alcor with a recheck of changed=0. Verified: a seat signed in to mzio through two `pick_login` calls and two clicks on Sign In.

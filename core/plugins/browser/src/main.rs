@@ -224,12 +224,11 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
             }
             Ok(json!({"filled": true}))
         });
-    let (v, c) = (viewer.clone(), chrome.clone());
-    let svc = verb!(svc, book, [node, v, c], "signin", "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
+    let v = viewer.clone();
+    let svc = verb!(svc, book, [node, v], "signin", "Ask Tony to pass a captcha or sign in on this seat's window. Files a request on the approvals queue and raises the window in the viewer.",
         json!([seat(), p("site", "string", true, ""), p("reason", "string", true, "")]),
         |b, call, who| {
             let (id, site, reason) = (usage(req(&call, "seat"))?, usage(req(&call, "site"))?, usage(req(&call, "reason"))?);
-            c.ensure().await?;
             b.seat_exists(&id, &who.0).await?;
             if reason.trim().is_empty() {
                 return Err(BookError::Usage("a request needs a reason Tony can read".into()));
@@ -336,10 +335,10 @@ async fn main() -> anyhow::Result<()> {
     let settings = Arc::new(Settings::load(&dir)?);
     let shared = Arc::new(awm_cdp::Browser::new(&settings.cdp));
     let boxes = Arc::new(Containers { image: settings.seat_image.clone(), seats_dir: settings.dir.join("seats"), tony_profile: settings.tony_profile.clone(), docker: Default::default() });
-    let book: Book = Arc::new(SeatBook::new(shared, Some(Arc::new(boxes.clone())), Some(dir.join("seats.json"))));
+    let chrome = Arc::new(Chrome::new(settings.chrome.clone(), &settings.cdp));
+    let book: Book = Arc::new(SeatBook::new(shared, Some(Arc::new(boxes.clone())), Some(dir.join("seats.json"))).with_chrome(chrome.clone()));
     let loaded = book.load().await?;
     tracing::info!(seats = loaded, "read the recorded seats");
-    let chrome = Arc::new(Chrome::new(settings.chrome.clone(), &settings.cdp));
     let ctx = svc.context();
     let grants = Arc::new(Grants::load(Arc::new(ctx.hub().clone()), Some(dir.join("profile-grants.json"))));
     let (b, c) = (book.clone(), chrome.clone());
