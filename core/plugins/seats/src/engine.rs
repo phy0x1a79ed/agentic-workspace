@@ -127,6 +127,7 @@ type Key = (String, String);
 /// What this node's session list says of one live session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Agent {
+    pub name: String,
     /// Its claude.ai link, empty while its Remote Control is off.
     pub link: String,
     pub busy: bool,
@@ -554,11 +555,14 @@ impl Seats {
             "pin": true, "brief": false,
         });
         let here = previous.as_ref().filter(|p| !p.adopted && p.node == seat.decl.node);
+        // A session the seat started but never recorded, say when a shutdown cut the save short, holds its name.
+        let orphan = self.world.live().await.and_then(|l| l.into_iter().find(|(_, a)| a.name == seat.decl.name)).map(|(session, _)| session);
         // A host reboot can bring the old agent back after its seat emptied: the new one takes its place.
-        if let Some(p) = here.filter(|p| !p.stopped) {
-            spec["replaces"] = json!(p.session_id);
+        let replaces = orphan.clone().or_else(|| here.filter(|p| !p.stopped).map(|p| p.session_id.clone()));
+        if let Some(session) = replaces {
+            spec["replaces"] = json!(session);
         }
-        let resume = here.filter(|p| p.stopped).map(|p| p.session_id.clone());
+        let resume = here.filter(|p| p.stopped && orphan.is_none()).map(|p| p.session_id.clone());
         let ids: Vec<i64> = pending.iter().map(|q| q.id).collect();
         seat.state = State::Starting;
         seat.deadline = now + UP_S;

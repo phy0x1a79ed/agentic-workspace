@@ -87,6 +87,7 @@ impl World for Live {
         let rows = push::live_rows(&self.hub, &self.here).await?;
         let text = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
         let agent = |r: Value| Agent {
+            name: text(&r, "name"),
             link: text(&r, "rc_url"),
             busy: r.get("state").and_then(Value::as_str) == Some("working"),
             active_at: chrono::DateTime::parse_from_rfc3339(&text(&r, "active_at")).map_or(0.0, |t| t.timestamp_millis() as f64 / 1000.0),

@@ -19,6 +19,8 @@ struct W {
     starts: VecDeque<Started>,
     /// Sessions that run.
     up: HashSet<String>,
+    /// Each session's name, where the test gives one.
+    names: HashMap<String, String>,
     /// Sessions with Remote Control on.
     rc: HashSet<String>,
     /// Sessions started but never up.
@@ -156,6 +158,7 @@ impl World for Fake {
     async fn live(&self) -> Option<Agents> {
         let w = self.w();
         let agent = |j: &String| Agent {
+            name: w.names.get(j).cloned().unwrap_or_default(),
             link: if w.rc.contains(j) { format!("https://claude.ai/code/{j}") } else { String::new() },
             busy: w.busy.contains(j),
             active_at: w.active.get(j).copied().unwrap_or(0.0),
@@ -457,6 +460,15 @@ async fn an_agent_that_vanished_gives_way_with_a_notice_unless_the_seat_only_ado
     t.send("again").await;
     t.tick().await;
     assert!(t.world.w().specs[2].get("replaces").is_none(), "a session the seat only adopted is never stopped");
+}
+
+#[tokio::test]
+async fn a_session_left_holding_the_seats_name_gives_way_to_the_next_start() {
+    let mut t = T::new(false);
+    t.world.w().up.insert("orphan".into());
+    t.world.w().names.insert("orphan".into(), decl().name);
+    t.send("task").await;
+    assert_eq!(t.world.w().specs[0]["replaces"], "orphan", "the new agent takes the name and the orphan's last turns");
 }
 
 #[tokio::test]
