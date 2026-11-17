@@ -29,21 +29,6 @@ pub trait Outbound: Send + Sync {
     fn notify_operator(&self, text: String) -> BoxFut<'_, ()>;
 }
 
-pub const OPERATOR_DM_ACCOUNT_ENV: &str = "AWM_OPERATOR_DM_ACCOUNT";
-pub const OPERATOR_DM_CHANNEL_ENV: &str = "AWM_OPERATOR_DM_CHANNEL";
-pub const DEFAULT_OPERATOR_DM_ACCOUNT: &str = "discord-bot";
-/// unimatrix0#notifications, the channel when no setting names one (`awm.config.operator`).
-pub const DEFAULT_SWARM_OPERATOR_DM: &str = "1522674357762261112";
-
-/// The social account and channel that reach this node's operator.
-pub fn operator_dm() -> (String, String) {
-    let var = |n: &str| std::env::var(n).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    (
-        var(OPERATOR_DM_ACCOUNT_ENV).unwrap_or_else(|| DEFAULT_OPERATOR_DM_ACCOUNT.into()),
-        var(OPERATOR_DM_CHANNEL_ENV).unwrap_or_else(|| DEFAULT_SWARM_OPERATOR_DM.into()),
-    )
-}
-
 /// The real outbound, through this node's gateway.
 pub struct GatewayOutbound {
     pub hub: Hub,
@@ -82,7 +67,7 @@ impl Outbound for GatewayOutbound {
 
     fn notify_operator(&self, text: String) -> BoxFut<'_, ()> {
         Box::pin(async move {
-            let (account, channel) = operator_dm();
+            let (account, channel) = awm_plugin_sdk::config::operator_dm();
             let peer = awm_plugin_sdk::config::peer_env("AWM_SOCIAL_PEER");
             self.invoke("social", "send", json!({"account": account, "channel": channel, "text": text}), peer, Duration::from_secs(60)).await?;
             Ok(())

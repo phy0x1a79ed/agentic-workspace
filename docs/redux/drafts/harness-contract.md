@@ -76,7 +76,8 @@ Optional verbs, listed in `capabilities` when served:
 | `mcp` | cc | Reconnect, enable or disable a session's MCP servers: target, `action`, `server`. |
 | `link` | cc | Read a session's claude.ai link. |
 | `adopt` | cc | Take on a job that `start` did not create. |
-| `revive_pinned` | cc | After a reboot, resume each seat agent whose process is gone and stop every other dead pinned session (`sessions.md` R150). |
+| `revive_pinned` | cc | Resume each pinned session whose process is gone (`sessions.md` R150). cc runs it on its first start of a boot, and records the boot only when the revive ends `ok`, so a pass the process died in runs again on the next start. |
+| `revive_report` | cc | The last boot revive's report, and whether it is this boot's. The wake boot runner and the telemetry beat read it. |
 | `probe` | cc | `node`: whether the plugin on that node answers `list` from this node, and its daemon state. It returns no sessions. reflection forwards the caller's `X-Awm-As`, so the peer gate applies. |
 | `live_session_ids` | cc | The harness's own session ids that a running process holds. It refuses when a record cannot be read, so a caller never acts on a shorter list. |
 | `caller_of_token` | cc | `token`: the isolated session that holds a caller token, and the verbs it may call. The gateway's isolated door calls it. |

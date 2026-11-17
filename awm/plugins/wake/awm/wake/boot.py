@@ -26,13 +26,18 @@ async def run(cfg: wake_config.WakeConfig, gw: Gateway, *, gateway_wait_s: float
               revive_wait_s: float = 900, retry_s: float = 20,
               sleep: Callable[[float], Any] = asyncio.sleep,
               clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+    report = {"node": cfg.node, **await _report(gw, gateway_wait_s, revive_wait_s, retry_s, sleep, clock)}
+    return {**report, "release": await _release(cfg, gw, report)}
+
+
+async def _report(gw: Gateway, gateway_wait_s: float, revive_wait_s: float, retry_s: float,
+                  sleep: Callable[[float], Any], clock: Callable[[], float]) -> dict[str, Any]:
+    """This boot's revive report from the harness, or why there is none."""
     t0 = clock()
     while not await gw.up():
         if clock() - t0 > gateway_wait_s:
-            report: dict[str, Any] = {"node": cfg.node, "error": "the gateway never answered"}
-            return {**report, "release": await _release(cfg, gw, report)}
+            return {"error": "the gateway never answered"}
         await sleep(5)
-
     t0 = clock()
     error = "the harness never reported a revive for this boot"
     while clock() - t0 <= revive_wait_s:
@@ -42,14 +47,12 @@ async def run(cfg: wake_config.WakeConfig, gw: Gateway, *, gateway_wait_s: float
                 raise CallError("the gateway names no harness provider")
             out = await gw.call(harness, "revive_report", {})
             if out.get("this_boot"):
-                report = {"node": cfg.node, "revive": out.get("report")}
-                return {**report, "release": await _release(cfg, gw, report)}
+                return {"revive": out.get("report")}
         except CallError as exc:
             error = f"revive_report failed: {exc}"
             log.warning("%s", error)
         await sleep(retry_s)
-    report = {"node": cfg.node, "error": error}
-    return {**report, "release": await _release(cfg, gw, report)}
+    return {"error": error}
 
 
 async def _release(cfg: wake_config.WakeConfig, gw: Gateway, report: dict[str, Any]) -> Any:

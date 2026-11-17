@@ -121,7 +121,8 @@ pub fn admits(edges: &EdgeList, as_: Option<&str>) -> bool {
 /// The social account and channel that reach this node's operator: `AWM_OPERATOR_DM_ACCOUNT`
 /// and `AWM_OPERATOR_DM_CHANNEL`, unset the bot in unimatrix0#notifications (`awm.config.operator`).
 pub fn operator_dm() -> (String, String) {
-    (peer_env("AWM_OPERATOR_DM_ACCOUNT").unwrap_or_else(|| "discord-bot".into()), peer_env("AWM_OPERATOR_DM_CHANNEL").unwrap_or_else(|| "1522674357762261112".into()))
+    let account = peer_env("AWM_OPERATOR_DM_ACCOUNT").unwrap_or_else(|| "discord-bot".into());
+    (account, peer_env("AWM_OPERATOR_DM_CHANNEL").unwrap_or_else(|| "1522674357762261112".into()))
 }
 
 /// A peer-selector variable such as `AWM_SOCIAL_PEER`: the node to call, or None for local.

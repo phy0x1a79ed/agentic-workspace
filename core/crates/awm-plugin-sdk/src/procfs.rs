@@ -105,6 +105,11 @@ pub fn cgroup_unit(pid: u32) -> Option<String> {
     line.rsplit('/').next().filter(|u| !u.is_empty()).map(str::to_string)
 }
 
+/// The kernel's id of this boot.
+pub fn boot_id() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 /// The boot time in seconds since the epoch, from `/proc/stat`, or 0 when unreadable.
 pub fn boot_time() -> f64 {
     std::fs::read_to_string("/proc/stat")
