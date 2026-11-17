@@ -386,7 +386,9 @@ impl Live {
 /// relaunch. Claude Code relaunches a job with the flags it was created with, so a switch made
 /// since would otherwise be lost. The compare runs on each bridge change within [`RC_WINDOW`],
 /// and once at [`RC_SETTLE`] for a bridge that never changes. A bridge change that matches the
-/// switch, or one put back, ends the relaunch, so a later `/rc` is left alone.
+/// switch, or one put back, ends the relaunch, so a later `/rc` is left alone. A bridge the server
+/// dropped is put back at once, one try per drop: a deliberate off clears both records and never
+/// reads as a drop.
 async fn restore_after_relaunch(fx: control::Live<Watch>, paths: Arc<Paths>, mut events: tokio::sync::mpsc::UnboundedReceiver<session_events::Rc>) {
     let mut open: std::collections::HashMap<String, tokio::time::Instant> = Default::default();
     let (settle, mut settled) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -403,6 +405,10 @@ async fn restore_after_relaunch(fx: control::Live<Watch>, paths: Arc<Paths>, mut
                     continue;
                 }
                 session_events::Rc::Bridge(job) => (job, true),
+                session_events::Rc::Dropped(job) => {
+                    restore_switch(&fx, &paths, &job, "dropped").await;
+                    continue;
+                }
             },
             Some(job) = settled.recv() => (job, false),
             else => return,
@@ -412,7 +418,7 @@ async fn restore_after_relaunch(fx: control::Live<Watch>, paths: Arc<Paths>, mut
         if !open.contains_key(&job) {
             continue;
         }
-        if restore_switch(&fx, &paths, &job).await || bridged {
+        if restore_switch(&fx, &paths, &job, "relaunched").await || bridged {
             open.remove(&job);
         }
     }
@@ -420,7 +426,7 @@ async fn restore_after_relaunch(fx: control::Live<Watch>, paths: Arc<Paths>, mut
 
 /// Compare `job`'s bridge with its recorded switch and put the switch back if they differ. True
 /// when it tried.
-async fn restore_switch(fx: &control::Live<Watch>, paths: &Arc<Paths>, job: &str) -> bool {
+async fn restore_switch(fx: &control::Live<Watch>, paths: &Arc<Paths>, job: &str, cause: &str) -> bool {
     let (paths, j) = (paths.clone(), job.to_string());
     let recorded = tokio::task::spawn_blocking(move || {
         let id = lifecycle::session_of_job(&paths, &j)?;
@@ -434,8 +440,8 @@ async fn restore_switch(fx: &control::Live<Watch>, paths: &Arc<Paths>, job: &str
     let Some(out) = control::restore_remote_control(fx, job, &id, on, want.as_str()).await else { return false };
     let shown = if on { "on" } else { "off" };
     match out {
-        Ok(out) => tracing::info!("cch: relaunched {job}: Remote Control put back {shown}: {out}"),
-        Err(e) => tracing::warn!("cch: relaunched {job}: Remote Control could not be put back {shown}: {e}"),
+        Ok(out) => tracing::info!("cch: {cause} {job}: Remote Control put back {shown}: {out}"),
+        Err(e) => tracing::warn!("cch: {cause} {job}: Remote Control could not be put back {shown}: {e}"),
     }
     true
 }
