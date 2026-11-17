@@ -198,3 +198,41 @@ async fn a_peer_never_sees_what_a_mark_covers() {
     assert_eq!(r.app.status(&json!({}), PEER).await.unwrap()["live"]["sessions"], 0);
     assert_eq!(r.app.query(&json!({"query": "kitchen"}), LOCAL).await.unwrap()["hits"].as_array().unwrap().len(), 4);
 }
+
+/// A session productivity served from a grant: a tool result whose reply carries the notice.
+fn served(text: &str) -> String {
+    let reply = json!({"confidential": privacy::CONFIDENTIAL, "messages": [text]}).to_string();
+    let line = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": reply}]}});
+    format!("{line}\n{}", msgs(&["the kitchen sink after the mail"]))
+}
+
+#[tokio::test]
+async fn no_caller_sees_a_session_productivity_served_from_a_grant() {
+    let r = rig();
+    write_gz(&r.archive().join("-p-open").join("s-open.jsonl.gz"), &msgs(&["the kitchen sink"]), 30.0);
+    write_gz(&r.archive().join("-p-open").join("s-mail.jsonl.gz"), &served("kitchen invoice"), 30.0);
+    write(&r.projects().join("-p-live").join("s-live.jsonl"), &served("kitchen receipt"), 0.0);
+    r.indexed().await;
+    let sessions = |out: Value| -> BTreeSet<String> {
+        out["hits"].as_array().unwrap().iter().map(|h| h["id"].as_str().or(h["session"].as_str()).unwrap().split(':').next().unwrap().to_string()).collect()
+    };
+    let open: BTreeSet<String> = ["s-open".to_string()].into();
+    for as_ in [LOCAL, USER] {
+        assert_eq!(sessions(r.app.query(&json!({"query": "kitchen"}), as_).await.unwrap()), open, "query {as_:?}");
+        assert_eq!(sessions(r.app.search(&json!({"pattern": "kitchen"}), as_).await.unwrap()), open, "search {as_:?}");
+    }
+    let Rig { dir: _kept, app } = r;
+    let src = Transcripts::new(Arc::new(app));
+    let fields = awm_kb_transcripts::index::spec().fields;
+    let ask = Ask {
+        text: Some(parse_text(&json!({"$contains": "kitchen"})).unwrap()),
+        source: parse_source(&json!({}), &fields, "transcripts", "query").unwrap(),
+        max: 50,
+        vector: None,
+        veil: Veil::None,
+        session: None,
+    };
+    let ids: HashSet<String> = src.query(ask).await.unwrap()["exact"].as_array().unwrap().iter().map(|h| h["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, HashSet::from(["s-open:1".to_string()]));
+    assert!(src.get("s-mail:2", &Veil::None, None).await.unwrap().is_none());
+}

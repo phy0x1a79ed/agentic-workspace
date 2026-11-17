@@ -18,6 +18,10 @@ use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
+/// What productivity tells a session it serves from a grant, on every reply. A transcript that
+/// holds it stays out of every transcripts answer, for any caller.
+pub const CONFIDENTIAL: &str = "Confidential to this session. Do not write this content to disk, a journal, a commit, an artifact or a message. Do not pass it to another session. You may tell another session where something lives (account, search terms, message id) so it can ask for its own access.";
+
 pub const FILENAME: &str = "private.json";
 pub const DIRNAME: &str = "marks";
 const VERSION: u64 = 1;

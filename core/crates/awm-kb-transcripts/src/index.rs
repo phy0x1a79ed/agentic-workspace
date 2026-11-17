@@ -12,7 +12,7 @@
 //! written before its rows, marked unfinished, so a crash between the two leaves a record that
 //! the next start redoes and that a peer never sees.
 
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
@@ -650,12 +650,14 @@ impl TxIndex {
     }
 
     /// The condition that keeps a caller to what it may see: the projects containing
-    /// `project`, and for a peer no marked project nor any session that entered a marked path
-    /// or did not read whole. `None` when nothing is left.
-    pub fn narrow(&self, project: Option<&str>, peer: bool) -> Option<String> {
+    /// `project`, no session productivity served from a grant, and for a peer no marked project
+    /// nor any session that entered a marked path or did not read whole. `None` when nothing is
+    /// left. An index that cannot be read fails the call.
+    pub async fn narrow(&self, project: Option<&str>, peer: bool) -> Result<Option<String>> {
+        let sealed = self.sealed().await?;
         let project = project.filter(|p| !p.is_empty());
-        if project.is_none() && !peer {
-            return Some("true".into());
+        if project.is_none() && !peer && sealed.is_empty() {
+            return Ok(Some("true".into()));
         }
         let held = self.records.read().unwrap();
         let mut shown: BTreeSet<String> = BTreeSet::new();
@@ -668,14 +670,14 @@ impl TxIndex {
                 cut = true;
                 continue;
             }
-            if peer && (r.error.is_some() || r.cwds.iter().any(|c| *hidden_cwd.entry(c).or_insert_with(|| privacy::hidden_path(c)))) {
+            if sealed.contains(&r.session) || peer && (r.error.is_some() || r.cwds.iter().any(|c| *hidden_cwd.entry(c).or_insert_with(|| privacy::hidden_path(c)))) {
                 excluded.entry(&r.project).or_default().push(&r.session);
                 continue;
             }
             shown.insert(r.project.clone());
         }
         if shown.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut parts = vec![];
         if cut {
@@ -686,7 +688,13 @@ impl TxIndex {
                 parts.push(format!("NOT ({})", session_in(p, part)));
             }
         }
-        Some(and(&parts.iter().map(String::as_str).collect::<Vec<_>>()))
+        Ok(Some(and(&parts.iter().map(String::as_str).collect::<Vec<_>>())))
+    }
+
+    /// The sessions productivity served from a grant: each holds its confidential notice.
+    async fn sealed(&self) -> Result<HashSet<String>> {
+        let phrase = awm_index::fts::words(privacy::CONFIDENTIAL).join(" ");
+        Ok(self.phrase(&phrase, "true").await?.into_iter().map(|(_, session, _, _)| session).collect())
     }
 
     /// The archive lines whose text `rx` matches, in archive order: at most `limit`, and

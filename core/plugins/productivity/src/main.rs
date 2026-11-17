@@ -45,8 +45,7 @@ pub trait Account: Send + Sync {
     }
 }
 
-/// Read once by every session a grant opens productivity to, on every reply.
-pub const NOTICE: &str = "Confidential to this session. Do not write this content to disk, a journal, a commit, an artifact or a message. Do not pass it to another session. You may tell another session where something lives (account, search terms, message id) so it can ask for its own access.";
+pub use awm_plugin_sdk::privacy::CONFIDENTIAL as NOTICE;
 
 /// Tony's mail, chats and drives for one trusted session on a node outside `callers`.
 pub fn session_grants(approver: Arc<dyn Approver>, store: Option<PathBuf>) -> SessionGrants {
