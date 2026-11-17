@@ -543,8 +543,9 @@ pub const REVIVE_WAIT: Duration = Duration::from_secs(30);
 /// The boot a revive is due for: this one, when `record` names an earlier boot.
 /// No record is a first install, not a reboot: it records this boot and revives nothing.
 pub fn revive_due(boot_id: &std::path::Path, record: &std::path::Path) -> Option<String> {
-    let boot = std::fs::read_to_string(boot_id).ok()?.trim().to_string();
-    match records::read_json(record).get("boot").and_then(Value::as_str) {
+    let (boot, rec) = boot_and_record(boot_id, record);
+    let boot = boot?;
+    match rec.get("boot").and_then(Value::as_str) {
         Some(b) if b == boot => None,
         Some(_) => Some(boot),
         None => {
@@ -552,6 +553,12 @@ pub fn revive_due(boot_id: &std::path::Path, record: &std::path::Path) -> Option
             None
         }
     }
+}
+
+/// This boot's id, and the record of the last boot revive.
+fn boot_and_record(boot_id: &std::path::Path, record: &std::path::Path) -> (Option<String>, Map<String, Value>) {
+    let boot = std::fs::read_to_string(boot_id).ok().map(|b| b.trim().to_string());
+    (boot, records::read_json(record))
 }
 
 /// Record at `record` that the pinned jobs of `boot` are revived, with the revive's `report`.
@@ -1043,9 +1050,8 @@ impl<B: Backend> App<B> {
     async fn revive_report(&self) -> Value {
         let record = self.backend.paths().cx_state.join(REVIVE_RECORD);
         blocking(move || {
-            let boot = std::fs::read_to_string(BOOT_ID).unwrap_or_default();
-            let rec = records::read_json(&record);
-            let this_boot = rec.get("boot").and_then(Value::as_str).is_some_and(|b| b == boot.trim());
+            let (boot, rec) = boot_and_record(std::path::Path::new(BOOT_ID), &record);
+            let this_boot = boot.is_some() && rec.get("boot").and_then(Value::as_str) == boot.as_deref();
             json!({"ok": true, "this_boot": this_boot, "report": rec.get("report")})
         })
         .await

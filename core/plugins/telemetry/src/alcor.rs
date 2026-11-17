@@ -134,8 +134,9 @@ impl RosterPart {
             let said = {
                 let mut roster = self.lock();
                 let said = roster.watch(&watched, Utc::now(), since);
-                let applied = Applied { changed: if said.is_empty() { Default::default() } else { ["nodes"].into() }, ..Applied::default() };
-                self.publish(&ctx, None, &applied, &roster);
+                if !said.is_empty() {
+                    self.publish(&ctx, None, &Applied { changed: ["nodes"].into(), ..Applied::default() }, &roster);
+                }
                 said
             };
             for text in said {
