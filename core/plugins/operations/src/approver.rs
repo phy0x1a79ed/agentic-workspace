@@ -40,6 +40,8 @@ pub const ORDER_KINDS: [&str; 3] = ["agent", "retire", "service"];
 pub const SERVICE_WINDOW_S: f64 = 300.0;
 /// The kinds whose grant opens a window for its minutes, so the summary names them.
 const WINDOW_KINDS: [&str; 6] = ["admin_ssh", "trust_raise", "browser_signin", "browser_profile", "productivity_session", "vault_hold"];
+/// Kinds that open something to one session on the request's own node (`awm_trust::session_grant`).
+const SESSION_KINDS: [&str; 2] = ["browser_profile", "productivity_session"];
 
 /// A note or session id: up to 64 letters, digits, `-` and `_`.
 fn is_id(s: &str) -> bool {
@@ -512,7 +514,7 @@ impl Approver {
                 return Err(bad("pubkey is one OpenSSH public key line"));
             }
         }
-        if kind == "browser_profile" || kind == "productivity_session" {
+        if SESSION_KINDS.contains(&kind) {
             let pn = payload["node"].as_str();
             if !pn.is_some_and(valid_node) || pn != node || !payload["session_id"].as_str().is_some_and(is_id) {
                 return Err(bad(format!("{kind} names the request's node and one session id")));

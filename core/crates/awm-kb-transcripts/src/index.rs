@@ -670,7 +670,7 @@ impl TxIndex {
                 cut = true;
                 continue;
             }
-            if sealed.contains(&r.session) || peer && (r.error.is_some() || r.cwds.iter().any(|c| *hidden_cwd.entry(c).or_insert_with(|| privacy::hidden_path(c)))) {
+            if sealed.contains(&r.session) || (peer && (r.error.is_some() || r.cwds.iter().any(|c| *hidden_cwd.entry(c).or_insert_with(|| privacy::hidden_path(c))))) {
                 excluded.entry(&r.project).or_default().push(&r.session);
                 continue;
             }

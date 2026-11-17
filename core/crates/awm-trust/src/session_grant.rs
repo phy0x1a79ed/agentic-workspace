@@ -42,16 +42,17 @@ pub struct SessionGrants {
     approver: Arc<dyn Approver>,
     store: Option<PathBuf>,
     requests: Mutex<HashMap<String, String>>,
+    grant_key: tokio::sync::OnceCell<String>,
 }
 
-pub fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 impl SessionGrants {
     pub fn load(kind: Kind, approver: Arc<dyn Approver>, store: Option<PathBuf>) -> Self {
         let requests = store.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        SessionGrants { kind, approver, store, requests: Mutex::new(requests) }
+        SessionGrants { kind, approver, store, requests: Mutex::new(requests), grant_key: Default::default() }
     }
 
     fn save(&self, requests: &HashMap<String, String>) {
@@ -62,8 +63,10 @@ impl SessionGrants {
     }
 
     async fn verified(&self, envelope: &Value, node: &str, payload: &Value) -> anyhow::Result<bool> {
-        let keys = self.approver.call("keys", json!({})).await?;
-        let key = keys["grant_pub"].as_str().ok_or_else(|| anyhow::anyhow!("the approver named no grant key, so no approval can be checked"))?;
+        let key = self.grant_key.get_or_try_init(|| async {
+            let keys = self.approver.call("keys", json!({})).await?;
+            keys["grant_pub"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!("the approver named no grant key, so no approval can be checked"))
+        }).await?;
         let expect = Expect { kind: Some(self.kind.kind), node: Some(node), subject: None, payload: Some(payload) };
         Ok(verify_grant(envelope, &load_public_key(key)?, &expect, now()).is_ok())
     }

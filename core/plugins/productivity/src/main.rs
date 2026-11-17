@@ -81,7 +81,7 @@ pub async fn admit(callers: &[String], grants: &SessionGrants, call: &Call) -> s
         return Ok(Gate::Caller);
     }
     let session = c.session.as_deref().filter(|s| !s.is_empty()).or_else(|| claimed("session_id"));
-    let (Some(session), true, false) = (session, call.trusted(), home.is_empty()) else {
+    let Some(session) = session.filter(|_| call.trusted() && !home.is_empty()) else {
         return Err(refuse(home, ". A trusted session there can ask Tony for its own access by calling any productivity verb."));
     };
     match grants.check(home, session, true).await.map_err(|e| VerbError::runtime(format!("could not ask the approver: {e:#}")))? {

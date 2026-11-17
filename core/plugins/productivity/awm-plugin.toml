@@ -1,5 +1,6 @@
 # Tony's own accounts and drives: gmail, his Slack and Google Drive, read and drafted, never
-# sent. One instance runs on alcor, and only the nodes in productivity.toml's `callers` reach it.
+# sent. One instance runs on alcor. It serves the nodes in productivity.toml's `callers`, and a
+# trusted session elsewhere only once Tony approves its `productivity_session` grant.
 [plugin]
 name = "productivity"
 version = "0.1.0"
