@@ -1,8 +1,9 @@
-"""The boot runner: revive this node's pinned jobs, then release the partner's hold.
+"""The boot runner: release the partner's hold once this node's pinned jobs are back.
 
 A systemd user unit runs ``python -m awm.wake.boot`` once per boot, after the
-gateway. The revival itself belongs to the harness (``revive_pinned``). This
-runner only waits for the gateway, calls it, and passes the report on.
+gateway. The harness revives the pinned jobs by itself on its first start of a
+boot. This runner waits for that revive's report (``revive_report``) and passes
+it on with the release.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ log = logging.getLogger("awm.wake.boot")
 
 
 async def run(cfg: wake_config.WakeConfig, gw: Gateway, *, gateway_wait_s: float = 600,
-              revive_tries: int = 5, retry_s: float = 20,
+              revive_wait_s: float = 900, retry_s: float = 20,
               sleep: Callable[[float], Any] = asyncio.sleep,
               clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     t0 = clock()
@@ -32,22 +33,22 @@ async def run(cfg: wake_config.WakeConfig, gw: Gateway, *, gateway_wait_s: float
             return {**report, "release": await _release(cfg, gw, report)}
         await sleep(5)
 
-    revived: Any = None
-    error = None
-    for attempt in range(revive_tries):
-        harness = await gw.harness()
+    t0 = clock()
+    error = "the harness never reported a revive for this boot"
+    while clock() - t0 <= revive_wait_s:
         try:
+            harness = await gw.harness()
             if harness is None:
                 raise CallError("the gateway names no harness provider")
-            revived = await gw.call(harness, "revive_pinned", {})
-            error = None
-            break
+            out = await gw.call(harness, "revive_report", {})
+            if out.get("this_boot"):
+                report = {"node": cfg.node, "revive": out.get("report")}
+                return {**report, "release": await _release(cfg, gw, report)}
         except CallError as exc:
-            error = str(exc)
-            log.warning("revive_pinned attempt %d failed: %s", attempt + 1, exc)
-            await sleep(retry_s)
-    report = {"node": cfg.node, "revive": revived} if error is None else {
-        "node": cfg.node, "error": f"revive_pinned failed: {error}"}
+            error = f"revive_report failed: {exc}"
+            log.warning("%s", error)
+        await sleep(retry_s)
+    report = {"node": cfg.node, "error": error}
     return {**report, "release": await _release(cfg, gw, report)}
 
 

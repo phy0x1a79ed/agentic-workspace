@@ -97,6 +97,7 @@ fn the_timeouts_match_the_python_manifest() {
         ("link", Some(30)),
         ("adopt", Some(30)),
         ("revive_pinned", Some(600)),
+        ("revive_report", Some(10)),
         ("pending", None),
         ("probe", Some(30)),
         ("live_session_ids", Some(30)),

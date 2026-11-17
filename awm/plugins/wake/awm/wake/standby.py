@@ -70,7 +70,7 @@ def brief(cfg: WakeConfig, down: str, reason: str, deadline_at: float, planned: 
         f"its tethers and its ssh routes wait for it.\n"
         f"2. The wake plugin on {cfg.node} watches {down}. It sends Wake-on-LAN if {down} "
         f"is still down at {when}, and tells you each time. `wake standby_status` shows the hold.\n"
-        f"3. When {down} boots, its boot runner revives its pinned jobs and releases this hold. "
+        f"3. When {down} boots, its harness revives its pinned jobs and its boot runner releases this hold. "
         f"The release arrives here as a message with the revive report.\n"
         f"4. On the release, tell Tony what came back and what failed, in one short message. "
         f"Then stop this session with reflection stop.\n"

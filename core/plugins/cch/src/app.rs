@@ -464,11 +464,11 @@ async fn watch_memory(mut watch: MemWatch, node: SystemNode, hub: Hub, notify: N
 /// background once the daemon is up.
 pub async fn boot(app: Arc<App<Live>>) {
     app.backend.boot().await;
-    let mark = app.backend.paths.cx_state.join(crate::verbs::BOOT_MARK);
+    let record = app.backend.paths.cx_state.join(crate::verbs::REVIVE_RECORD);
     spawn_supervised("cch.revive", RESPAWN, move || {
-        let (app, mark) = (app.clone(), mark.clone());
+        let (app, record) = (app.clone(), record.clone());
         async move {
-            app.revive_after_boot(std::path::Path::new(crate::verbs::BOOT_ID), &mark).await;
+            app.revive_after_boot(std::path::Path::new(crate::verbs::BOOT_ID), &record).await;
             // One pass a boot: parked, so the supervisor does not run it again.
             std::future::pending::<()>().await;
             Ok(())
