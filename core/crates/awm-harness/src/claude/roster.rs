@@ -53,7 +53,7 @@ impl Bridge {
         }
     }
 
-    pub fn id(self) -> Option<String> {
+    pub fn id(&self) -> Option<&str> {
         match self {
             Self::On(id) => Some(id),
             Self::Off | Self::Dropped => None,
@@ -251,7 +251,7 @@ impl Job {
                 .or_else(|| py_opt_str(st.get("sessionId"))),
             source: py_opt_str(dispatch.get("source")),
             seed_name: py_opt_str(seed.get("name")),
-            bridge_session_id: Bridge::read(&st, live.as_ref()).id(),
+            bridge_session_id: Bridge::read(&st, live.as_ref()).id().map(str::to_owned),
         }
     }
 

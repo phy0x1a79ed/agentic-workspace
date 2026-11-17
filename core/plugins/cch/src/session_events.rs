@@ -189,7 +189,7 @@ fn event(kind: &str, claude_session_id: &str, f: &Facts, task_id: Option<String>
         }
         _ => {}
     }
-    let rc_url = bridge_link(f.bridge.clone().id().as_deref());
+    let rc_url = bridge_link(f.bridge.id());
     if kind == "remote_control" || rc_url.is_some() {
         out["rc_url"] = json!(rc_url);
     }
