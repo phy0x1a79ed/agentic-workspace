@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use awm_harness::claude::home::ClaudeHome;
 use awm_harness::claude::records::{read_json, Object};
-use awm_harness::claude::roster::bridge_link;
+use awm_harness::claude::roster::{bridge_link, Bridge};
 use awm_plugin_sdk::procfs;
 use serde_json::{json, Value};
 use tokio::io::unix::AsyncFd;
@@ -76,7 +76,7 @@ struct Facts {
     job: Option<String>,
     name: Option<String>,
     cwd: Option<String>,
-    bridge: Option<String>,
+    bridge: Bridge,
     /// The `kind` of the session's `list` row.
     row_kind: &'static str,
     /// A background job's `state` and, while it is blocked, its `needs`.
@@ -113,7 +113,7 @@ fn proc_start_of(v: Option<&Value>) -> String {
 }
 
 /// `pid`'s session record, joined to its job's own record for a background session: the job
-/// record is the only one that follows a rename, and the one Remote Control writes for a job.
+/// record is the only one that follows a rename.
 fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
     let rec = read_json(&home.session_record(pid));
     let claude_session_id = text(rec.get("sessionId"))?;
@@ -131,7 +131,7 @@ fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
                 state,
                 name: text(st.get("name")).or_else(|| text(rec.get("name"))),
                 cwd: text(rec.get("cwd")).or_else(|| text(st.get("cwd"))),
-                bridge: text(st.get("bridgeSessionId")),
+                bridge: Bridge::read(&st, Some(&rec)),
                 job: job.clone(),
                 row_kind: "bg",
             }
@@ -140,7 +140,7 @@ fn read_record(home: &ClaudeHome, pid: u32) -> Option<Record> {
             job: None,
             name: text(rec.get("name")),
             cwd: text(rec.get("cwd")),
-            bridge: text(rec.get("bridgeSessionId")),
+            bridge: Bridge::read(&rec, None),
             row_kind: "interactive",
             state: None,
             needs: None,
@@ -189,7 +189,7 @@ fn event(kind: &str, claude_session_id: &str, f: &Facts, task_id: Option<String>
         }
         _ => {}
     }
-    let rc_url = bridge_link(f.bridge.as_deref());
+    let rc_url = bridge_link(f.bridge.clone().id().as_deref());
     if kind == "remote_control" || rc_url.is_some() {
         out["rc_url"] = json!(rc_url);
     }
@@ -262,6 +262,8 @@ pub enum Rc {
     Relaunched(String),
     /// The job's Remote Control bridge came or went.
     Bridge(String),
+    /// The server dropped the job's bridge.
+    Dropped(String),
 }
 
 impl<F: Effects> Watcher<F> {
@@ -340,7 +342,7 @@ impl<F: Effects> Watcher<F> {
         if before.bridge != rec.facts.bridge {
             self.emit("remote_control", &sid, &rec.facts).await;
             if let Some(job) = rec.facts.job.clone().filter(|_| !self.quiet) {
-                let _ = self.rc.send(Rc::Bridge(job));
+                let _ = self.rc.send(if rec.facts.bridge == Bridge::Dropped { Rc::Dropped(job) } else { Rc::Bridge(job) });
             }
         }
         if (&before.state, &before.needs) != (&rec.facts.state, &rec.facts.needs)
@@ -377,7 +379,7 @@ impl<F: Effects> Watcher<F> {
             job: None,
             name: rec.as_ref().and_then(|r| r.name.clone()),
             cwd: rec.as_ref().and_then(|r| r.cwd.clone()),
-            bridge: None,
+            bridge: Bridge::Off,
             row_kind: "isolated",
             state: None,
             needs: None,
@@ -951,8 +953,8 @@ mod tests {
     }
 
     /// A job back under a new pid, by a swap or a relaunch after its stop, is reported once so its
-    /// Remote Control switch can be put back, and so is its bridge coming up after. A job's first
-    /// pid is a start, not a relaunch.
+    /// Remote Control switch can be put back, and so is its bridge coming up after and the server
+    /// dropping it. A job's first pid is a start, not a relaunch.
     #[tokio::test(start_paused = true)]
     async fn a_job_back_under_a_new_pid_is_a_relaunch() {
         let mut w = World::open();
@@ -971,6 +973,12 @@ mod tests {
         sleep(Duration::from_millis(10)).await;
         w.job_state(JOB, "worker", Some("cse_bridge"));
         w.push(Change::Session(302));
+        sleep(Duration::from_millis(10)).await;
+        let path = w.paths.home.session_record(302);
+        let mut rec: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        rec["bridgeSessionId"] = Value::Null;
+        std::fs::write(&path, rec.to_string()).unwrap();
+        w.push(Change::Session(302));
         w.background(402, SID_A, "e5f6a7b8");
         w.push(Change::Session(402));
         w.finish().await;
@@ -979,7 +987,7 @@ mod tests {
             got.push(rc);
         }
         let back = Rc::Relaunched(JOB.into());
-        assert_eq!(got, [back.clone(), back, Rc::Bridge(JOB.into())]);
+        assert_eq!(got, [back.clone(), back, Rc::Bridge(JOB.into()), Rc::Dropped(JOB.into())]);
     }
 
     #[tokio::test(start_paused = true)]

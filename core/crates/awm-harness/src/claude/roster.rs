@@ -16,15 +16,49 @@ use super::records::{
 };
 use super::ClaudeHome;
 
-/// Remote Control names a session `cse_<id>` in the job record and serves it at
-/// `APP_SESSION_URL<id>`.
+/// Remote Control names a session `cse_<id>` in the job record and `session_<id>` in the session
+/// record, and serves it at `APP_SESSION_URL<id>`.
 pub const APP_SESSION_URL: &str = "https://claude.ai/code/session_";
-const BRIDGE_PREFIX: &str = "cse_";
+const BRIDGE_PREFIXES: [&str; 2] = ["cse_", "session_"];
 
 /// The app URL of a Remote Control session, or None when there is none.
 pub fn bridge_link(bridge_session_id: Option<&str>) -> Option<String> {
-    let ident = bridge_session_id?.strip_prefix(BRIDGE_PREFIX)?;
+    let id = bridge_session_id?;
+    let ident = BRIDGE_PREFIXES.iter().find_map(|p| id.strip_prefix(p))?;
     (!ident.is_empty()).then(|| format!("{APP_SESSION_URL}{ident}"))
+}
+
+/// A job's Remote Control, as its job record and its live session record tell it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bridge {
+    On(String),
+    Off,
+    /// The server dropped the bridge (close code 4090): the CLI cleared the session record's id
+    /// and left the job record's.
+    Dropped,
+}
+
+impl Bridge {
+    /// The live record decides when it carries the key, since a reconnect after a drop writes
+    /// only that record. A deliberate off clears both.
+    pub fn read(state: &Object, live: Option<&Object>) -> Self {
+        let kept = py_truthy_str(state.get("bridgeSessionId"));
+        let Some(now) = live.and_then(|r| r.get("bridgeSessionId")) else {
+            return kept.map_or(Self::Off, Self::On);
+        };
+        match (py_truthy_str(Some(now)), kept) {
+            (Some(id), _) => Self::On(id),
+            (None, Some(_)) => Self::Dropped,
+            (None, None) => Self::Off,
+        }
+    }
+
+    pub fn id(self) -> Option<String> {
+        match self {
+            Self::On(id) => Some(id),
+            Self::Off | Self::Dropped => None,
+        }
+    }
 }
 
 /// A Claude Code background job's short id: eight lowercase hex digits.
@@ -138,7 +172,7 @@ pub struct Job {
     pub session_id: Option<String>,
     pub source: Option<String>,
     pub seed_name: Option<String>,
-    /// Present once Remote Control has connected, gone once it is turned off.
+    /// Present once Remote Control has connected, gone once it is turned off or dropped.
     pub bridge_session_id: Option<String>,
 }
 
@@ -211,12 +245,13 @@ impl Job {
             pty_auth: py_opt_str(w.get("ptyAuth")),
             dec_modes: int_items(w.get("decModes")),
             session_id: live
+                .as_ref()
                 .and_then(|r| py_opt_str(r.get("sessionId")))
                 .or_else(|| py_opt_str(w.get("sessionId")))
                 .or_else(|| py_opt_str(st.get("sessionId"))),
             source: py_opt_str(dispatch.get("source")),
             seed_name: py_opt_str(seed.get("name")),
-            bridge_session_id: py_truthy_str(st.get("bridgeSessionId")),
+            bridge_session_id: Bridge::read(&st, live.as_ref()).id(),
         }
     }
 
@@ -267,9 +302,10 @@ pub fn daemon_pid(home: &ClaudeHome) -> Option<u32> {
     RosterFile::read(home).supervisor_pid.filter(|pid| procfs::start_ticks(*pid).is_some())
 }
 
-/// The Remote Control session id in job `short`'s own record, or None when it is off.
+/// Job `short`'s Remote Control session id, or None when it is off or dropped.
 pub fn job_bridge_id(home: &ClaudeHome, short: &str) -> Option<String> {
-    py_truthy_str(read_json(&home.job_state(short)).get("bridgeSessionId"))
+    let worker = RosterFile::read(home).workers.remove(short).unwrap_or(Value::Null);
+    Job::from_worker(short, &worker, home).bridge_session_id
 }
 
 /// The version directory the `claude` binary resolves to, such as `2.1.268`, read off the
@@ -371,20 +407,39 @@ mod tests {
             bridge_link(Some("cse_01GVs3xRsnepMP5feSRbjqA8")).as_deref(),
             Some("https://claude.ai/code/session_01GVs3xRsnepMP5feSRbjqA8")
         );
-        for bridge in [None, Some(""), Some("cse_"), Some("session_01A"), Some("01A")] {
+        assert_eq!(bridge_link(Some("session_01A")).as_deref(), Some("https://claude.ai/code/session_01A"));
+        for bridge in [None, Some(""), Some("cse_"), Some("session_"), Some("01A")] {
             assert_eq!(bridge_link(bridge), None, "{bridge:?}");
         }
+
+        let obj = |v: Value| v.as_object().unwrap().clone();
+        let kept = obj(json!({"bridgeSessionId": "cse_01D"}));
+        let cleared = obj(json!({"bridgeSessionId": null}));
+        for (state, live, want) in [
+            (&kept, None, Bridge::On("cse_01D".into())),
+            (&kept, Some(obj(json!({"pid": 1}))), Bridge::On("cse_01D".into())),
+            (&kept, Some(cleared.clone()), Bridge::Dropped),
+            (&cleared, Some(cleared.clone()), Bridge::Off),
+            (&kept, Some(obj(json!({"bridgeSessionId": "session_01N"}))), Bridge::On("session_01N".into())),
+        ] {
+            assert_eq!(Bridge::read(state, live.as_ref()), want, "{state:?} {live:?}");
+        }
+
         let (_d, h) = home();
-        write_roster(&h, json!({"on": {"replPid": 7}, "off": {"replPid": 8}}), None);
+        write_roster(&h, json!({"on": {"replPid": 7}, "off": {"replPid": 8}, "dropped": {"replPid": 9}}), None);
         write_job(&h, "on", json!({"name": "a", "bridgeSessionId": "cse_01X"}));
         write_job(&h, "off", json!({"name": "b", "bridgeSessionId": ""}));
+        write_job(&h, "dropped", json!({"name": "c", "bridgeSessionId": "cse_01D"}));
+        std::fs::write(h.session_record(9), json!({"pid": 9, "bridgeSessionId": null}).to_string()).unwrap();
         let jobs = load(&h);
-        let on = jobs.iter().find(|j| j.short == "on").unwrap();
-        let off = jobs.iter().find(|j| j.short == "off").unwrap();
-        assert!(on.remote_control());
-        assert_eq!(on.link().as_deref(), Some("https://claude.ai/code/session_01X"));
-        assert!(!off.remote_control() && off.link().is_none());
+        let job = |short: &str| jobs.iter().find(|j| j.short == short).unwrap();
+        assert!(job("on").remote_control());
+        assert_eq!(job("on").link().as_deref(), Some("https://claude.ai/code/session_01X"));
+        assert!(!job("off").remote_control() && job("off").link().is_none());
+        assert!(!job("dropped").remote_control() && job("dropped").link().is_none(), "a 4090 drop reads as off");
         assert_eq!(job_bridge_id(&h, "off"), None, "a cleared bridge id reads as off");
+        assert_eq!(job_bridge_id(&h, "dropped"), None);
+        assert_eq!(job_bridge_id(&h, "on").as_deref(), Some("cse_01X"));
         assert_eq!(job_bridge_id(&h, "missing"), None);
     }
 
