@@ -36,13 +36,14 @@ pub const DESCRIPTION: &str = "The Claude Code harness: finds, starts, stops, re
 pub const CONTRACT_VERBS: [&str; 12] =
     ["platform", "resolve", "find", "status", "list", "send", "interrupt", "start", "stop", "resume", "set", "compact"];
 /// The optional verbs `platform` lists as capabilities: every verb outside the contract.
-pub const OPTIONAL_VERBS: [&str; 17] = [
+pub const OPTIONAL_VERBS: [&str; 18] = [
     "mode",
     "remote_control",
     "mcp",
     "link",
     "adopt",
     "revive_pinned",
+    "revive_report",
     "pending",
     "probe",
     "live_session_ids",
@@ -216,7 +217,13 @@ pub fn specs() -> Vec<Spec> {
         ),
         spec("link", "A session's claude.ai link.", targeted(vec![]), Some(30)),
         spec("adopt", "Take on a job started outside start.", targeted(vec![]), Some(30)),
-        spec("revive_pinned", "Resume each seat agent whose process is gone, and stop every other dead pinned job.", json!([]), Some(600)),
+        spec("revive_pinned", "Resume each pinned job whose process is gone.", json!([]), Some(600)),
+        spec(
+            "revive_report",
+            "The report of the last revive after a reboot, and whether it is this boot's.",
+            json!([]),
+            Some(10),
+        ),
         spec("pending", "The follow-ups cch still owes.", json!([]), None),
         spec(
             "probe",
@@ -527,26 +534,38 @@ where
 
 /// The kernel's id of this boot.
 pub const BOOT_ID: &str = "/proc/sys/kernel/random/boot_id";
-/// The file under cx's state dir that records the boot the pinned jobs were last revived in.
-pub const BOOT_MARK: &str = "pinned-revived-boot";
+/// The file under cx's state dir that records the last boot revive: `{boot, report}`.
+pub const REVIVE_RECORD: &str = "pinned-revived.json";
 
-/// How a seat names its agent: `seat:<app>/<server>/<chat>`.
-const SEAT_PREFIX: &str = "seat:";
 pub const REVIVE_TRIES: u32 = 10;
 pub const REVIVE_WAIT: Duration = Duration::from_secs(30);
 
-/// Whether cch starts for the first time since the host booted, recording at `mark` that it has.
-/// No mark yet is a first install, not a reboot: it records the boot and revives nothing.
-pub fn first_start_this_boot(boot_id: &std::path::Path, mark: &std::path::Path) -> bool {
-    let Ok(boot) = std::fs::read_to_string(boot_id) else { return false };
-    let boot = boot.trim();
-    let before = std::fs::read_to_string(mark).ok().map(|b| b.trim().to_string());
-    let written = mark.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(mark, boot));
-    if let Err(e) = written {
-        tracing::warn!("cch: could not record the boot: {e}");
-        return false;
+/// The boot a revive is due for: this one, when `record` names an earlier boot.
+/// No record is a first install, not a reboot: it records this boot and revives nothing.
+pub fn revive_due(boot_id: &std::path::Path, record: &std::path::Path) -> Option<String> {
+    let boot = std::fs::read_to_string(boot_id).ok()?.trim().to_string();
+    match records::read_json(record).get("boot").and_then(Value::as_str) {
+        Some(b) if b == boot => None,
+        Some(_) => Some(boot),
+        None => {
+            write_revive_record(record, &boot, &json!({"ok": true, "first_install": true}));
+            None
+        }
     }
-    before.is_some_and(|b| b != boot)
+}
+
+/// Record at `record` that the pinned jobs of `boot` are revived, with the revive's `report`.
+pub fn write_revive_record(record: &std::path::Path, boot: &str, report: &Value) {
+    let tmp = record.with_extension("tmp");
+    let body = json!({"boot": boot, "report": report}).to_string();
+    let written = record
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&tmp, body))
+        .and_then(|()| std::fs::rename(&tmp, record));
+    if let Err(e) = written {
+        tracing::warn!("cch: could not record the boot revive: {e}");
+    }
 }
 
 // --- isolated sessions ---------------------------------------------------------
@@ -646,6 +665,7 @@ impl<B: Backend> App<B> {
             "link" => self.control(args, Op::Link).await,
             "adopt" => self.adopt(args, as_).await,
             "revive_pinned" => Ok(self.revive_pinned().await),
+            "revive_report" => Ok(self.revive_report().await),
             "pending" => Ok(self.pending().await),
             "probe" => Ok(self.probe(args, as_).await),
             "live_session_ids" => Ok(self.live_session_ids().await),
@@ -959,11 +979,10 @@ impl<B: Backend> App<B> {
         Ok(serde_json::to_value(out).unwrap_or_default())
     }
 
-    /// Settle each pinned job whose process is gone, after a reboot (fleet lane): resume a seat's
-    /// agent, which its seat expects back, and stop the rest, which keeps their transcripts.
+    /// Resume each pinned job whose process is gone, after a reboot (fleet lane, sessions.md R150).
     pub async fn revive_pinned(&self) -> Value {
         let live = self.backend.live_jobs().await;
-        let (mut revived, mut retired, mut still, mut failed) = (vec![], vec![], vec![], vec![]);
+        let (mut revived, mut still, mut failed) = (vec![], vec![], vec![]);
         for job in pins::pinned(self.backend.home()).await {
             let (paths, j) = (self.backend.paths().clone(), job.clone());
             let Some(id) = blocking(move || lifecycle::session_of_job(&paths, &j)).await else {
@@ -976,36 +995,27 @@ impl<B: Backend> App<B> {
             }
             let extra: Map<String, Value> = [("pinned".to_string(), json!(true))].into_iter().collect();
             let (paths, key) = (self.backend.paths().clone(), id.clone());
-            let lineage = blocking(move || match lifecycle::ensure_lineage(&paths, &key, "revive_pinned", &extra) {
-                Some(error) => Err(error),
-                None => Ok(lifecycle::read_lineage(&paths, &key).unwrap_or_default()),
-            });
-            let seat = match lineage.await {
-                Ok(rec) => rec.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with(SEAT_PREFIX)),
-                Err(error) => {
-                    failed.push(json!({"session_id": id, "error": error}));
-                    continue;
-                }
-            };
-            let (life, done) = if seat { (Life::Resume, &mut revived) } else { (Life::Stop, &mut retired) };
-            let out = self.backend.lifecycle(life, json!({"session_id": id}), None).await;
+            if let Some(error) = blocking(move || lifecycle::ensure_lineage(&paths, &key, "revive_pinned", &extra)).await {
+                failed.push(json!({"session_id": id, "error": error}));
+                continue;
+            }
+            let out = self.backend.lifecycle(Life::Resume, json!({"session_id": id}), None).await;
             if truthy(out.get("ok")) {
-                done.push(id);
+                revived.push(id);
             } else {
                 let why = out.get("reason").filter(|r| truthy(Some(r))).or_else(|| out.get("error"));
                 failed.push(json!({"session_id": id, "error": why}));
             }
         }
-        json!({"ok": failed.is_empty(), "revived": revived, "retired": retired, "live": still, "failed": failed})
+        json!({"ok": failed.is_empty(), "revived": revived, "live": still, "failed": failed})
     }
 
     /// Bring back the pinned jobs a host reboot ended, once the daemon is up (fleet.md R139).
-    /// `boot_id` is the kernel's boot id, `mark` where the last revived boot is recorded.
-    pub async fn revive_after_boot(&self, boot_id: &std::path::Path, mark: &std::path::Path) {
-        let (boot_id, mark) = (boot_id.to_path_buf(), mark.to_path_buf());
-        if !blocking(move || first_start_this_boot(&boot_id, &mark)).await {
-            return;
-        }
+    /// `boot_id` is the kernel's boot id, `record` the last boot revive. Only a revive that ends
+    /// `ok` records its boot, so a pass the process died in runs again on the next start.
+    pub async fn revive_after_boot(&self, boot_id: &std::path::Path, record: &std::path::Path) {
+        let (id, rec) = (boot_id.to_path_buf(), record.to_path_buf());
+        let Some(boot) = blocking(move || revive_due(&id, &rec)).await else { return };
         for _ in 0..REVIVE_TRIES {
             if let Err(e) = self.backend.ensure_daemon("revived").await {
                 tracing::info!("cch: waiting for the daemon to revive pinned jobs: {e}");
@@ -1014,18 +1024,31 @@ impl<B: Backend> App<B> {
             }
             let out = self.revive_pinned().await;
             tracing::info!(
-                "cch: after the reboot, revived {}, retired {}, still live {}, failed {}",
+                "cch: after the reboot, revived {}, still live {}, failed {}",
                 out["revived"],
-                out["retired"],
                 out["live"],
                 out["failed"]
             );
             if out["ok"] == true {
+                let rec = record.to_path_buf();
+                blocking(move || write_revive_record(&rec, &boot, &out)).await;
                 return;
             }
             tokio::time::sleep(REVIVE_WAIT).await;
         }
         tracing::error!("cch: pinned jobs not all revived after the reboot");
+    }
+
+    /// The last boot revive's report, and whether it is this boot's.
+    async fn revive_report(&self) -> Value {
+        let record = self.backend.paths().cx_state.join(REVIVE_RECORD);
+        blocking(move || {
+            let boot = std::fs::read_to_string(BOOT_ID).unwrap_or_default();
+            let rec = records::read_json(&record);
+            let this_boot = rec.get("boot").and_then(Value::as_str).is_some_and(|b| b == boot.trim());
+            json!({"ok": true, "this_boot": this_boot, "report": rec.get("report")})
+        })
+        .await
     }
 
     async fn pool(&self, op: PoolOp) -> Result<Value, Failure> {
@@ -1474,7 +1497,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_revive_pinned_resumes_the_dead_seat_agents_and_stops_the_other_dead_pins() {
+    async fn test_revive_pinned_resumes_every_dead_pinned_job() {
         let b = rig(|f| Fake { live: BTreeSet::from(["aaaa1111".to_string()]), ..f });
         let fake = &b.app.backend;
         Fake::write(&fake.paths.home.pins(), json!(["aaaa1111", "bbbb2222", "cccc3333"]));
@@ -1483,17 +1506,9 @@ mod tests {
             lineage(fake, job, json!({"session_id": sid_of(job), "mode": "worker", "name": name}));
         }
         let out = run(&b.app, "revive_pinned", json!({})).await;
-        assert_eq!(
-            (&out["revived"], &out["retired"], &out["live"], &out["failed"]),
-            (&json!([sid_of("bbbb2222")]), &json!([sid_of("cccc3333")]), &json!([sid_of("aaaa1111")]), &json!([]))
-        );
-        assert_eq!(
-            fake.lifes(),
-            [
-                (Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None),
-                (Life::Stop, json!({"session_id": sid_of("cccc3333")}), None)
-            ]
-        );
+        let dead = [sid_of("bbbb2222"), sid_of("cccc3333")];
+        assert_eq!((&out["revived"], &out["live"], &out["failed"]), (&json!(dead), &json!([sid_of("aaaa1111")]), &json!([])));
+        assert_eq!(fake.lifes(), dead.map(|id| (Life::Resume, json!({"session_id": id}), None)));
     }
 
     #[tokio::test]
@@ -1585,31 +1600,35 @@ mod tests {
             self.dir.path().join("boot_id")
         }
 
-        fn mark(&self) -> std::path::PathBuf {
-            self.dir.path().join("state").join("mark")
+        fn record(&self) -> std::path::PathBuf {
+            self.dir.path().join("state").join("record.json")
         }
 
         fn set(&self, boot: &str) {
             std::fs::write(self.id(), format!("{boot}\n")).unwrap();
         }
 
-        fn first(&self) -> bool {
-            first_start_this_boot(&self.id(), &self.mark())
+        fn due(&self) -> Option<String> {
+            revive_due(&self.id(), &self.record())
         }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_after_a_reboot_the_dead_pinned_jobs_are_settled() {
+    async fn test_after_a_reboot_the_dead_pinned_jobs_are_revived_once() {
         let boot = Boot::new();
         boot.set("boot-1");
-        boot.first();
+        assert_eq!(boot.due(), None, "a first install revives nothing");
         boot.set("boot-2");
+        assert_eq!((boot.due(), boot.due()), (Some("boot-2".into()), Some("boot-2".into())), "a dropped pass leaves it due");
         let b = rig(|f| Fake { daemon_up: std::sync::Mutex::new([Err("down".to_string())].into()), ..f });
         Fake::write(&b.app.backend.paths.home.pins(), json!(["bbbb2222"]));
         held_job(&b.app.backend, "bbbb2222");
-        b.app.revive_after_boot(&boot.id(), &boot.mark()).await;
+        b.app.revive_after_boot(&boot.id(), &boot.record()).await;
         assert_eq!(*b.app.backend.ensured.lock().unwrap(), ["revived", "revived"], "it waits for the daemon");
-        assert_eq!(b.app.backend.lifes(), [(Life::Stop, json!({"session_id": sid_of("bbbb2222")}), None)], "no seat names it");
+        assert_eq!(b.app.backend.lifes(), [(Life::Resume, json!({"session_id": sid_of("bbbb2222")}), None)]);
+        assert_eq!(boot.due(), None, "a revive that ends ok records its boot");
+        let rec: Value = serde_json::from_slice(&std::fs::read(boot.record()).unwrap()).unwrap();
+        assert_eq!(rec["report"]["revived"], json!([sid_of("bbbb2222")]));
     }
 
     // --- tests/test_manifest_surface.py, the halves that need a handler ---

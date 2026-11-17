@@ -3,7 +3,7 @@
 //! state only at connect, and again when the roster or a dropped stream says it missed some.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use awm_plugin_sdk::supervise::SubscriptionOpts;
@@ -13,7 +13,12 @@ use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::roster::{parse_ts, Item, PluginRow, ServiceRow, Session, ToolRow, Ts};
+use crate::roster::{parse_ts, Boot, Item, PluginRow, ServiceRow, Session, ToolRow, Ts};
+
+/// The node part reports at least this often, so the roster can tell a silent node.
+pub const BEAT: Duration = Duration::from_secs(60);
+/// How long after a boot the node part asks its harness for the revive report.
+const REVIVE_ASK_FOR: chrono::Duration = chrono::Duration::minutes(30);
 
 /// The plugins whose own calls the node part does not forward, so a report never reports itself.
 const OWN_PLUGINS: [&str; 2] = ["telemetry", "telemetry-node"];
@@ -28,6 +33,8 @@ pub enum Msg {
     Refresh,
     /// The roster may lack something: send the node's whole state.
     Resync,
+    /// The minute beat.
+    Beat,
 }
 
 /// What the node part reads from its own node.
@@ -36,6 +43,10 @@ pub trait Probe: Send + Sync + 'static {
     fn hello(&self) -> BoxFuture<'_, anyhow::Result<Item>>;
     /// The services and tools alone.
     fn tools(&self) -> BoxFuture<'_, anyhow::Result<Item>>;
+    /// The node's boot, for the beat.
+    fn boot(&self) -> BoxFuture<'_, Option<Boot>> {
+        Box::pin(async { None })
+    }
 }
 
 /// Where a report goes: `telemetry report` with these args.
@@ -144,7 +155,7 @@ pub async fn send_loop(mut rx: mpsc::UnboundedReceiver<Msg>, me: mpsc::Unbounded
         while let Ok(m) = rx.try_recv() {
             msgs.push(m);
         }
-        let (mut items, mut refresh) = (vec![], false);
+        let (mut items, mut refresh, mut beat) = (vec![], false, false);
         for m in msgs {
             match m {
                 Msg::Item(i) => items.push(*i),
@@ -157,7 +168,11 @@ pub async fn send_loop(mut rx: mpsc::UnboundedReceiver<Msg>, me: mpsc::Unbounded
                 }
                 Msg::Refresh => refresh = true,
                 Msg::Resync => dirty = true,
+                Msg::Beat => beat = true,
             }
+        }
+        if beat {
+            items.extend(probe.boot().await.map(Item::Boot));
         }
         let mut hello = false;
         if dirty {
@@ -175,7 +190,7 @@ pub async fn send_loop(mut rx: mpsc::UnboundedReceiver<Msg>, me: mpsc::Unbounded
             }
         }
         items.extend(usage.iter().map(|(tool, (used, ok))| Item::Usage { tool: tool.clone(), last_used: *used, last_ok: *ok }));
-        if items.is_empty() {
+        if items.is_empty() && !beat {
             continue;
         }
         match forward(json!({"swarm": swarm, "node": node, "items": items})).await {
@@ -260,12 +275,14 @@ pub struct GatewayProbe {
     pub hub: Hub,
     pub node: String,
     http: reqwest::Client,
+    /// This boot's revive report, once the harness has one.
+    revive: Mutex<Option<Value>>,
 }
 
 impl GatewayProbe {
     pub fn new(hub: Hub, node: String) -> Self {
         let http = reqwest::Client::builder().no_proxy().build().expect("reqwest client builds");
-        Self { hub, node, http }
+        Self { hub, node, http, revive: Mutex::default() }
     }
 
     async fn get(&self, path: &str) -> anyhow::Result<Value> {
@@ -313,7 +330,46 @@ pub fn services_and_tools(table: &Value, plugins: &Value, doors: &[(String, Stri
     (services, tools, loaded.collect())
 }
 
+/// This boot's id and time, from `/proc`.
+pub fn this_boot() -> anyhow::Result<(String, Ts)> {
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?.trim().to_string();
+    let stat = std::fs::read_to_string("/proc/stat")?;
+    let secs = stat.lines().find_map(|l| l.strip_prefix("btime ")).and_then(|v| v.trim().parse().ok());
+    let at = secs.and_then(|s| chrono::DateTime::from_timestamp(s, 0)).ok_or_else(|| anyhow::anyhow!("/proc/stat has no btime"))?;
+    Ok((id, at))
+}
+
+impl GatewayProbe {
+    /// The harness's revive report, when it says the report is this boot's.
+    async fn revive(&self) -> Option<Value> {
+        if let Some(r) = self.revive.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+            return Some(r);
+        }
+        let got = self.hub.call("harness-cc", "revive_report", json!({}), None).await;
+        match got {
+            Ok(v) if v["this_boot"] == true => {
+                let report = v["report"].clone();
+                *self.revive.lock().unwrap_or_else(|p| p.into_inner()) = Some(report.clone());
+                Some(report)
+            }
+            Ok(_) => None,
+            Err(e) => {
+                tracing::debug!("harness-cc revive_report: {e}");
+                None
+            }
+        }
+    }
+}
+
 impl Probe for GatewayProbe {
+    fn boot(&self) -> BoxFuture<'_, Option<Boot>> {
+        Box::pin(async move {
+            let (id, at) = this_boot().map_err(|e| tracing::warn!("could not read this boot: {e:#}")).ok()?;
+            let revive = if Utc::now() - at < REVIVE_ASK_FOR { self.revive().await } else { self.revive.lock().unwrap_or_else(|p| p.into_inner()).clone() };
+            Some(Boot { id, at, revive })
+        })
+    }
+
     fn hello(&self) -> BoxFuture<'_, anyhow::Result<Item>> {
         Box::pin(async move {
             let (services, tools, plugins) = self.read_tools().await?;

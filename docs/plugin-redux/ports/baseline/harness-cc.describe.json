@@ -331,9 +331,14 @@
       "verb": "resume"
     },
     {
-      "description": "Resume each seat agent whose process is gone, and stop every other dead pinned job.",
+      "description": "Resume each pinned job whose process is gone.",
       "params": [],
       "verb": "revive_pinned"
+    },
+    {
+      "description": "The report of the last revive after a reboot, and whether it is this boot's.",
+      "params": [],
+      "verb": "revive_report"
     },
     {
       "description": "Type text or a slash command into a session and submit it.",

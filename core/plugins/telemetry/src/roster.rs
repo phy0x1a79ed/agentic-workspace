@@ -3,12 +3,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// A node's usage is its count of sessions in the last 7 days (fleet.md R147 item 5).
 pub const USAGE_WINDOW_DAYS: i64 = 7;
+
+/// A watched node silent this long is down. Its node part beats every minute.
+pub const SILENT_FOR: Duration = Duration::minutes(3);
+/// How long a node that came back has to send the beat that says whether it rebooted.
+pub const SETTLE_FOR: Duration = Duration::seconds(90);
+/// How long a rebooted node has to report its harness's revive.
+pub const REVIVE_WAIT: Duration = Duration::minutes(15);
 
 pub type Ts = DateTime<Utc>;
 
@@ -119,6 +126,27 @@ pub enum Item {
     Usage { tool: String, #[serde(default)] last_used: Option<Ts>, #[serde(default)] last_ok: Option<Ts> },
     /// The node's services and tools again, after an `awm/plugins` change.
     Tools { services: Vec<ServiceRow>, tools: Vec<ToolRow>, #[serde(default)] plugins: Vec<PluginRow> },
+    /// The node's minute beat: its boot, and its harness's revive report once this boot has one.
+    Boot(Boot),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Boot {
+    /// The kernel's boot id.
+    pub id: String,
+    pub at: Ts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revive: Option<Value>,
+}
+
+/// A watched node came back, and the operator is owed a message about it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Back {
+    pub at: Ts,
+    #[serde(default)]
+    pub silent_from: Option<Ts>,
+    #[serde(default)]
+    pub rebooted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -180,6 +208,13 @@ pub struct NodeState {
     pub tools: BTreeMap<String, ToolUse>,
     #[serde(default)]
     pub plugins: Vec<PluginRow>,
+    #[serde(default)]
+    pub boot: Option<Boot>,
+    /// When the watch told the operator the node went silent.
+    #[serde(default)]
+    pub down: Option<Ts>,
+    #[serde(default)]
+    pub back: Option<Back>,
 }
 
 /// A session that went live, went, was renamed or changed state, for `telemetry/sessions`.
@@ -241,9 +276,13 @@ impl Roster {
         if first_seen {
             out.changed.insert("nodes");
         }
-        state.last_seen = Some(now);
+        let silent_from = state.last_seen.replace(now);
+        if state.down.take().is_some() {
+            state.back = Some(Back { at: now, silent_from, rebooted: false });
+            out.changed.insert("nodes");
+        }
         for item in items {
-            apply_item(state, node, item, now, &mut out);
+            apply_item(state, node, item, silent_from, now, &mut out);
         }
         let cutoff = now - Duration::days(USAGE_WINDOW_DAYS);
         let before = state.starts.len();
@@ -282,6 +321,40 @@ impl Roster {
         out
     }
 
+    /// One tick of the down/up watch over the `watched` nodes: the messages the operator is owed
+    /// now. Silence before `since`, when this roster started, does not count.
+    pub fn watch(&mut self, watched: &[String], now: Ts, since: Ts) -> Vec<String> {
+        let mut said = vec![];
+        for (name, n) in self.nodes.iter_mut() {
+            if !watched.contains(name) {
+                n.back = None;
+                continue;
+            }
+            let quiet = n.last_seen.map(|t| t.max(since));
+            if n.down.is_none() && quiet.is_some_and(|t| now - t >= SILENT_FOR) {
+                n.down = Some(now);
+                n.back = None;
+                said.push(format!("{name} has not reported since {}.", clock(n.last_seen)));
+            }
+            let Some(back) = n.back.as_ref().filter(|b| now - b.at >= SETTLE_FOR) else { continue };
+            let revive = n.boot.as_ref().and_then(|b| b.revive.as_ref());
+            let text = match (back.rebooted, revive) {
+                (false, _) => format!("{name} is back, with no reboot. It was silent from {}.", clock(back.silent_from)),
+                (true, Some(report)) => format!("{} {}", rebooted(name, n, back), revive_text(report, &n.sessions)),
+                (true, None) if now - back.at >= REVIVE_WAIT => {
+                    format!("{} Its harness reported no revive within {} min: check cch.log there.", rebooted(name, n, back), REVIVE_WAIT.num_minutes())
+                }
+                (true, None) => continue,
+            };
+            n.back = None;
+            said.push(text);
+        }
+        if !said.is_empty() {
+            self.rev += 1;
+        }
+        said
+    }
+
     pub fn sessions_in_window(&self, node: &str, now: Ts) -> usize {
         let cutoff = now - Duration::days(USAGE_WINDOW_DAYS);
         self.nodes.get(node).map_or(0, |n| n.starts.values().filter(|t| **t >= cutoff).count())
@@ -306,6 +379,7 @@ impl Roster {
                         "service": s, "plugin": st.plugin, "tools": st.tools, "up": st.up, "since": st.since, "enabled": st.enabled,
                     })).collect::<Vec<_>>(),
                     "plugins": n.plugins,
+                    "down": n.down,
                     "uses": n.tools.iter().map(|(t, u)| json!({
                         "tool": t, "host": u.host, "listed": u.listed, "reach": u.reach(),
                         "last_checked": u.last_checked, "last_used": u.last_used, "last_ok": u.last_ok,
@@ -385,6 +459,52 @@ fn seat_row(row: &Value) -> Option<(String, Value)> {
     Some((key, out))
 }
 
+/// A time as the operator reads it: local, to the minute.
+fn clock(t: Option<Ts>) -> String {
+    t.map_or_else(|| "an unknown time".into(), |t| t.with_timezone(&Local).format("%H:%M").to_string())
+}
+
+fn rebooted(name: &str, n: &NodeState, back: &Back) -> String {
+    format!("{name} rebooted at {} and is back. It was silent from {}.", clock(n.boot.as_ref().map(|b| b.at)), clock(back.silent_from))
+}
+
+/// The harness's revive report (`revived`, `live` and `failed`), with each session by its name.
+fn revive_text(report: &Value, sessions: &BTreeMap<String, Session>) -> String {
+    let name = |id: &str| sessions.get(id).and_then(|s| s.name.clone()).unwrap_or_else(|| id.chars().take(8).collect());
+    let ids = |k: &str| report.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    let revived: Vec<String> = ids("revived").iter().filter_map(Value::as_str).map(name).collect();
+    let mut text = format!("It revived {} pinned sessions", revived.len());
+    if !revived.is_empty() {
+        text += &format!(": {}", revived.join(", "));
+    }
+    text += &format!(". {} were still live.", ids("live").len());
+    let failed: Vec<String> = ids("failed")
+        .iter()
+        .map(|f| format!("{} ({})", f.get("session_id").and_then(Value::as_str).map_or_else(|| "?".into(), name), f.get("error").and_then(Value::as_str).unwrap_or("")))
+        .collect();
+    if !failed.is_empty() {
+        text += &format!(" {} failed: {}.", failed.len(), failed.join(", "));
+    }
+    text
+}
+
+/// A beat's boot. A new boot id on a node the roster knew means it rebooted.
+fn set_boot(state: &mut NodeState, boot: Boot, silent_from: Option<Ts>, now: Ts, out: &mut Applied) {
+    match &mut state.boot {
+        Some(old) if old.id == boot.id => {
+            if old.revive.is_none() && boot.revive.is_some() {
+                old.revive = boot.revive;
+                out.changed.insert("nodes");
+            }
+            return;
+        }
+        Some(_) => state.back.get_or_insert(Back { at: now, silent_from, rebooted: false }).rebooted = true,
+        None => {}
+    }
+    state.boot = Some(boot);
+    out.changed.insert("nodes");
+}
+
 fn live(node: &str, s: &Session, ts: Ts) -> SessionEvent {
     SessionEvent {
         event: "live",
@@ -451,7 +571,7 @@ fn set_tools(state: &mut NodeState, rows: Vec<ToolRow>, now: Ts, out: &mut Appli
     }
 }
 
-fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut Applied) {
+fn apply_item(state: &mut NodeState, node: &str, item: Item, silent_from: Option<Ts>, now: Ts, out: &mut Applied) {
     match item {
         Item::Hello { role, portal, sessions, services, tools, plugins } => {
             set_plugins(state, plugins, out);
@@ -548,6 +668,7 @@ fn apply_item(state: &mut NodeState, node: &str, item: Item, now: Ts, out: &mut 
             set_services(state, services, now, out);
             set_tools(state, tools, now, out);
         }
+        Item::Boot(boot) => set_boot(state, boot, silent_from, now, out),
     }
 }
 
@@ -732,4 +853,45 @@ mod tests {
         assert!(r.seat_event(&ev).changed.is_empty(), "the live event parses to the row the catch-up made");
     }
 
+
+    #[test]
+    fn the_watch_says_once_when_a_node_goes_silent_and_once_when_it_comes_back() {
+        let mut r = Roster::default();
+        let start = t("2026-11-17T20:00:00Z");
+        let at = |m: i64| start + Duration::minutes(m);
+        let boot = |id: &str, revive: Option<Value>| Item::Boot(Boot { id: id.into(), at: start, revive });
+        let watched = ["altair".to_string()];
+        r.apply("altair", vec![hello(vec![sess("a1")]), boot("b1", None)], at(0));
+        r.apply("lyra", vec![hello(vec![])], at(0));
+        assert!(r.watch(&watched, at(10), at(9)).is_empty(), "silence before the roster started does not count");
+
+        let down = r.watch(&watched, at(13), at(9));
+        assert_eq!(down.len(), 1, "only the watched node, and once: {down:?}");
+        assert!(down[0].starts_with("altair has not reported since"));
+        assert!(r.watch(&watched, at(20), at(9)).is_empty());
+
+        // A link that drops and returns, with no reboot.
+        r.apply("altair", vec![boot("b1", None)], at(21));
+        assert!(r.watch(&watched, at(21), at(9)).is_empty(), "the back waits for a beat");
+        let back = r.watch(&watched, at(23), at(9));
+        assert!(back.len() == 1 && back[0].contains("is back, with no reboot"), "{back:?}");
+
+        // A reboot too quick for a down: the new boot id says it, and the revive report waits.
+        r.apply("altair", vec![boot("b2", None)], at(30));
+        assert!(r.watch(&watched, at(32), at(9)).is_empty(), "the rebooted node has not reported its revive yet");
+        let report = json!({"ok": false, "revived": ["a1"], "live": [], "failed": [{"session_id": "zz999999x", "error": "no transcript"}]});
+        r.apply("altair", vec![boot("b2", Some(report))], at(33));
+        let back = r.watch(&watched, at(33), at(9));
+        assert_eq!(back.len(), 1);
+        assert!(back[0].contains("rebooted at") && back[0].contains("revived 1 pinned sessions: a1-name"), "{back:?}");
+        assert!(back[0].contains("1 failed: zz999999 (no transcript)"), "{back:?}");
+
+        // A reboot whose harness never reports its revive.
+        r.apply("altair", vec![boot("b3", None)], at(40));
+        r.apply("altair", vec![boot("b3", None)], at(49));
+        assert!(r.watch(&watched, at(50), at(9)).is_empty());
+        r.apply("altair", vec![boot("b3", None)], at(55));
+        let back = r.watch(&watched, at(55), at(9));
+        assert!(back.len() == 1 && back[0].contains("reported no revive"), "{back:?}");
+    }
 }

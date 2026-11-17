@@ -108,26 +108,31 @@ async def test_watchdog_starts_an_unplanned_hold_after_misses(alcor_cfg, store, 
     assert hold["planned"] is False and hold["down"] == "mizar"
 
 
-async def test_boot_revives_then_releases_partner(cfg):
-    revived = {"revived": ["c20d4fcd"], "live": [], "failed": []}
-    gw = FakeGateway({("harness-cc", "revive_pinned"): revived,
+async def test_boot_waits_for_this_boots_revive_then_releases_partner(cfg):
+    revived = {"ok": True, "revived": ["c20d4fcd"], "live": [], "failed": []}
+    replies = iter([{"this_boot": False}, {"this_boot": True, "report": revived}])
+    gw = FakeGateway({("harness-cc", "revive_report"): lambda _: next(replies),
                       (WAKE, "standby_release"): {"ok": True, "held": True}}, harness="harness-cc")
-    out = await boot.run(cfg, gw)
-    assert gw.calls[0][:2] == ("harness-cc", "revive_pinned")
-    assert gw.calls[1] == (WAKE, "standby_release",
+
+    async def sleep(s):
+        pass
+
+    out = await boot.run(cfg, gw, sleep=sleep)
+    assert gw.verbs() == ["revive_report", "revive_report", "standby_release"]
+    assert gw.calls[2] == (WAKE, "standby_release",
                            {"down": "mizar", "report": {"node": "mizar", "revive": revived}},
                            "alcor")
     assert out["release"] == {"ok": True, "held": True}
 
 
-async def test_boot_waits_for_gateway_and_releases_even_on_failure(cfg):
-    gw = FakeGateway({("harness-cc", "revive_pinned"): CallError("unknown verb")},
+async def test_boot_releases_even_when_no_revive_reports(cfg):
+    gw = FakeGateway({("harness-cc", "revive_report"): CallError("unknown verb")},
                      up=lambda n: True, harness="harness-cc")
-    slept = []
+    now = Now()
 
     async def sleep(s):
-        slept.append(s)
+        now.t += s
 
-    out = await boot.run(cfg, gw, revive_tries=2, sleep=sleep)
-    assert "revive_pinned failed" in out["error"]
-    assert gw.verbs() == ["revive_pinned", "revive_pinned", "standby_release"]
+    out = await boot.run(cfg, gw, revive_wait_s=30, retry_s=20, sleep=sleep, clock=now)
+    assert "revive_report failed" in out["error"]
+    assert gw.verbs() == ["revive_report", "revive_report", "standby_release"]

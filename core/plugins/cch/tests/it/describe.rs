@@ -78,7 +78,7 @@ fn the_describe_differs_from_the_baseline_only_by_the_listed_changes() {
 
 #[test]
 fn the_timeouts_match_the_python_manifest() {
-    let want: [(&str, Option<u64>); 29] = [
+    let want: [(&str, Option<u64>); 30] = [
         ("platform", None),
         ("resolve", Some(30)),
         ("find", Some(30)),
@@ -97,6 +97,7 @@ fn the_timeouts_match_the_python_manifest() {
         ("link", Some(30)),
         ("adopt", Some(30)),
         ("revive_pinned", Some(600)),
+        ("revive_report", Some(10)),
         ("pending", None),
         ("probe", Some(30)),
         ("live_session_ids", Some(30)),

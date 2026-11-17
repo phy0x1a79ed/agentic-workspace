@@ -149,7 +149,7 @@ async fn a_session_start_and_stop_reach_the_roster_within_seconds() {
     roster.lock().await.frames();
 
     fake.emit("reflection", "sessions", json!({"event": "started", "session_id": "w1", "name": "worker", "node": "mizar",
-        "project": "awm", "scope": "lobby", "kind": "worker", "task_id": "CWPY", "rc_url": "https://claude.ai/code/s-w1", "ts": "2026-11-07T10:00:00Z"}));
+        "project": "awm", "scope": "lobby", "kind": "worker", "task_id": "CWPY", "rc_url": "https://claude.ai/code/s-w1", "ts": chrono::Utc::now().to_rfc3339()}));
     let (v, took) = until(&roster, "start", |v| ids(v) == ["boot", "w1"]).await;
     assert!(took < Duration::from_secs(2), "start took {took:?}");
     let w1 = v["nodes"][0]["sessions"].as_array().unwrap().iter().find(|s| s["session_id"] == "w1").unwrap().clone();
