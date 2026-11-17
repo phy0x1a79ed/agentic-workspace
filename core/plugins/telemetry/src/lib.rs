@@ -16,10 +16,18 @@ pub fn swarm(cfg: &config::InstallConfig) -> Option<String> {
     cfg.get("telemetry")?.get("swarm")?.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// The nodes whose silence the roster tells the operator about: the install config's
+/// `[telemetry] watch`.
+pub fn watched(cfg: &config::InstallConfig) -> Vec<String> {
+    let list = cfg.get("telemetry").and_then(|t| t.get("watch")).and_then(|w| w.as_array());
+    list.into_iter().flatten().filter_map(|n| n.as_str()).map(config::label).collect()
+}
+
 /// Serve the roster.
 pub async fn run_roster() -> anyhow::Result<()> {
     let svc = Service::from_env()?;
-    let swarm = swarm(&config::InstallConfig::load()?);
+    let cfg = config::InstallConfig::load()?;
+    let (swarm, watched) = (swarm(&cfg), watched(&cfg));
     let part = alcor::RosterPart::load(svc.context().env().state_dir(), swarm.clone(), alcor::edge_singletons())?;
     let ctx = svc.context();
     let follow = part.clone();
@@ -29,7 +37,8 @@ pub async fn run_roster() -> anyhow::Result<()> {
                 if config::edges().is_ok_and(|e| e.singletons.iter().any(|t| t.tool == "trilium")) {
                     tokio::spawn(follow.clone().push_to_vault(ctx.hub().clone()));
                 }
-                follow.follow_seats(ctx);
+                follow.follow_seats(ctx.clone());
+                tokio::spawn(follow.watch_nodes(ctx, watched));
             } else {
                 tracing::warn!("no [telemetry] swarm in the install config: this roster refuses every report");
             }
@@ -52,6 +61,16 @@ pub async fn run_node() -> anyhow::Result<()> {
         let probe = Arc::new(node::GatewayProbe::new(hub.clone(), node.clone()));
         let part = node::start(hub.clone(), node, swarm, probe, node::forward_through(hub), node::marks());
         let _ = part.tx.send(node::Msg::Resync);
+        let beat = part.tx.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(node::BEAT);
+            loop {
+                every.tick().await;
+                if beat.send(node::Msg::Beat).is_err() {
+                    break;
+                }
+            }
+        });
     })
     .run()
     .await

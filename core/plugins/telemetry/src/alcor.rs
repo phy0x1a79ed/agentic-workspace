@@ -125,6 +125,25 @@ impl RosterPart {
         Ok(json!({"ok": true, "rev": roster.rev, "resync": applied.resync}))
     }
 
+    /// Tell the operator, once a minute at most, which watched nodes went silent and which came back.
+    pub async fn watch_nodes(self: Arc<Self>, ctx: Context, watched: Vec<String>) {
+        let since = Utc::now();
+        let mut every = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            every.tick().await;
+            let said = {
+                let mut roster = self.lock();
+                let said = roster.watch(&watched, Utc::now(), since);
+                let applied = Applied { changed: if said.is_empty() { Default::default() } else { ["nodes"].into() }, ..Applied::default() };
+                self.publish(&ctx, None, &applied, &roster);
+                said
+            };
+            for text in said {
+                tell_operator(ctx.hub(), &text).await;
+            }
+        }
+    }
+
     fn seats(&self, ctx: &Context, f: impl FnOnce(&mut Roster) -> Applied) {
         let mut roster = self.lock();
         let applied = f(&mut roster);
@@ -184,6 +203,16 @@ impl RosterPart {
             }
         }
         self.seats(ctx, |r| r.set_seats(&rows));
+    }
+}
+
+/// Send the operator one message through social. A failure is logged: the watch goes on.
+async fn tell_operator(hub: &Hub, text: &str) {
+    let (account, channel) = config::operator_dm();
+    let opts = CallOpts { peer: config::peer_env("AWM_SOCIAL_PEER"), timeout: Duration::from_secs(60), ..CallOpts::default() };
+    tracing::info!("telling the operator: {text}");
+    if let Err(e) = hub.call_with("social", "send", json!({"account": account, "channel": channel, "text": text}), &opts).await {
+        tracing::warn!("could not tell the operator {text:?}: {e}");
     }
 }
 
