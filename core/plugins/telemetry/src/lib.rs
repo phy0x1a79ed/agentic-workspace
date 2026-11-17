@@ -59,18 +59,9 @@ pub async fn run_node() -> anyhow::Result<()> {
     svc.on_ready(async move {
         let hub = ctx.hub().clone();
         let probe = Arc::new(node::GatewayProbe::new(hub.clone(), node.clone()));
-        let part = node::start(hub.clone(), node, swarm, probe, node::forward_through(hub), node::marks());
+        let part = node::start(hub.clone(), node, swarm, probe.clone(), node::forward_through(hub), node::marks());
         let _ = part.tx.send(node::Msg::Resync);
-        let beat = part.tx.clone();
-        tokio::spawn(async move {
-            let mut every = tokio::time::interval(node::BEAT);
-            loop {
-                every.tick().await;
-                if beat.send(node::Msg::Beat).is_err() {
-                    break;
-                }
-            }
-        });
+        tokio::spawn(probe.beat(part.tx.clone()));
     })
     .run()
     .await

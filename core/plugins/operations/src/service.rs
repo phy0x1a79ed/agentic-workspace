@@ -45,11 +45,6 @@ pub struct HubOutside {
     pub node: String,
 }
 
-fn operator_dm() -> (String, String) {
-    let var = |n: &str| std::env::var(n).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    (var("AWM_OPERATOR_DM_ACCOUNT").unwrap_or_else(|| "discord-bot".into()), var("AWM_OPERATOR_DM_CHANNEL").unwrap_or_else(|| "1522674357762261112".into()))
-}
-
 /// Tony's Discord DM with the bot, for a question that needs his answer.
 const TONY_DM: (&str, &str) = ("discord-bot", "1469466265897668729");
 
@@ -104,7 +99,7 @@ impl Outside for HubOutside {
 
     fn dm<'a>(&'a self, text: &'a str) -> BoxFut<'a, bool> {
         Box::pin(async move {
-            let (account, channel) = operator_dm();
+            let (account, channel) = awm_plugin_sdk::config::operator_dm();
             self.send(&account, &channel, text).await
         })
     }
