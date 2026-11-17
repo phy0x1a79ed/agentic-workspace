@@ -4,7 +4,8 @@
 //!
 //! `prune` is the one verb that destroys data, so it stays off the MCP surface and dry-runs
 //! unless told otherwise. A peer may not sweep or prune, and sees nothing of a privately
-//! marked project, nor of a session that ever worked under a marked path.
+//! marked project, nor of a session that ever worked under a marked path. No caller sees a
+//! session that productivity served from a grant (its transcript holds `privacy::CONFIDENTIAL`).
 
 pub mod daily;
 pub mod index;
@@ -366,7 +367,7 @@ impl App {
         let rx = search::compile(&pattern).map_err(|e| Fail::new("error", e))?;
         let (project, limit) = (str_arg(a, "project"), int_or(a, "limit", search::MAX_HITS)?);
         let ix = self.ix()?;
-        let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)) else {
+        let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)).await? else {
             return Ok(json!({"pattern": pattern, "hits": [], "truncated": false}));
         };
         let (lines, truncated) = ix.scan(Arc::new(rx), &cond, limit.max(0) as usize).await?;
@@ -383,7 +384,7 @@ impl App {
         let literal = search::compile(&format!("(?i){}", regex::escape(words))).map_err(|e| Fail::new("error", e))?;
         self.catch_up().await?;
         let ix = self.ix()?;
-        let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)) else {
+        let Some(cond) = ix.narrow(project.as_deref(), privacy::from_peer(as_)).await? else {
             return Ok(json!({"hits": [], "truncated": false}));
         };
         let room = limit.max(0) as usize;

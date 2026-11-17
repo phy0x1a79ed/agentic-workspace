@@ -16,6 +16,11 @@ ed25519-dalek = "2"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+testing = []
 
 [dev-dependencies]
 tokio.workspace = true

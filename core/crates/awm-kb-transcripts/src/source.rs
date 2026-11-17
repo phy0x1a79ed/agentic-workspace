@@ -69,7 +69,7 @@ impl Source for Transcripts {
                 tracing::warn!("transcripts: live sessions not caught up, answering from the index: {}", e.message);
             }
             let ix = self.ix()?;
-            let Some(narrow) = ix.narrow(None, ask.veil != Veil::None) else {
+            let Some(narrow) = ix.narrow(None, ask.veil != Veil::None).await.map_err(SourceError::of)? else {
                 return Ok(json!({"exact": []}));
             };
             let mut q = awm_index::Ask::new(&self.fields, ask.text.as_ref(), &ask.source, &ask.veil, ask.max, None).map_err(SourceError::of)?;
@@ -86,7 +86,7 @@ impl Source for Transcripts {
     fn get<'a>(&'a self, id: &'a str, veil: &'a Veil, _session: Option<&'a str>) -> BoxFuture<'a, Result<Option<Map<String, Value>>, SourceError>> {
         Box::pin(async move {
             let ix = self.ix()?;
-            let Some(narrow) = ix.narrow(None, *veil != Veil::None) else { return Ok(None) };
+            let Some(narrow) = ix.narrow(None, *veil != Veil::None).await.map_err(SourceError::of)? else { return Ok(None) };
             let cond = and(&[&awm_index::sql::veil_sql(&self.fields, veil), &narrow]);
             let Some(mut doc) = ix.index.document(id, &cond).await.map_err(SourceError::of)? else { return Ok(None) };
             let text = doc.get("text").and_then(Value::as_str).unwrap_or("").to_string();

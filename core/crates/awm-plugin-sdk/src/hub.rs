@@ -543,6 +543,13 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
+/// A session grant's approver is the `operations` service.
+impl awm_trust::session_grant::Approver for Hub {
+    fn call<'a>(&'a self, verb: &'a str, args: Value) -> awm_trust::session_grant::Reply<'a> {
+        Box::pin(async move { Ok(Hub::call(self, "operations", verb, args, None).await?) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

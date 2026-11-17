@@ -2,7 +2,6 @@
 
 mod chrome;
 mod containers;
-mod grants;
 mod seats;
 
 use std::path::{Path, PathBuf};
@@ -11,11 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awm_plugin_sdk::{Call, Lane, Service, VerbError};
+use awm_trust::session_grant::{Approval, Approver, Kind, SessionGrants};
 use serde_json::{json, Value};
 
 use crate::chrome::Chrome;
 use crate::containers::Containers;
-use crate::grants::{Grant, Grants};
 use crate::seats::{BookError, SeatBook};
 
 const TOOL: &str = "browser";
@@ -64,6 +63,13 @@ impl Settings {
 
 fn p(name: &str, ty: &str, required: bool, desc: &str) -> Value {
     json!({"name": name, "type": ty, "required": required, "description": desc})
+}
+
+const PROFILE_KIND: &str = "browser_profile";
+
+/// Tony's profile for one trusted session on a node outside `profile_nodes` (fleet.md R102 item 6).
+fn profile_grants(approver: Arc<dyn Approver>, store: Option<PathBuf>) -> SessionGrants {
+    SessionGrants::load(Kind { kind: PROFILE_KIND, minutes: 480, what: "your browser profile, with your sign-ins" }, approver, store)
 }
 
 /// A session's level for Tony's profile. A seat's level is its node's word, and a node whose
@@ -142,7 +148,7 @@ macro_rules! verb {
     }};
 }
 
-fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>, grants: Arc<Grants>) -> Service {
+fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome>, grants: Arc<SessionGrants>) -> Service {
     let seat = || p("seat", "string", true, "The seat id that seat_open returned.");
     let tab = || p("tab", "string", true, "A tab id of this seat's window.");
     let url = || p("url", "string", true, "");
@@ -161,10 +167,10 @@ fn service(svc: Service, book: Book, settings: Arc<Settings>, chrome: Arc<Chrome
             if let Some((node, session)) = who.0.split_once('/').filter(|_| level != who.1) {
                 let unlisted = format!("{node} is not in the browser's profile_nodes");
                 match grants.check(node, session, asked == Some("tony")).await? {
-                    Grant::Live => level = "trusted",
-                    Grant::Pending(rid) => return Ok(json!({"pending": true, "request_id": rid,
+                    Approval::Live => level = "trusted",
+                    Approval::Pending(rid) => return Ok(json!({"pending": true, "request_id": rid,
                         "why": format!("{unlisted}, so Tony approves this session's use of his profile. Request {rid} waits for him; call seat_open again once he approves.")})),
-                    Grant::None => why = Some(format!("{unlisted}, so this seat is blank. Call seat_open with profile tony to ask Tony to approve this session.")),
+                    Approval::None => why = Some(format!("{unlisted}, so this seat is blank. Call seat_open with profile tony to ask Tony to approve this session.")),
                 }
             }
             let mut view = b.open(&who.0, level, asked, own).await?.view();
@@ -340,7 +346,7 @@ async fn main() -> anyhow::Result<()> {
     let loaded = book.load().await?;
     tracing::info!(seats = loaded, "read the recorded seats");
     let ctx = svc.context();
-    let grants = Arc::new(Grants::load(Arc::new(ctx.hub().clone()), Some(dir.join("profile-grants.json"))));
+    let grants = Arc::new(profile_grants(Arc::new(ctx.hub().clone()), Some(dir.join("profile-grants.json"))));
     let (b, c) = (book.clone(), chrome.clone());
     service(svc, book, settings, chrome, grants)
         .on_ready(async move {
@@ -361,9 +367,8 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
     use awm_plugin_sdk::{Caller, Env};
+    use awm_trust::session_grant::testing::FakeApprover;
 
     fn env() -> Env {
         Env { hub_url: "http://127.0.0.1:1".into(), service: "browser".into(), plugin: "browser".into(), node: "alcor".into(), awm_dir: PathBuf::from("/nonexistent"), token_file: None }
@@ -373,54 +378,10 @@ mod tests {
         Arc::new(Settings { dir: "/nonexistent".into(), cdp: String::new(), viewer: "https://viewer".into(), service_sites: vec![("teams".into(), "https://teams.microsoft.com".into())], seat_image: String::new(), tony_profile: None, profile_nodes: vec!["mizar".into()], chrome: None })
     }
 
-    /// The approver as operations answers it, with a test grant key. `approve` signs a grant.
-    #[derive(Default)]
-    struct FakeApprover {
-        requests: std::sync::Mutex<Vec<(String, Value)>>,
-        decided: std::sync::Mutex<HashMap<String, (String, Value)>>,
-    }
-
-    const SIGNER: [u8; 32] = [7; 32];
-
-    impl FakeApprover {
-        fn approve(&self, rid: &str, node: &str, session: &str, minutes: i64) {
-            let now = grants::now();
-            let body = json!({"grant_id": "g1", "request_id": rid, "kind": grants::KIND, "node": node, "subject": "tony",
-                "payload_sha256": awm_trust::grant::payload_digest(&json!({"node": node, "session_id": session})),
-                "not_before": now - 60, "not_after": now + minutes * 60, "approved_by_device": "d"});
-            let env = awm_trust::grant::sign_envelope(&ed25519_dalek::SigningKey::from_bytes(&SIGNER), "grant", body);
-            self.decided.lock().unwrap().insert(rid.into(), ("approved".into(), env));
-        }
-    }
-
-    impl grants::Approver for FakeApprover {
-        fn call<'a>(&'a self, verb: &'a str, args: Value) -> grants::Reply<'a> {
-            Box::pin(async move {
-                Ok(match verb {
-                    "keys" => json!({"grant_pub": awm_trust::grant::b64u(ed25519_dalek::SigningKey::from_bytes(&SIGNER).verifying_key().as_bytes())}),
-                    "approval_request" => {
-                        let mut r = self.requests.lock().unwrap();
-                        let rid = format!("q{}", r.len());
-                        r.push((rid.clone(), args));
-                        json!({"request_id": rid})
-                    }
-                    "approval_get" => {
-                        let rid = args["request_id"].as_str().unwrap();
-                        match self.decided.lock().unwrap().get(rid) {
-                            Some((status, grant)) => json!({"status": status, "grant": grant}),
-                            None => json!({"status": "pending", "grant": null}),
-                        }
-                    }
-                    _ => anyhow::bail!("no verb {verb}"),
-                })
-            })
-        }
-    }
-
     fn built_with(book: Book, approver: Arc<FakeApprover>) -> Service {
         let s = settings();
         let chrome = Arc::new(Chrome::new(s.chrome.clone(), &s.cdp));
-        service(Service::new(env()), book, s, chrome, Arc::new(Grants::load(approver, None)))
+        service(Service::new(env()), book, s, chrome, Arc::new(profile_grants(approver, None)))
     }
 
     fn built(book: Book) -> Service {
@@ -506,13 +467,13 @@ mod tests {
         assert_eq!((args["kind"].clone(), args["node"].clone(), args["payload"].clone()), (json!("browser_profile"), json!("altair"), json!({"node": "altair", "session_id": "sess-j"})));
         assert_eq!(args["session_id"], "sess-j", "the request goes on the asking session's card");
         for (name, node, session, minutes) in [("another session", "altair", "sess-x", 30), ("another node", "lyra", "sess-j", 30), ("expired", "altair", "sess-j", -1)] {
-            ap.approve(&rid, node, session, minutes);
+            ap.approve(&rid, PROFILE_KIND, node, session, minutes);
             let out = open(altair.clone(), Some("tony")).await;
             assert_eq!(out["pending"], true, "{name}: a grant that does not fit files a new request: {out}");
             assert_ne!(out["request_id"], json!(rid), "{name}");
         }
         let rid = ap.requests.lock().unwrap().last().unwrap().0.clone();
-        ap.approve(&rid, "altair", "sess-j", 30);
+        ap.approve(&rid, PROFILE_KIND, "altair", "sess-j", 30);
         let seat = open(altair.clone(), Some("tony")).await;
         assert_eq!((seat["profile"].clone(), seat["level"].clone()), (json!("tony"), json!("trusted")), "{seat}");
         assert_eq!(open(altair.clone(), None).await["profile"], "tony", "the grant holds without asking again");
