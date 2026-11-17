@@ -1139,6 +1139,7 @@ dependencies = [
  "async-trait",
  "awm-chat",
  "awm-plugin-sdk",
+ "awm-trust",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -1414,6 +1415,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
