@@ -7,6 +7,7 @@ pub mod edges;
 pub mod grant;
 pub mod port;
 pub mod requests;
+pub mod session_grant;
 pub mod trust;
 
 pub use edges::{Edge, EdgeKey, EdgeList, Network};

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use awm_plugin_sdk::{Caller, TestService};
+use awm_trust::session_grant::testing::FakeApprover;
 use serde_json::{json, Value};
 
 use crate::config::Loaded;
@@ -13,10 +14,14 @@ fn test_env() -> awm_plugin_sdk::Env {
 }
 
 async fn svc() -> TestService {
+    svc_with(Arc::default()).await
+}
+
+async fn svc_with(approver: Arc<FakeApprover>) -> TestService {
     let loaded = Loaded { callers: vec!["mizar".into(), "capella".into(), "lyra".into()], ..Default::default() };
     let svc = awm_plugin_sdk::Service::new(test_env());
     let app = Arc::new(Productivity::new("alcor".into(), loaded, svc.context().hub()));
-    crate::service(svc, app).into_test().await.unwrap()
+    crate::service(svc, app, Arc::new(crate::session_grants(approver, None))).into_test().await.unwrap()
 }
 
 fn verbs() -> Vec<String> {
@@ -65,6 +70,8 @@ async fn every_verb_refuses_every_node_but_the_callers_and_every_seat() {
     let s = svc().await;
     let refused = [
         ("altair", from("altair"), json!({})),
+        ("an untrusted session on altair", Caller { session: Some("sess-u".into()), ..from("altair") }, json!({"_caller_trust": "cooperative"})),
+        ("a trusted session relayed by altair", Caller { origin: Some("mizar".into()), session: Some("sess-r".into()), ..from("altair") }, json!({"_caller_trust": "trusted"})),
         ("alcor itself", from("alcor"), json!({})),
         ("no node", from(""), json!({})),
         ("altair relayed by mizar", Caller { origin: Some("altair".into()), ..from("mizar") }, json!({})),
@@ -83,4 +90,37 @@ async fn every_verb_refuses_every_node_but_the_callers_and_every_seat() {
             assert!(!e.message.contains("no handler"), "{v} is in the manifest but not dispatched");
         }
     }
+}
+
+#[tokio::test]
+async fn a_trusted_session_elsewhere_gets_every_verb_once_tony_approves_it_with_the_notice() {
+    let ap = Arc::new(FakeApprover::default());
+    let s = svc_with(ap.clone()).await;
+    let altair = |session: &str| Caller { session: Some(session.into()), ..from("altair") };
+    let trusted = json!({"_caller_trust": "trusted"});
+    let call = |caller: Caller| {
+        let s = &s;
+        let args = trusted.clone();
+        async move { s.call_as("buckets", args, caller, None).await }
+    };
+    let asked = call(altair("sess-g")).await.unwrap();
+    assert_eq!((asked["pending"].clone(), asked["confidential"].as_str()), (json!(true), Some(crate::NOTICE)), "{asked}");
+    assert_eq!(call(altair("sess-g")).await.unwrap()["request_id"], asked["request_id"], "a pending request is not filed twice");
+    let (rid, filed) = ap.requests.lock().unwrap()[0].clone();
+    assert_eq!((filed["kind"].clone(), filed["minutes"].clone(), filed["payload"].clone(), filed["session_id"].clone()),
+        (json!("productivity_session"), json!(1440), json!({"node": "altair", "session_id": "sess-g"}), json!("sess-g")));
+
+    ap.approve(&rid, "productivity_session", "altair", "sess-g", 30);
+    let granted = call(altair("sess-g")).await.unwrap();
+    assert_eq!(granted["confidential"].as_str(), Some(crate::NOTICE), "{granted}");
+    assert!(granted.get("pending").is_none(), "{granted}");
+    for v in verbs() {
+        let out = s.call_as(&v, full(&v, &trusted), altair("sess-g"), None).await;
+        if let Err(e) = out {
+            assert_ne!(e.error_class, "PermissionError", "{v} with a grant: {}", e.message);
+        }
+    }
+    assert_eq!(call(altair("sess-o")).await.unwrap()["pending"], true, "the grant is for one session");
+    let lyra = s.call_as("buckets", trusted.clone(), from("lyra"), None).await.unwrap();
+    assert!(lyra.get("confidential").is_none(), "a caller node reads as before: {lyra}");
 }

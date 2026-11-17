@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 awm-plugin-sdk.workspace = true
+awm-trust.workspace = true
 awm-chat = { path = "../../crates/awm-chat" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -37,4 +38,5 @@ webpki-roots.workspace = true
 mail-parser.workspace = true
 
 [dev-dependencies]
+awm-trust = { workspace = true, features = ["testing"] }
 axum.workspace = true
