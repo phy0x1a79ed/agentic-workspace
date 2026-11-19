@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-This file is the reference for agents that change awm itself. It covers the core binary and its gateway, plugins and the service contract, the catalog that renders plugins onto MCP, HTTP and the CLI, the timeout ladder, the verb gates, the isolated door, egress, usage per plugin, kept Claude Code sessions, the journal, the search archive, the service lifecycle, dev sandboxes, the data-layer internals, the frontend, federation pitfalls, a file map, and how to run tests.
+This file is the reference for agents that change awm itself. It covers the core binary and its gateway, plugins and the service contract, the catalog that renders plugins onto MCP, HTTP and the CLI, the timeout ladder, the verb gates, the isolated door, egress, usage per plugin, kept Claude Code sessions, the journal, the search archive, genai, the service lifecycle, dev sandboxes, the data-layer internals, the frontend, federation pitfalls, a file map, and how to run tests.
 
 Agent orientation goes in `AGENTS.md`. Workspace procedures go in `PROTOCOLS.md`. Human install and service authoring go in `README.md`. Cross-node design goes in `FEDERATION.md`.
 
@@ -203,6 +203,18 @@ The `kb` plugin serves the `search` tool (`core/crates/awm-kb-search`). Agents g
 - **Maintenance.** Each write counts the rows it leaves outside the indexes. The count starts maintenance, not a clock.
 
 **CAUTION** An open tag clash between two nodes stops every search between them until an agent renames the tag. Delete a peer's duplicate tag rows before a node's first start, or that start raises the clash.
+
+## genai
+
+The `genai` plugin (`core/plugins/genai`) makes media in named styles over providers. An agent queues a job and fetches the files. It never drives a provider's website itself.
+
+- **Providers.** A provider is one module behind the `Provider` trait, plus one line in `provider::registry`. Each provider runs its jobs one at a time on its own worker, because Muse is one agent in one conversation.
+- **Styles live in Trilium.** A style is a note under the `#genaiStyles` folder. Its labels name the provider and size, its body is the style text, and its image attachments are the references. genai reads the note at job time, so Tony's edits in Trilium apply to the next job with no deploy.
+- **The Muse room belongs to the service.** genai holds the persistent room itself (`docs/redux/channels.md` R72.5), so the link survives compaction and restarts of any session. Muse gets the link once. When genai holds no room it opens one and fails the job with the new link, which an agent pastes into Muse's "awm genai link" side chat.
+- **Muse's replies are data.** genai reads only the job id, the status and the saved file from an inbox entry. The inbox holds JSON entries apart from the transcript, because Muse's free text could forge a transcript header.
+- **Placement.** genai runs on one node, set by `awm_plugins_homed` in the fleet inventory. Other nodes reach it across their edges. Leave its tool tier `on`.
+
+**CAUTION** A tool tier of `off` hides the tool from every MCP tool list. Use it to hide a tool, never to place one.
 
 ## Service lifecycle
 
