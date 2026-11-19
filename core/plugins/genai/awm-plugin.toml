@@ -1,6 +1,6 @@
 # Media generation (genai): jobs over providers, in named styles kept in Trilium.
-# Off by default: one node enables it in its config, because it holds the one Muse room on
-# that node's channel.
+# Homed on one node by the fleet inventory, because it holds the one Muse room on that node's
+# channel.
 [plugin]
 name = "genai"
 version = "0.1.0"
@@ -13,7 +13,7 @@ run = "run.sh"
 name = "genai"
 major = 1
 service = "genai"
-tier = "off"
+tier = "on"
 
 [needs]
 platform = ["linux"]
