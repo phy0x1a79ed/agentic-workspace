@@ -78,14 +78,14 @@ fn name_arg(call: &Call) -> Option<&str> {
     call.str_arg("name").filter(|n| !n.is_empty())
 }
 
-/// The plugin services that may hold a room themselves (channels.md R111.1): genai, for the Muse link.
-const SERVICE_HOLDERS: [&str; 1] = ["genai"];
+/// The one plugin service that may hold a room itself: genai, for the Muse link.
+const SERVICE_HOLDER: &str = "genai";
 
 /// A plugin service on this node, with no session behind the call, that may hold a room.
 fn service_holder(call: &Call) -> Option<Holder> {
     let (c, plugin) = (&call.caller, call.plugin.as_deref()?);
     let own = c.lane == awm_plugin_sdk::Lane::Service && c.node == call.ctx.env().node && c.session.is_none();
-    (own && SERVICE_HOLDERS.contains(&plugin)).then(|| Holder {
+    (own && plugin == SERVICE_HOLDER).then(|| Holder {
         node: c.node.clone(),
         session: format!("{}{plugin}", channel::SERVICE_PREFIX),
         name: plugin.to_string(),

@@ -11,13 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awm_plugin_sdk::hub::{CallOpts, Hub, HubError};
+use awm_plugin_sdk::hub::Hub;
 use serde_json::{json, Value};
 
-use crate::provider::{Provider, Work};
-use crate::store::Store;
+use crate::provider::{call, Provider, Work};
 
-const ROOM_KEY: &str = "muse_room";
 const JOB_LIMIT: Duration = Duration::from_secs(360);
 const DRAIN_WAIT_S: u64 = 60;
 /// Below this width a returned PNG is the chat's preview, not the full image.
@@ -25,38 +23,44 @@ const MIN_WIDTH: u32 = 1000;
 
 pub struct Muse {
     hub: Hub,
-    store: Store,
 }
 
 impl Muse {
-    pub fn new(hub: Hub, store: Store) -> Self {
-        Self { hub, store }
+    pub fn new(hub: Hub) -> Self {
+        Self { hub }
     }
 
     async fn channel(&self, verb: &str, args: Value, timeout: Duration) -> Result<Value, String> {
-        let opts = CallOpts { timeout, ..CallOpts::default() };
-        self.hub.call_with("channel", verb, args, &opts).await.map_err(|e| match e {
-            HubError::Verb { error, .. } => format!("channel {verb}: {error}"),
-            other => format!("channel {verb}: {other}"),
-        })
+        call(&self.hub, "channel", verb, args, timeout).await
     }
 
-    /// The room Muse polls: `{name, link}`, opened when genai holds none.
-    pub async fn room(&self) -> Result<(Value, bool), String> {
+    /// The open room genai holds, as `{name, link}`.
+    async fn held(&self) -> Result<Option<Value>, String> {
         let held = self.channel("status", json!({}), Duration::from_secs(30)).await?;
         let open = held["channels"].as_array().into_iter().flatten().find(|c| c["kind"] == "room" && c["open"] == true);
-        if let Some(c) = open {
-            return Ok((json!({"name": c["name"], "link": c["link"]}), false));
-        }
-        let made = self.channel("open", json!({"kind": "room", "persistent": true}), Duration::from_secs(60)).await?;
-        let room = json!({"name": made["name"], "link": made["link"]});
-        self.store.kv_set(ROOM_KEY, &room).await.map_err(|e| e.to_string())?;
-        tracing::warn!("opened a new Muse room {}: Muse needs its link", room["link"]);
-        Ok((room, true))
+        Ok(open.map(|c| json!({"name": c["name"], "link": c["link"]})))
     }
 
-    async fn put(&self, room: &str, path: &Path, as_name: &str) -> Result<(), String> {
-        self.channel("send", json!({"name": room, "path": path, "filename": as_name}), Duration::from_secs(120)).await.map(|_| ())
+    /// The name of the room Muse polls. When genai holds none it opens one and fails the job,
+    /// because Muse needs the new link first.
+    async fn room(&self) -> Result<String, String> {
+        if let Some(room) = self.held().await? {
+            return Ok(room["name"].as_str().unwrap_or("").to_string());
+        }
+        let made = self.channel("open", json!({"kind": "room", "persistent": true}), Duration::from_secs(60)).await?;
+        tracing::warn!("opened a new Muse room {}: Muse needs its link", made["link"]);
+        Err(format!("genai opened a new Muse room. Give Muse its link in the \"awm genai link\" side chat, then retry: {}", made["link"].as_str().unwrap_or("")))
+    }
+
+    /// Send each file into the room under `<job>-<label><n>.<ext>`, and answer the names.
+    async fn put_all(&self, room: &str, job: &str, label: &str, paths: &[PathBuf]) -> Result<Vec<String>, String> {
+        let mut names = vec![];
+        for (i, p) in paths.iter().enumerate() {
+            let n = format!("{job}-{label}{}.{}", i + 1, ext(p));
+            self.channel("send", json!({"name": room, "path": p, "filename": n}), Duration::from_secs(120)).await?;
+            names.push(n);
+        }
+        Ok(names)
     }
 }
 
@@ -101,25 +105,15 @@ impl Provider for Muse {
         "image"
     }
 
+    async fn status(&self) -> Value {
+        self.held().await.map_or_else(|e| json!({"error": e}), |room| json!({"room": room}))
+    }
+
     async fn run(&self, w: &Work) -> Result<Vec<PathBuf>, String> {
-        let (room, new) = self.room().await?;
-        let (name, link) = (room["name"].as_str().unwrap_or(""), room["link"].as_str().unwrap_or(""));
-        if new {
-            return Err(format!("genai opened a new Muse room. Give Muse its link in the \"awm genai link\" side chat, then retry: {link}"));
-        }
+        let name = &self.room().await?;
         let id = &w.job.id;
-        let mut refs = vec![];
-        for (i, p) in w.refs.iter().enumerate() {
-            let n = format!("{id}-ref{}.{}", i + 1, ext(p));
-            self.put(name, p, &n).await?;
-            refs.push(n);
-        }
-        let mut inputs = vec![];
-        for (i, p) in w.job.inputs.iter().map(PathBuf::from).enumerate() {
-            let n = format!("{id}-in{}.{}", i + 1, ext(&p));
-            self.put(name, &p, &n).await?;
-            inputs.push(n);
-        }
+        let refs = self.put_all(name, id, "ref", &w.refs).await?;
+        let inputs = self.put_all(name, id, "in", &w.job.inputs.iter().map(PathBuf::from).collect::<Vec<_>>()).await?;
         let job = json!({"job": id, "prompt": w.job.prompt, "style": w.style.text, "refs": refs, "inputs": inputs, "size": w.style.size});
         self.channel("write", json!({"name": name, "text": job.to_string()}), Duration::from_secs(60)).await?;
 

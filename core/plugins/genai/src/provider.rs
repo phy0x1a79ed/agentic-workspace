@@ -2,8 +2,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use awm_plugin_sdk::hub::{CallOpts, Hub};
+use serde_json::Value;
 
 use crate::store::Job;
 use crate::styles::Style;
@@ -23,6 +26,10 @@ pub trait Provider: Send + Sync {
     fn name(&self) -> &'static str;
     /// `image` or `voice`.
     fn kind(&self) -> &'static str;
+    /// What `status` shows about the provider's link, if it has one.
+    async fn status(&self) -> Value {
+        Value::Null
+    }
     /// Run one job to its result files, each under `work.dir`. An error fails the job with that text.
     async fn run(&self, work: &Work) -> Result<Vec<PathBuf>, String>;
 }
@@ -44,6 +51,11 @@ impl Provider for ElevenLabsVoice {
 }
 
 /// Every provider genai serves. A new provider is one module and one line here.
-pub fn registry(hub: &awm_plugin_sdk::hub::Hub, store: &crate::store::Store) -> Vec<Arc<dyn Provider>> {
-    vec![Arc::new(crate::muse::Muse::new(hub.clone(), store.clone())), Arc::new(ElevenLabsVoice)]
+pub fn registry(hub: &Hub) -> Vec<Arc<dyn Provider>> {
+    vec![Arc::new(crate::muse::Muse::new(hub.clone())), Arc::new(ElevenLabsVoice)]
+}
+
+/// One verb of another service, its failure as text naming the verb.
+pub async fn call(hub: &Hub, tool: &str, verb: &str, args: Value, timeout: Duration) -> Result<Value, String> {
+    hub.call_with(tool, verb, args, &CallOpts { timeout, ..CallOpts::default() }).await.map_err(|e| format!("{tool} {verb}: {e}"))
 }

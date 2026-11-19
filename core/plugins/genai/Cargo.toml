@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 awm-plugin-sdk.workspace = true
 awm-store.workspace = true
+awm-chat = { path = "../../crates/awm-chat" }
+mime_guess.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
