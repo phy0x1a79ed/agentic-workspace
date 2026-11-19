@@ -9,7 +9,6 @@ use std::path::Path;
 use awm_store::rusqlite::{self, params, Connection, OptionalExtension};
 use awm_store::StoreError;
 use serde::Serialize;
-use serde_json::Value;
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -25,10 +24,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     outputs     TEXT NOT NULL DEFAULT '[]',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS kv (
-    key   TEXT NOT NULL PRIMARY KEY,
-    value TEXT NOT NULL
 );";
 
 const COLS: &str = "id, style, provider, prompt, inputs, state, error, outputs, created_at, updated_at";
@@ -135,16 +130,5 @@ impl Store {
             .map(|n| n > 0)
         })
         .await
-    }
-
-    pub async fn kv_get(&self, key: &str) -> anyhow::Result<Option<Value>> {
-        let key = key.to_string();
-        let raw: Option<String> = self.run(move |c| c.query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0)).optional()).await?;
-        Ok(raw.and_then(|r| serde_json::from_str(&r).ok()))
-    }
-
-    pub async fn kv_set(&self, key: &str, value: &Value) -> anyhow::Result<()> {
-        let (key, value) = (key.to_string(), value.to_string());
-        self.run(move |c| c.execute("INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value]).map(|_| ())).await
     }
 }

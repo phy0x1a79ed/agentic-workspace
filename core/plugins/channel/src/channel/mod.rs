@@ -47,6 +47,21 @@ pub fn by_service(session: &str) -> bool {
     session.starts_with(SERVICE_PREFIX)
 }
 
+/// A message's text with a line naming the file it carried.
+fn with_file(said: &str, file: &Value) -> String {
+    let name = &file["name"];
+    let about = match file["error"].as_str() {
+        Some(e) => format!("(file {name} could not be fetched: {e})"),
+        None => format!("(file {name}, {} bytes, saved at {})", file["size"], text(file, "path")),
+    };
+    if said.is_empty() { about } else { format!("{said}\n{about}") }
+}
+
+/// Whether a holder still runs: a service holds its room for as long as the service runs.
+fn holder_live(session: &str, running: &HashSet<String>) -> bool {
+    by_service(session) || running.contains(session)
+}
+
 /// The calling session, with its stamped level and whether the isolated door sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holder {
@@ -432,7 +447,7 @@ impl Channels {
         let Some(live) = (self.list_sessions)().await else { return vec![] };
         let mut closed = vec![];
         for row in rows {
-            if !live.contains(&row.session) {
+            if !holder_live(&row.session, &live) {
                 self.shut(&row, "its holding session ended").await;
                 closed.push(row.name);
             }
@@ -456,7 +471,7 @@ impl Channels {
             let running = (self.list_sessions)().await;
             let mut args = json!({"acks": acks, "wait": self.feed_wait_s});
             if let Some(running) = running {
-                let mut live: Vec<String> = held.iter().filter(|s| running.contains(*s) || by_service(s)).cloned().collect();
+                let mut live: Vec<String> = held.iter().filter(|s| holder_live(s, &running)).cloned().collect();
                 live.sort();
                 args["live"] = json!(live);
             }
@@ -747,17 +762,12 @@ impl Channels {
             } else {
                 files::download(&row.link, &text(&file, "id"), &dest, key.as_ref()).await
             };
-            let (about, saved) = match got {
-                Ok(size) => (format!("(file {file_name:?}, {size} bytes, saved at {})", dest.display()), json!({"name": file_name, "size": size, "path": dest})),
-                Err(e) => (format!("(file {file_name:?} could not be fetched: {e})"), json!({"name": file_name, "error": e})),
+            let saved = match got {
+                Ok(size) => json!({"name": file_name, "size": size, "path": dest}),
+                Err(e) => json!({"name": file_name, "error": e}),
             };
-            let line = if said.is_empty() { about } else { format!("{said}\n{about}") };
-            let path = me.transcripts.append(&row.name, seq, &by, &who, &line);
-            if by_service(&row.session) {
-                me.deliver(&row, seq, &by, &who, &level, &said, &path, Some(saved));
-            } else {
-                me.deliver(&row, seq, &by, &who, &level, &line, &path, None);
-            }
+            let path = me.transcripts.append(&row.name, seq, &by, &who, &with_file(&said, &saved));
+            me.deliver(&row, seq, &by, &who, &level, &said, &path, Some(saved));
         });
     }
 
@@ -767,7 +777,8 @@ impl Channels {
         if by_service(&row.session) {
             return self.to_inbox(&row.name, json!({"seq": seq, "by": by, "who": who, "level": level, "text": said, "file": file}));
         }
-        self.pusher.push(&row.node, &row.session, &lines::push_line(&row.kind, &row.name, level, who, said, seq, transcript));
+        let said = file.map_or_else(|| said.to_string(), |f| with_file(said, &f));
+        self.pusher.push(&row.node, &row.session, &lines::push_line(&row.kind, &row.name, level, who, &said, seq, transcript));
     }
 
     /// One guest message: its text for the transcript, a notice for the holder when it moved

@@ -45,24 +45,6 @@ fn runtime(e: impl std::fmt::Display) -> VerbError {
     VerbError::runtime(e.to_string())
 }
 
-fn mime_of(name: &str) -> &'static str {
-    match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "jpg" | "jpeg" => "image/jpeg",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        _ => "application/octet-stream",
-    }
-}
-
-/// A file name the caller chose, reduced to one safe path component.
-fn safe_name(name: &str, i: usize) -> String {
-    let base: String = name.rsplit('/').next().unwrap_or("").chars().map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
-    let base = base.trim_start_matches('.');
-    if base.is_empty() { format!("file{i}") } else { base.to_string() }
-}
-
 /// The `files` the gateway inlined from the caller's paths: `(filename, base64)`.
 fn inlined(call: &Call) -> Result<Vec<(String, String)>, VerbError> {
     let Some(files) = call.args.get("files").filter(|f| !f.is_null()) else { return Ok(vec![]) };
@@ -71,7 +53,7 @@ fn inlined(call: &Call) -> Result<Vec<(String, String)>, VerbError> {
         .iter()
         .enumerate()
         .map(|(i, f)| match (f["filename"].as_str(), f["b64"].as_str()) {
-            (Some(n), Some(b)) => Ok((safe_name(n, i), b.to_string())),
+            (Some(n), Some(b)) => Ok((awm_chat::safe_name(n, i), b.to_string())),
             _ => Err(refuse("each of `files` is a local path, which your gateway reads; call genai from a session")),
         })
         .collect()
@@ -121,7 +103,8 @@ impl App {
                 }
             }
         }
-        Ok(json!({"job": {"id": id, "state": "queued", "style": style.name, "provider": provider.name()}, "next": "Poll `job` with this id, then fetch the files with `result`."}))
+        let job = self.store.get(&id).await.map_err(runtime)?.ok_or_else(|| runtime("the job vanished"))?;
+        Ok(json!({"job": job_view(&job), "next": "Poll `job` with this id, then fetch the files with `result`."}))
     }
 
     async fn result(&self, call: &Call) -> Result<Value, VerbError> {
@@ -134,7 +117,7 @@ impl App {
         for p in &job.outputs {
             let bytes = std::fs::read(p).map_err(|e| runtime(format!("{p}: {e}")))?;
             let name = p.rsplit('/').next().unwrap_or("out").to_string();
-            files.push(json!({"filename": name, "mime": mime_of(&name), "size": bytes.len(), "b64": b64.encode(&bytes)}));
+            files.push(json!({"filename": name, "mime": mime_guess::from_path(&name).first_or_octet_stream().to_string(), "size": bytes.len(), "b64": b64.encode(&bytes)}));
         }
         Ok(json!({"files": files, "count": files.len(), "node": self.node}))
     }
@@ -170,8 +153,11 @@ impl App {
                 Ok(json!({"id": job.id, "cancelled": moved}))
             }
             "status" => {
-                let room = self.store.kv_get("muse_room").await.map_err(runtime)?;
-                Ok(json!({"providers": self.providers.iter().map(|p| json!({"name": p.name(), "kind": p.kind()})).collect::<Vec<_>>(), "muse_room": room}))
+                let mut providers = vec![];
+                for p in &self.providers {
+                    providers.push(json!({"name": p.name(), "kind": p.kind(), "status": p.status().await}));
+                }
+                Ok(json!({"providers": providers}))
             }
             other => Err(refuse(format!("unknown verb {other}"))),
         }
@@ -218,7 +204,7 @@ const VERBS: &[(&str, &str, &str)] = &[
     ("jobs", "The newest jobs first.", r#"[{"name": "limit", "type": "number", "description": "At most this many. Default 20."}, {"name": "state", "type": "string", "description": "Only jobs in this state."}]"#),
     ("result", "A done job's files, written to a fresh folder on your node. The answer names each file's path.", r#"[{"name": "id", "type": "string", "required": true, "description": "The job id."}]"#),
     ("cancel", "Cancel a queued or running job. A running job's provider may still finish it; its result is dropped.", r#"[{"name": "id", "type": "string", "required": true, "description": "The job id."}]"#),
-    ("status", "The providers genai serves, and the Muse room's link.", r#"[]"#),
+    ("status", "The providers genai serves, and each one's link, such as the Muse room.", r#"[]"#),
 ];
 
 fn service(svc: Service, app: Arc<App>) -> Service {
@@ -244,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
     let dir = awm_plugin_sdk::config::service_dir(TOOL);
     let store = Store::open(&dir.join("genai.db"))?;
     let app = Arc::new(App {
-        providers: provider::registry(ctx.hub(), &store),
+        providers: provider::registry(ctx.hub()),
         styles: Styles::new(ctx.hub().clone(), dir.join("refs")),
         store,
         jobs_dir: dir.join("jobs"),

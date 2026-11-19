@@ -1065,10 +1065,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "awm-chat",
  "awm-plugin-sdk",
  "awm-store",
  "base64 0.22.1",
  "chrono",
+ "mime_guess",
  "serde",
  "serde_json",
  "tempfile",

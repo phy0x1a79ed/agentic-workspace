@@ -8,12 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use awm_plugin_sdk::hub::{CallOpts, Hub, HubError};
+use awm_plugin_sdk::hub::Hub;
 use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-const TRILIUM: &str = "trilium";
+/// The note id of the folder `style_add` creates when Trilium has no `#genaiStyles` note.
+const FOLDER_ID: &str = "genai_styles";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Ref {
@@ -89,11 +90,7 @@ impl Styles {
     }
 
     async fn trilium(&self, verb: &str, args: Value) -> Result<Value, String> {
-        let opts = CallOpts { timeout: Duration::from_secs(60), ..CallOpts::default() };
-        self.hub.call_with(TRILIUM, verb, args, &opts).await.map_err(|e| match e {
-            HubError::Verb { error, .. } => format!("trilium {verb}: {error}"),
-            other => format!("trilium {verb}: {other}"),
-        })
+        crate::provider::call(&self.hub, "trilium", verb, args, Duration::from_secs(60)).await
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Value>, String> {
@@ -127,7 +124,7 @@ impl Styles {
             let path = self.cache.join(format!("{}.{ext}", r.blob));
             if !path.is_file() {
                 let got = self.trilium("attachment_get", json!({"attachment_id": r.attachment})).await?;
-                let bytes = base64::engine::general_purpose::STANDARD.decode(got["content_b64"].as_str().or(got["b64"].as_str()).unwrap_or("")).map_err(|e| format!("attachment {}: {e}", r.title))?;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(got["content_b64"].as_str().ok_or_else(|| format!("attachment {} came back with no content", r.title))?).map_err(|e| format!("attachment {}: {e}", r.title))?;
                 std::fs::create_dir_all(&self.cache).map_err(|e| e.to_string())?;
                 let part = path.with_extension("part");
                 std::fs::write(&part, bytes).and_then(|_| std::fs::rename(&part, &path)).map_err(|e| e.to_string())?;
@@ -145,9 +142,9 @@ impl Styles {
         let folder = match self.search("#genaiStyles").await?.first().and_then(|n| n["noteId"].as_str().map(str::to_string)) {
             Some(id) => id,
             None => {
-                let made = self.trilium("note_create", json!({"note_id": "genai_styles", "title": "GenAI Styles", "type": "book", "parent": "root", "labels": {"genaiStyles": ""}})).await?;
-                self.trilium("attr_set", json!({"note_id": "genai_styles", "name": "agentWritable", "inheritable": true})).await?;
-                made["noteId"].as_str().unwrap_or("genai_styles").to_string()
+                self.trilium("note_create", json!({"note_id": FOLDER_ID, "title": "GenAI Styles", "type": "book", "parent": "root", "labels": {"genaiStyles": ""}})).await?;
+                self.trilium("attr_set", json!({"note_id": FOLDER_ID, "name": "agentWritable", "inheritable": true})).await?;
+                FOLDER_ID.to_string()
             }
         };
         let mut labels = json!({"genaiStyle": name, "provider": provider});
@@ -155,7 +152,7 @@ impl Styles {
             labels["size"] = json!(size);
         }
         let made = self.trilium("note_create", json!({"title": name, "content": html(text), "parent": folder, "labels": labels})).await?;
-        let id = made["noteId"].as_str().or(made["note_id"].as_str()).ok_or_else(|| format!("note_create answered {made}"))?.to_string();
+        let id = made["noteId"].as_str().ok_or_else(|| format!("note_create answered {made}"))?.to_string();
         for (filename, b64) in refs {
             self.trilium("attachment_put", json!({"note_id": id, "content_b64": b64, "title": filename})).await?;
         }
