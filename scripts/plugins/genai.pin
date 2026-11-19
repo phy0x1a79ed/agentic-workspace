@@ -1,5 +1,5 @@
 # The genai core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/genai.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=genai-3a3497ec9cf7
-file=awm-plugin-genai-3a3497ec9cf7-linux-x86_64-musl
-sha256=17af4767a64f1c63e7670a4ea9fecbeed6718ae301f796354bfa13dd1624b2af
+version=genai-4170e9efc8c5
+file=awm-plugin-genai-4170e9efc8c5-linux-x86_64-musl
+sha256=0156acbaafb3e4fa472f7b81da7f70abfe71ace4967619f01e7931d8155cd326
