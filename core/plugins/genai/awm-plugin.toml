@@ -1,0 +1,18 @@
+# Media generation (genai): jobs over providers, in named styles kept in Trilium.
+# A singleton: edges.yml names the host. It holds the Muse room on its own node's channel.
+[plugin]
+name = "genai"
+version = "0.1.0"
+
+[[service]]
+name = "genai"
+run = "run.sh"
+
+[[tool]]
+name = "genai"
+major = 1
+service = "genai"
+tier = "on"
+
+[needs]
+platform = ["linux"]

@@ -78,7 +78,26 @@ fn name_arg(call: &Call) -> Option<&str> {
     call.str_arg("name").filter(|n| !n.is_empty())
 }
 
+/// The plugin services that may hold a room themselves (channels.md R111.1): genai, for the Muse link.
+const SERVICE_HOLDERS: [&str; 1] = ["genai"];
+
+/// A plugin service on this node, with no session behind the call, that may hold a room.
+fn service_holder(call: &Call) -> Option<Holder> {
+    let (c, plugin) = (&call.caller, call.plugin.as_deref()?);
+    let own = c.lane == awm_plugin_sdk::Lane::Service && c.node == call.ctx.env().node && c.session.is_none();
+    (own && SERVICE_HOLDERS.contains(&plugin)).then(|| Holder {
+        node: c.node.clone(),
+        session: format!("{}{plugin}", channel::SERVICE_PREFIX),
+        name: plugin.to_string(),
+        level: "trusted".into(),
+        isolated: false,
+    })
+}
+
 async fn holder(call: &Call) -> Result<Holder, VerbError> {
+    if let Some(h) = service_holder(call) {
+        return Ok(h);
+    }
     let h = awm_plugin_sdk::holders::caller(call, "a channel").await?;
     Ok(Holder {
         node: h.node,

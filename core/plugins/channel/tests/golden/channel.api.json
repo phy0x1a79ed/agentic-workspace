@@ -124,7 +124,7 @@
     {
       "name": "drain",
       "tool": "channel_drain",
-      "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room, drain returns nothing.",
+      "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room a plugin service holds, drain returns what arrived since the last drain, each message as `{seq, by, who, level, text, file}`, where `file` names the path it was saved at. On a room a session holds, drain returns nothing.",
       "params": [
         {
           "name": "name",

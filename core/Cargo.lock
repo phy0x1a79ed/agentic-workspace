@@ -1060,6 +1060,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "awm-plugin-genai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "awm-plugin-sdk",
+ "awm-store",
+ "base64 0.22.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "awm-plugin-kb"
 version = "0.1.0"
 dependencies = [
