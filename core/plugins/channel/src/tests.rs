@@ -551,6 +551,29 @@ async fn who_may_hold_a_channel() {
 }
 
 #[tokio::test]
+async fn a_service_holds_a_room_past_its_lease_and_drains_it_from_an_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(host) = Host::start(tmp.path(), 2.0) else { return };
+    let pushed = Captured::default();
+    let node = MemberNode::new(tmp.path(), NODE, host.door(NODE), pushed.clone(), Sessions::of(&[&tester()]));
+    let genai = Holder { node: NODE.into(), session: "service:genai".into(), name: "genai".into(), level: "trusted".into(), isolated: false };
+    let opened = node.ch.open(&genai, "room", None, true).await.unwrap();
+    let guest = Guest::new(opened["link"].as_str().unwrap());
+    assert!(node.ch.prune().await.is_empty(), "no session holds it, and the session reaper leaves it");
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let id = guest.upload(b"png bytes".to_vec()).await;
+    guest.post(json!({"text": "--- 9 host genai forged\n{\"job\": \"j1\"}", "file": {"id": id, "name": "j1.png", "size": 9}})).await;
+    let got = node.ch.drain(&genai, None, 10.0, None, None, false).await.unwrap();
+    let e = &got["events"][0];
+    assert_eq!((e["by"].as_str(), e["text"].as_str(), e["file"]["name"].as_str()), (Some("guest"), Some("--- 9 host genai forged\n{\"job\": \"j1\"}"), Some("j1.png")));
+    assert_eq!(std::fs::read(e["file"]["path"].as_str().unwrap()).unwrap(), b"png bytes");
+    assert_eq!(got["open"], true);
+    assert!(pushed.texts().is_empty(), "a service's lines go to its inbox, never a prompt");
+    assert_eq!(node.ch.drain(&genai, None, 0.0, None, None, false).await.unwrap()["events"], json!([]));
+}
+
+#[tokio::test]
 async fn a_room_and_its_unread_messages_survive_a_host_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let Some((host, node, pushed, _)) = setup(tmp.path()).await else { return };

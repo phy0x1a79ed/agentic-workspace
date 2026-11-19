@@ -70,6 +70,31 @@ impl Transcripts {
         }
         path
     }
+
+    /// A service holder's inbox: one JSON object per line, for a program to read past a byte offset.
+    pub fn inbox_path(&self, name: &str) -> PathBuf {
+        self.root.join(format!("{name}.inbox.jsonl"))
+    }
+
+    pub fn append_inbox(&self, name: &str, entry: &serde_json::Value) {
+        let write = || -> std::io::Result<()> {
+            std::fs::create_dir_all(&self.root)?;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.inbox_path(name))?;
+            f.write_all(format!("{entry}\n").as_bytes())
+        };
+        if let Err(e) = write() {
+            tracing::warn!("channel {name}: could not write its inbox: {e}");
+        }
+    }
+
+    /// The whole entries written past `offset`, and the offset after the last of them.
+    pub fn read_inbox(&self, name: &str, offset: u64) -> (Vec<serde_json::Value>, u64) {
+        let Ok(bytes) = std::fs::read(self.inbox_path(name)) else { return (vec![], offset) };
+        let Some(rest) = bytes.get(offset as usize..) else { return (vec![], offset) };
+        let whole = rest.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        let entries = rest[..whole].split(|b| *b == b'\n').filter(|l| !l.is_empty()).filter_map(|l| serde_json::from_slice(l).ok()).collect();
+        (entries, offset + whole as u64)
+    }
 }
 
 #[cfg(test)]

@@ -39,6 +39,13 @@ const TARGETS: [&str; 2] = ["say", "shell"];
 const FOLLOW_WAIT_S: f64 = 60.0;
 /// How long one feed of the rooms waits at the relay.
 pub const FEED_WAIT_S: f64 = 25.0;
+/// The session field of a room a plugin service holds: `service:<plugin>`.
+pub const SERVICE_PREFIX: &str = "service:";
+
+/// Whether a plugin service, not a session, holds the channel. Its lines go to an inbox, not a prompt.
+pub fn by_service(session: &str) -> bool {
+    session.starts_with(SERVICE_PREFIX)
+}
 
 /// The calling session, with its stamped level and whether the isolated door sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +87,8 @@ pub struct Channels {
     stopping: AtomicBool,
     /// The SPAKE2 state of each offer out, by room. It never reaches the disk.
     offers: Mutex<HashMap<String, crypto::Offer>>,
+    /// Bumped on each inbox entry, so a service's `drain` waits on it.
+    inbox: tokio::sync::watch::Sender<u64>,
 }
 
 pub struct Parts {
@@ -119,6 +128,7 @@ impl Channels {
             rooms_held: tokio::sync::watch::channel(false).0,
             stopping: AtomicBool::new(false),
             offers: Default::default(),
+            inbox: tokio::sync::watch::channel(0).0,
         });
         let weak = Arc::downgrade(&me);
         tokio::spawn(async move {
@@ -135,7 +145,15 @@ impl Channels {
     }
 
     fn push(&self, row: &Row, line: String) {
+        if by_service(&row.session) {
+            return self.to_inbox(&row.name, json!({"notice": line}));
+        }
         self.pusher.push(&row.node, &row.session, &line);
+    }
+
+    fn to_inbox(&self, name: &str, entry: Value) {
+        self.transcripts.append_inbox(name, &entry);
+        self.inbox.send_modify(|n| *n += 1);
     }
 
     // -- verbs ---------------------------------------------------------------
@@ -287,6 +305,9 @@ impl Channels {
     pub async fn drain(&self, holder: &Holder, name: Option<&str>, wait: f64, until: Option<i64>, task: Option<i64>, raw: bool) -> Res<Value> {
         let row = self.pick(holder, name)?;
         if row.kind != "machine" {
+            if by_service(&row.session) {
+                return Ok(self.drain_inbox(&row, wait).await);
+            }
             return Ok(json!({"name": row.name, "events": [], "note": "a room has no tool log, so drain returns nothing"}));
         }
         let Some(sid) = self.r#ref(&row) else {
@@ -310,6 +331,20 @@ impl Channels {
             answer["reset"] = json!(r);
         }
         Ok(answer)
+    }
+
+    /// A service holder's inbox past its cursor, waiting up to `wait` seconds for an entry.
+    async fn drain_inbox(&self, row: &Row, wait: f64) -> Value {
+        let mut bumped = self.inbox.subscribe();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(wait.max(0.0));
+        loop {
+            let (events, cursor) = self.transcripts.read_inbox(&row.name, row.log_cursor.max(0) as u64);
+            if !events.is_empty() || tokio::time::timeout_at(deadline, bumped.changed()).await.is_err() {
+                self.store.set_log(&row.name, cursor as i64, None);
+                let open = self.store.get(&row.name).is_some_and(|r| r.open);
+                return json!({"name": row.name, "events": events, "open": open});
+            }
+        }
     }
 
     /// Offer the guest encryption in the live room (R73).
@@ -421,7 +456,7 @@ impl Channels {
             let running = (self.list_sessions)().await;
             let mut args = json!({"acks": acks, "wait": self.feed_wait_s});
             if let Some(running) = running {
-                let mut live: Vec<String> = held.intersection(&running).cloned().collect();
+                let mut live: Vec<String> = held.iter().filter(|s| running.contains(*s) || by_service(s)).cloned().collect();
                 live.sort();
                 args["live"] = json!(live);
             }
@@ -696,7 +731,7 @@ impl Channels {
         self.store.set_cursor(&row.name, seq);
         let Some(file) = file else {
             let path = self.transcripts.append(&row.name, seq, by, who, &said);
-            self.push(row, lines::push_line(&row.kind, &row.name, level, who, &said, seq, &path));
+            self.deliver(row, seq, by, who, level, &said, &path, None);
             return;
         };
         let (me, row, by, who, level) = (self.clone(), row.clone(), by.to_string(), who.to_string(), level.to_string());
@@ -712,14 +747,27 @@ impl Channels {
             } else {
                 files::download(&row.link, &text(&file, "id"), &dest, key.as_ref()).await
             };
-            let about = match got {
-                Ok(size) => format!("(file {file_name:?}, {size} bytes, saved at {})", dest.display()),
-                Err(e) => format!("(file {file_name:?} could not be fetched: {e})"),
+            let (about, saved) = match got {
+                Ok(size) => (format!("(file {file_name:?}, {size} bytes, saved at {})", dest.display()), json!({"name": file_name, "size": size, "path": dest})),
+                Err(e) => (format!("(file {file_name:?} could not be fetched: {e})"), json!({"name": file_name, "error": e})),
             };
-            let said = if said.is_empty() { about } else { format!("{said}\n{about}") };
-            let path = me.transcripts.append(&row.name, seq, &by, &who, &said);
-            me.push(&row, lines::push_line(&row.kind, &row.name, &level, &who, &said, seq, &path));
+            let line = if said.is_empty() { about } else { format!("{said}\n{about}") };
+            let path = me.transcripts.append(&row.name, seq, &by, &who, &line);
+            if by_service(&row.session) {
+                me.deliver(&row, seq, &by, &who, &level, &said, &path, Some(saved));
+            } else {
+                me.deliver(&row, seq, &by, &who, &level, &line, &path, None);
+            }
         });
+    }
+
+    /// One message to its holder: a pushed line for a session, an inbox entry for a service.
+    #[allow(clippy::too_many_arguments)]
+    fn deliver(&self, row: &Row, seq: i64, by: &str, who: &str, level: &str, said: &str, transcript: &std::path::Path, file: Option<Value>) {
+        if by_service(&row.session) {
+            return self.to_inbox(&row.name, json!({"seq": seq, "by": by, "who": who, "level": level, "text": said, "file": file}));
+        }
+        self.pusher.push(&row.node, &row.session, &lines::push_line(&row.kind, &row.name, level, who, said, seq, transcript));
     }
 
     /// One guest message: its text for the transcript, a notice for the holder when it moved
