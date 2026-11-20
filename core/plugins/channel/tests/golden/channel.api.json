@@ -100,8 +100,12 @@
         {
           "name": "path",
           "type": "string",
-          "required": true,
           "description": "The file, by its absolute path on this node."
+        },
+        {
+          "name": "b64",
+          "type": "string",
+          "description": "The file's bytes as base64, in place of `path`, for a service that shares no files with channel. Needs `filename`."
         },
         {
           "name": "text",
@@ -124,7 +128,7 @@
     {
       "name": "drain",
       "tool": "channel_drain",
-      "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room a plugin service holds, drain returns what arrived since the last drain, each message as `{seq, by, who, level, text, file}`, where `file` names the path it was saved at. On a room a session holds, drain returns nothing.",
+      "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room a plugin service holds, drain returns what arrived since the last drain, each message as `{seq, by, who, level, text, file}`, where `file` carries the bytes as `b64`. On a room a session holds, drain returns nothing.",
       "params": [
         {
           "name": "name",

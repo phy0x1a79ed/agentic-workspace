@@ -254,8 +254,19 @@ impl Channels {
     /// Send a local file. Into a room, the bytes go straight to the public edge, sealed under a
     /// fresh key in an encrypted room, and a message then names the file. Onto a machine, the
     /// tether daemon puts it under the owner's temp directory and the answer names the path.
-    pub async fn send(self: &Arc<Self>, holder: &Holder, path: &str, text: &str, name: Option<&str>, as_name: Option<&str>) -> Res<Value> {
+    pub async fn send(self: &Arc<Self>, holder: &Holder, path: &str, b64: Option<&str>, text: &str, name: Option<&str>, as_name: Option<&str>) -> Res<Value> {
         let row = self.pick(holder, name)?;
+        let staged;
+        let path = match b64.filter(|b| !b.is_empty()) {
+            Some(b) => {
+                let bytes = crypto::unb64(b).map_err(|e| refuse(format!("b64: {e:?}")))?;
+                let file_name = as_name.filter(|n| !n.is_empty()).ok_or_else(|| refuse("a file sent as b64 needs its filename"))?;
+                staged = files::saved_path(&self.transcripts.root, &row.name, "out", file_name);
+                std::fs::create_dir_all(staged.parent().unwrap_or(&self.transcripts.root)).and_then(|_| std::fs::write(&staged, bytes)).map_err(|e| refuse(e.to_string()))?;
+                staged.to_str().unwrap_or_default()
+            }
+            None => path,
+        };
         let local = std::path::Path::new(path);
         if !local.is_absolute() || !local.is_file() {
             return Err(refuse(format!("path names a file on this node by its absolute path; {path:?} is not one")));
@@ -353,7 +364,13 @@ impl Channels {
         let mut bumped = self.inbox.subscribe();
         let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(wait.max(0.0));
         loop {
-            let (events, cursor) = self.transcripts.read_inbox(&row.name, row.log_cursor.max(0) as u64);
+            let (mut events, cursor) = self.transcripts.read_inbox(&row.name, row.log_cursor.max(0) as u64);
+            for file in events.iter_mut().map(|e| &mut e["file"]).filter(|f| f["path"].is_string()) {
+                match std::fs::read(text(file, "path")) {
+                    Ok(bytes) => file["b64"] = json!(crypto::b64(&bytes)),
+                    Err(e) => file["error"] = json!(e.to_string()),
+                }
+            }
             if !events.is_empty() || tokio::time::timeout_at(deadline, bumped.changed()).await.is_err() {
                 self.store.set_log(&row.name, cursor as i64, None);
                 let open = self.store.get(&row.name).is_some_and(|r| r.open);

@@ -144,7 +144,7 @@ pub fn parse_id(s: &str) -> Option<&str> {
 
 /// Where a file from the other side is saved: beside the room's transcript, under the message's
 /// number and a name with nothing in it a shell or a path could read as structure.
-pub fn saved_path(transcripts: &Path, room: &str, seq: i64, name: &str) -> PathBuf {
+pub fn saved_path(transcripts: &Path, room: &str, seq: impl std::fmt::Display, name: &str) -> PathBuf {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
     let cleaned: String = base.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect();
     let cleaned = cleaned.trim_matches(|c| c == '.' || c == '_');

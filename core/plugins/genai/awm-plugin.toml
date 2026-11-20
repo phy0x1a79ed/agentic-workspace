@@ -1,6 +1,6 @@
 # Media generation (genai): jobs over providers, in named styles kept in Trilium.
-# Homed on one node by the fleet inventory, because it holds the one Muse room on that node's
-# channel.
+# A singleton (the fleet's edges.yml names its host and callers), because it holds the one Muse
+# room on its host's channel.
 [plugin]
 name = "genai"
 version = "0.1.0"
