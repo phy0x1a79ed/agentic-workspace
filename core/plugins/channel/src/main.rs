@@ -184,9 +184,17 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             Box::pin(async move { awm_plugin_sdk::push::reflect(&hub, &node, &session, &text).await })
         }),
         transcripts: channel::lines::Transcripts { root: dir.join("transcripts") },
-        list_sessions: Arc::new(move || {
+        live_holders: Arc::new(move || {
             let hub = h3.clone();
-            Box::pin(async move { awm_plugin_sdk::holders::live_sessions(&hub).await })
+            Box::pin(async move {
+                let mut live = awm_plugin_sdk::holders::live_sessions(&hub).await?;
+                // Installed here, not merely running: a restart of the service keeps its room.
+                let owner = hub.owner(SERVICE_HOLDER).await.ok()?;
+                if owner.is_some_and(|o| o["plugin"] == SERVICE_HOLDER && o["peer"].is_null()) {
+                    live.insert(format!("{}{SERVICE_HOLDER}", channel::SERVICE_PREFIX));
+                }
+                Some(live)
+            })
         }),
         feed_wait_s: channel::FEED_WAIT_S,
     });
