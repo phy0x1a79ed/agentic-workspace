@@ -160,7 +160,7 @@ impl MemberNode {
             machines,
             send: pushed.send(),
             transcripts: lines::Transcripts { root: state.join("services/channel/transcripts") },
-            live_holders: Arc::new(move || {
+            list_sessions: Arc::new(move || {
                 let s = sessions.0.lock().unwrap().clone();
                 Box::pin(async move { s })
             }),
@@ -555,13 +555,11 @@ async fn a_service_holds_a_room_past_its_lease_and_drains_it_from_an_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let Some(host) = Host::start(tmp.path(), 2.0) else { return };
     let pushed = Captured::default();
+    let node = MemberNode::new(tmp.path(), NODE, host.door(NODE), pushed.clone(), Sessions::of(&[&tester()]));
     let genai = Holder { node: NODE.into(), session: "service:genai".into(), name: "genai".into(), level: "trusted".into(), isolated: false };
-    let sessions = Sessions::of(&[&tester(), &genai]);
-    let installed = sessions.0.clone();
-    let node = MemberNode::new(tmp.path(), NODE, host.door(NODE), pushed.clone(), sessions);
     let opened = node.ch.open(&genai, "room", None, true).await.unwrap();
     let guest = Guest::new(opened["link"].as_str().unwrap());
-    assert!(node.ch.prune().await.is_empty(), "the room lives while genai is installed here");
+    assert!(node.ch.prune().await.is_empty(), "no session holds it, and the session reaper leaves it");
     tokio::time::sleep(Duration::from_secs(4)).await;
 
     let id = guest.upload(b"png bytes".to_vec()).await;
@@ -576,8 +574,8 @@ async fn a_service_holds_a_room_past_its_lease_and_drains_it_from_an_inbox() {
     assert!(pushed.texts().is_empty(), "a service's lines go to its inbox, never a prompt");
     assert_eq!(node.ch.drain(&genai, None, 0.0, None, None, false).await.unwrap()["events"], json!([]));
 
-    installed.lock().unwrap().as_mut().unwrap().remove("service:genai");
-    assert_eq!(node.ch.prune().await, [opened["name"].as_str().unwrap()], "genai left this node, so its room ends");
+    assert!(node.ch.service_down("other").await.is_empty());
+    assert_eq!(node.ch.service_down("genai").await, [opened["name"].as_str().unwrap()], "genai's process left the hub, so its room ends");
     assert!(node.ch.drain(&genai, None, 0.0, None, None, false).await.is_err(), "and genai holds no room");
 }
 

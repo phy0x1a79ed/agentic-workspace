@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awm_plugin_sdk::hub::{CallOpts, Hub, HubError};
+use awm_plugin_sdk::supervise::{SubscriptionOpts, SupervisedSubscription};
 use awm_plugin_sdk::{Call, Service, VerbError};
 use serde_json::{json, Value};
 
@@ -92,6 +93,42 @@ fn service_holder(call: &Call) -> Option<Holder> {
         level: "trusted".into(),
         isolated: false,
     })
+}
+
+/// Close the service holder's rooms when its control socket to the gateway closes: its
+/// process owns the room. A catch-up on each (re)connect covers a `down` the stream missed.
+fn watch_service_holder(channels: Arc<Channels>, hub: Hub) -> SupervisedSubscription {
+    let (connect_channels, connect_hub) = (channels.clone(), hub);
+    let opts = SubscriptionOpts { idle_timeout: Duration::from_secs(3600), ..SubscriptionOpts::default() };
+    SupervisedSubscription::spawn(
+        "channel:awm/services",
+        opts,
+        move || {
+            let (channels, hub) = (connect_channels.clone(), connect_hub.clone());
+            async move {
+                let stream = hub.subscribe("awm", "services", None, None).await?;
+                match hub.call("awm", "services", json!({}), None).await {
+                    Ok(table) => {
+                        let rows = table.as_array().cloned().unwrap_or_default();
+                        if rows.iter().any(|r| r["plugin"] == SERVICE_HOLDER && r["status"] == "down") {
+                            channels.service_down(SERVICE_HOLDER).await;
+                        }
+                    }
+                    Err(e) => tracing::warn!("channel: could not read the service table: {e}"),
+                }
+                Ok(stream)
+            }
+        },
+        move |ev: Value| {
+            let channels = channels.clone();
+            async move {
+                if ev["plugin"] == SERVICE_HOLDER && ev["event"] == "down" {
+                    channels.service_down(SERVICE_HOLDER).await;
+                }
+                Ok(())
+            }
+        },
+    )
 }
 
 async fn holder(call: &Call) -> Result<Holder, VerbError> {
@@ -184,23 +221,16 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             Box::pin(async move { awm_plugin_sdk::push::reflect(&hub, &node, &session, &text).await })
         }),
         transcripts: channel::lines::Transcripts { root: dir.join("transcripts") },
-        live_holders: Arc::new(move || {
+        list_sessions: Arc::new(move || {
             let hub = h3.clone();
-            Box::pin(async move {
-                let mut live = awm_plugin_sdk::holders::live_sessions(&hub).await?;
-                // Installed here, not merely running: a restart of the service keeps its room.
-                let owner = hub.owner(SERVICE_HOLDER).await.ok()?;
-                if owner.is_some_and(|o| o["plugin"] == SERVICE_HOLDER && o["peer"].is_null()) {
-                    live.insert(format!("{}{SERVICE_HOLDER}", channel::SERVICE_PREFIX));
-                }
-                Some(live)
-            })
+            Box::pin(async move { awm_plugin_sdk::holders::live_sessions(&hub).await })
         }),
         feed_wait_s: channel::FEED_WAIT_S,
     });
     let (ready, down) = (channels.clone(), channels.clone());
     let socket = paths.control_socket();
     supervise(&ctx, paths, child);
+    let _services = watch_service_holder(channels.clone(), hub.clone());
     let svc = channel_service(svc, channels)
         .on_ready(async move {
             tokio::spawn(stream.clone().watch_forever(socket));

@@ -57,6 +57,11 @@ fn with_file(said: &str, file: &Value) -> String {
     if said.is_empty() { about } else { format!("{said}\n{about}") }
 }
 
+/// Whether a holder still runs. A service's room closes on its `down` event, not here.
+fn holder_live(session: &str, running: &HashSet<String>) -> bool {
+    by_service(session) || running.contains(session)
+}
+
 /// The calling session, with its stamped level and whether the isolated door sent it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Holder {
@@ -69,9 +74,8 @@ pub struct Holder {
 
 /// One relay verb through the public host's door: the answer, or the relay's refusal.
 pub type RelayCall = Arc<dyn Fn(&'static str, Value, Duration) -> BoxFut<Result<Value, String>> + Send + Sync>;
-/// The holders alive on this node, or None when it cannot tell: the R9 id of each running
-/// session, and `service:<plugin>` for each holding plugin installed here.
-pub type LiveHolders = Arc<dyn Fn() -> BoxFut<Option<HashSet<String>>> + Send + Sync>;
+/// The R9 ids of the sessions running on this node, or None when it cannot tell.
+pub type ListSessions = Arc<dyn Fn() -> BoxFut<Option<HashSet<String>>> + Send + Sync>;
 
 /// A refusal, under the class the Python plugin raised.
 pub fn refuse(msg: impl Into<String>) -> VerbError {
@@ -91,7 +95,7 @@ pub struct Channels {
     pub machines: Arc<Machines>,
     pusher: Pusher,
     pub transcripts: Transcripts,
-    live_holders: LiveHolders,
+    list_sessions: ListSessions,
     feed_wait_s: f64,
     following: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     rooms_held: tokio::sync::watch::Sender<bool>,
@@ -109,7 +113,7 @@ pub struct Parts {
     pub machines: Arc<Machines>,
     pub send: SendFn,
     pub transcripts: Transcripts,
-    pub live_holders: LiveHolders,
+    pub list_sessions: ListSessions,
     pub feed_wait_s: f64,
 }
 
@@ -133,7 +137,7 @@ impl Channels {
             machines: p.machines,
             pusher,
             transcripts: p.transcripts,
-            live_holders: p.live_holders,
+            list_sessions: p.list_sessions,
             feed_wait_s: p.feed_wait_s,
             following: Default::default(),
             rooms_held: tokio::sync::watch::channel(false).0,
@@ -451,23 +455,28 @@ impl Channels {
         }
     }
 
-    /// Close every channel whose holder has ended: its session, or its service left this node.
-    /// "Could not tell" closes nothing.
+    /// Close each room `plugin`'s service holds, because its process left the hub.
+    pub async fn service_down(&self, plugin: &str) -> Vec<String> {
+        let holder = format!("{SERVICE_PREFIX}{plugin}");
+        let mut closed = vec![];
+        for row in self.store.open_rows().into_iter().filter(|r| r.session == holder) {
+            self.shut(&row, "its service stopped").await;
+            closed.push(row.name);
+        }
+        closed
+    }
+
+    /// Close every channel whose holding session has ended. "Could not tell" closes nothing.
     pub async fn prune(&self) -> Vec<String> {
-        let rows: Vec<Row> = self
-            .store
-            .open_rows()
-            .into_iter()
-            .filter(|r| by_service(&r.session) || awm_plugin_sdk::ids::SessionId::parse(&r.session).is_ok())
-            .collect();
+        let rows: Vec<Row> = self.store.open_rows().into_iter().filter(|r| awm_plugin_sdk::ids::SessionId::parse(&r.session).is_ok()).collect();
         if rows.is_empty() {
             return vec![];
         }
-        let Some(live) = (self.live_holders)().await else { return vec![] };
+        let Some(live) = (self.list_sessions)().await else { return vec![] };
         let mut closed = vec![];
         for row in rows {
-            if !live.contains(&row.session) {
-                self.shut(&row, if by_service(&row.session) { "its service left this node" } else { "its holding session ended" }).await;
+            if !holder_live(&row.session, &live) {
+                self.shut(&row, "its holding session ended").await;
                 closed.push(row.name);
             }
         }
@@ -487,9 +496,10 @@ impl Channels {
                 let _ = held_rx.wait_for(|v| *v).await;
                 continue;
             }
+            let running = (self.list_sessions)().await;
             let mut args = json!({"acks": acks, "wait": self.feed_wait_s});
-            if let Some(running) = (self.live_holders)().await {
-                let mut live: Vec<String> = held.intersection(&running).cloned().collect();
+            if let Some(running) = running {
+                let mut live: Vec<String> = held.iter().filter(|s| holder_live(s, &running)).cloned().collect();
                 live.sort();
                 args["live"] = json!(live);
             }
