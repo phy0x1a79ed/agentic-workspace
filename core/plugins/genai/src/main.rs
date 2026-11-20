@@ -24,8 +24,9 @@ use styles::Styles;
 
 const TOOL: &str = "genai";
 const DONE: [&str; 3] = ["done", "failed", "cancelled"];
-/// The most `generate` waits for its job, inside the verb's own timeout.
-const WAIT_MAX_S: u64 = 540;
+/// The most `generate` waits for its job: inside the default verb budget, and the 130 s a call
+/// across a singleton's door gets.
+const WAIT_MAX_S: u64 = 100;
 
 struct App {
     store: Store,
@@ -199,7 +200,7 @@ const VERBS: &[(&str, &str, &str)] = &[
     ("styles", "The named styles: each one's provider, output size and number of reference files. A style is a Trilium note under the #genaiStyles folder, which Tony edits by hand.", r#"[]"#),
     ("style_get", "One style: its provider, size, style text and reference files.", r#"[{"name": "name", "type": "string", "required": true, "description": "The style's name."}]"#),
     ("style_add", "Add a style: a Trilium note with the style text, its provider and size, and the reference files attached. To change one, edit its note in Trilium.", r#"[{"name": "name", "type": "string", "required": true, "description": "The style's name, such as rt-sticker."}, {"name": "provider", "type": "string", "required": true, "description": "The provider that renders it, such as muse-image. `status` lists them."}, {"name": "text", "type": "string", "required": true, "description": "The style text sent with every job. Keep it short and let the references carry the look."}, {"name": "size", "type": "string", "description": "The output size, as WxH."}, {"name": "files", "type": "array", "description": "Reference files, by their paths on your node."}]"#),
-    ("generate", "Queue a job: the prompt rendered in a style, from optional input files. Answers with the job id at once, or waits up to `wait` seconds for the job to end. A Muse image takes about 2 minutes. Fetch the files with `result`.", r#"[{"name": "style", "type": "string", "required": true, "description": "The style's name. `styles` lists them."}, {"name": "prompt", "type": "string", "required": true, "description": "What to make or change, such as: add glasses in the established style of the character."}, {"name": "files", "type": "array", "description": "Input files to edit, by their paths on your node."}, {"name": "wait", "type": "number", "description": "Seconds to wait for the job to end, at most 540. Default 0."}]"#),
+    ("generate", "Queue a job: the prompt rendered in a style, from optional input files. Answers with the job id at once, or waits up to `wait` seconds for the job to end. A Muse image takes about 2 minutes. Fetch the files with `result`.", r#"[{"name": "style", "type": "string", "required": true, "description": "The style's name. `styles` lists them."}, {"name": "prompt", "type": "string", "required": true, "description": "What to make or change, such as: add glasses in the established style of the character."}, {"name": "files", "type": "array", "description": "Input files to edit, by their paths on your node."}, {"name": "wait", "type": "number", "description": "Seconds to wait for the job to end, at most 100. Default 0. Poll `job` for longer."}]"#),
     ("job", "One job: its state (queued, running, done, failed or cancelled), error and times.", r#"[{"name": "id", "type": "string", "required": true, "description": "The job id `generate` gave."}]"#),
     ("jobs", "The newest jobs first.", r#"[{"name": "limit", "type": "number", "description": "At most this many. Default 20."}, {"name": "state", "type": "string", "description": "Only jobs in this state."}]"#),
     ("result", "A done job's files, written to a fresh folder on your node. The answer names each file's path.", r#"[{"name": "id", "type": "string", "required": true, "description": "The job id."}]"#),
@@ -215,9 +216,6 @@ fn service(svc: Service, app: Arc<App>) -> Service {
             let app = app.clone();
             async move { app.handle(call).await }
         });
-        if *name == "generate" {
-            svc = svc.timeout(Duration::from_secs(WAIT_MAX_S + 60));
-        }
     }
     svc
 }
