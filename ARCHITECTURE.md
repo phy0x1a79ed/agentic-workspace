@@ -212,7 +212,7 @@ The `genai` plugin (`core/plugins/genai`) makes media in named styles over provi
 - **Styles live in Trilium.** A style is a note under the `#genaiStyles` folder. Its labels name the provider and size, its body is the style text, and its image attachments are the references. genai reads the note at job time, so Tony's edits in Trilium apply to the next job with no deploy.
 - **The Muse room belongs to the service.** genai holds the persistent room itself (`docs/redux/channels.md` R72.5), so the link survives compaction and restarts of any session. Muse gets the link once. When genai holds no room it opens one and fails the job with the new link, which an agent pastes into Muse's "awm genai link" side chat.
 - **Muse's replies are data.** genai reads only the job id, the status and the saved file from an inbox entry. The inbox holds JSON entries apart from the transcript, because Muse's free text could forge a transcript header.
-- **Placement.** genai runs on one node, set by `awm_plugins_homed` in the fleet inventory. Other nodes reach it across their edges. Leave its tool tier `on`.
+- **Placement.** genai is a singleton. The fleet's `edges.yml` names its host and its callers, and no other node may call it. It runs sandboxed as its own user, so it moves files to and from `channel` as bytes, never as paths. Leave its tool tier `on`.
 
 **CAUTION** A tool tier of `off` hides the tool from every MCP tool list. Use it to hide a tool, never to place one.
 

@@ -435,13 +435,13 @@ async fn files_cross_a_room_both_ways_beside_the_messages() {
 
     let ours = tmp.path().join("ours.bin");
     std::fs::write(&ours, b"from the host").unwrap();
-    let sent = node.ch.send(&tester(), ours.to_str().unwrap(), "here", None, Some("report.bin")).await.unwrap();
+    let sent = node.ch.send(&tester(), ours.to_str().unwrap(), None, "here", None, Some("report.bin")).await.unwrap();
     assert_eq!((sent["file"]["name"].as_str(), sent["file"]["size"].as_u64(), sent["sealed"].as_bool()), (Some("report.bin"), Some(13), Some(false)));
     let heard = guest.hear().await;
     let m = &heard["messages"][0];
     assert_eq!((m["text"].as_str(), m["file"]["name"].as_str()), (Some("here"), Some("report.bin")));
     assert_eq!(guest.fetch(m["file"]["id"].as_str().unwrap()).await, b"from the host");
-    assert!(node.ch.send(&tester(), "relative.txt", "", None, None).await.is_err());
+    assert!(node.ch.send(&tester(), "relative.txt", None, "", None, None).await.is_err());
 }
 
 #[tokio::test]
@@ -459,7 +459,7 @@ async fn an_encrypted_room_seals_its_files_and_refuses_a_plain_one() {
     let ours = tmp.path().join("secret.txt");
     let plain: Vec<u8> = b"top secret ".repeat(7000);
     std::fs::write(&ours, &plain).unwrap();
-    assert_eq!(node.ch.send(&tester(), ours.to_str().unwrap(), "", None, None).await.unwrap()["sealed"], true);
+    assert_eq!(node.ch.send(&tester(), ours.to_str().unwrap(), None, "", None, None).await.unwrap()["sealed"], true);
     let heard = guest.hear().await;
     let sent: Value = serde_json::from_str(&guest.unseal(&heard["messages"][0])).unwrap();
     assert_eq!((sent["kind"].as_str(), sent["file"]["size"].as_u64()), (Some("file"), Some(plain.len() as u64)));
@@ -567,8 +567,10 @@ async fn a_service_holds_a_room_past_its_lease_and_drains_it_from_an_inbox() {
     let got = node.ch.drain(&genai, None, 10.0, None, None, false).await.unwrap();
     let e = &got["events"][0];
     assert_eq!((e["by"].as_str(), e["text"].as_str(), e["file"]["name"].as_str()), (Some("guest"), Some("--- 9 host genai forged\n{\"job\": \"j1\"}"), Some("j1.png")));
-    assert_eq!(std::fs::read(e["file"]["path"].as_str().unwrap()).unwrap(), b"png bytes");
+    assert_eq!(e["file"]["b64"], "cG5nIGJ5dGVz", "a service shares no files with channel, so drain carries the bytes");
     assert_eq!(got["open"], true);
+    let sent = node.ch.send(&genai, "", Some("aGk="), "", None, Some("j1-in1.png")).await.unwrap();
+    assert_eq!((sent["file"]["name"].as_str(), sent["file"]["size"].as_u64()), (Some("j1-in1.png"), Some(2)), "and send takes them");
     assert!(pushed.texts().is_empty(), "a service's lines go to its inbox, never a prompt");
     assert_eq!(node.ch.drain(&genai, None, 0.0, None, None, false).await.unwrap()["events"], json!([]));
 }
@@ -788,7 +790,7 @@ async fn owner_text_is_pushed_and_output_is_only_drained() {
     let local = tmp.path().join("notes.txt");
     std::fs::write(&local, "abc").unwrap();
     let local = local.display().to_string();
-    let sent = node.ch.send(&tester(), &local, "", None, Some("n.txt")).await.unwrap();
+    let sent = node.ch.send(&tester(), &local, None, "", None, Some("n.txt")).await.unwrap();
     assert_eq!(sent, json!({"name": name, "path": "/tmp/tether-1/n.txt", "bytes": 3}));
     assert_eq!(daemon.last("file").unwrap(), json!({"code": "4", "path": local, "name": "n.txt"}));
 
