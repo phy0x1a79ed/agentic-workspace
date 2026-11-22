@@ -251,7 +251,11 @@ impl Store {
     }
 
     pub fn lapsed(&self, before: f64) -> Vec<Membership> {
-        self.all("SELECT * FROM members WHERE left_at IS NULL AND lease_at < ?1", [before], Membership::read)
+        self.all(
+            "SELECT m.* FROM members m JOIN rooms r ON r.name = m.room WHERE m.left_at IS NULL AND m.lease_at < ?1 AND r.lasts != 'persistent'",
+            [before],
+            Membership::read,
+        )
     }
 
     // -- messages ------------------------------------------------------------

@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awm_plugin_sdk::hub::{CallOpts, Hub, HubError};
-use awm_plugin_sdk::supervise::{SubscriptionOpts, SupervisedSubscription};
 use awm_plugin_sdk::{Call, Service, VerbError};
 use serde_json::{json, Value};
 
@@ -95,42 +94,6 @@ fn service_holder(call: &Call) -> Option<Holder> {
     })
 }
 
-/// Close the service holder's rooms when its control socket to the gateway closes: its
-/// process owns the room. A catch-up on each (re)connect covers a `down` the stream missed.
-fn watch_service_holder(channels: Arc<Channels>, hub: Hub) -> SupervisedSubscription {
-    let (connect_channels, connect_hub) = (channels.clone(), hub);
-    let opts = SubscriptionOpts { idle_timeout: Duration::from_secs(3600), ..SubscriptionOpts::default() };
-    SupervisedSubscription::spawn(
-        "channel:awm/services",
-        opts,
-        move || {
-            let (channels, hub) = (connect_channels.clone(), connect_hub.clone());
-            async move {
-                let stream = hub.subscribe("awm", "services", None, None).await?;
-                match hub.call("awm", "services", json!({}), None).await {
-                    Ok(table) => {
-                        let rows = table.as_array().cloned().unwrap_or_default();
-                        if rows.iter().any(|r| r["plugin"] == SERVICE_HOLDER && r["status"] == "down") {
-                            channels.service_down(SERVICE_HOLDER).await;
-                        }
-                    }
-                    Err(e) => tracing::warn!("channel: could not read the service table: {e}"),
-                }
-                Ok(stream)
-            }
-        },
-        move |ev: Value| {
-            let channels = channels.clone();
-            async move {
-                if ev["plugin"] == SERVICE_HOLDER && ev["event"] == "down" {
-                    channels.service_down(SERVICE_HOLDER).await;
-                }
-                Ok(())
-            }
-        },
-    )
-}
-
 async fn holder(call: &Call) -> Result<Holder, VerbError> {
     if let Some(h) = service_holder(call) {
         return Ok(h);
@@ -169,6 +132,7 @@ async fn channel_verb(ch: Arc<Channels>, call: Call) -> Result<Value, VerbError>
             ch.drain(&who, name_arg(&call), wait, number(&call, "until")?, number(&call, "task")?, yes(&call, "raw")).await
         }
         "status" => ch.status(&who, name_arg(&call)).await,
+        "attach" => ch.attach(&who).await,
         "encrypt" => ch.encrypt(&who, name_arg(&call)).await,
         "close" => ch.close(&who, name_arg(&call), number(&call, "task")?).await,
         other => Err(channel::refuse(format!("unknown verb {other}"))),
@@ -230,12 +194,17 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
     let (ready, down) = (channels.clone(), channels.clone());
     let socket = paths.control_socket();
     supervise(&ctx, paths, child);
-    let _services = watch_service_holder(channels.clone(), hub.clone());
     let svc = channel_service(svc, channels)
         .on_ready(async move {
             tokio::spawn(stream.clone().watch_forever(socket));
             ready.resume();
             tokio::spawn(ready.clone().feed_forever());
+            let door = ready.clone();
+            tokio::spawn(async move {
+                if let Err(e) = door.serve_door().await {
+                    tracing::error!("channel's direct socket for services stopped: {e}");
+                }
+            });
             awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
                 let ready = ready.clone();
                 async move {

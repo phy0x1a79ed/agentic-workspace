@@ -13,6 +13,7 @@
 //!
 //! A machine adds a shell. What a command prints is a tool log that only `drain` reads.
 
+pub mod attach;
 pub mod crypto;
 pub mod files;
 pub mod lines;
@@ -57,7 +58,7 @@ fn with_file(said: &str, file: &Value) -> String {
     if said.is_empty() { about } else { format!("{said}\n{about}") }
 }
 
-/// Whether a holder still runs. A service's room closes on its `down` event, not here.
+/// Whether a holder still runs: a service holds its room for as long as the service runs.
 fn holder_live(session: &str, running: &HashSet<String>) -> bool {
     by_service(session) || running.contains(session)
 }
@@ -102,8 +103,9 @@ pub struct Channels {
     stopping: AtomicBool,
     /// The SPAKE2 state of each offer out, by room. It never reaches the disk.
     offers: Mutex<HashMap<String, crypto::Offer>>,
-    /// Bumped on each inbox entry, so a service's `drain` waits on it.
+    /// Bumped on each inbox entry, so an attached service's socket wakes for it.
     inbox: tokio::sync::watch::Sender<u64>,
+    door: attach::Door,
 }
 
 pub struct Parts {
@@ -144,6 +146,7 @@ impl Channels {
             stopping: AtomicBool::new(false),
             offers: Default::default(),
             inbox: tokio::sync::watch::channel(0).0,
+            door: attach::Door::bind().expect("a loopback port for the services' direct socket"),
         });
         let weak = Arc::downgrade(&me);
         tokio::spawn(async move {
@@ -331,9 +334,6 @@ impl Channels {
     pub async fn drain(&self, holder: &Holder, name: Option<&str>, wait: f64, until: Option<i64>, task: Option<i64>, raw: bool) -> Res<Value> {
         let row = self.pick(holder, name)?;
         if row.kind != "machine" {
-            if by_service(&row.session) {
-                return Ok(self.drain_inbox(&row, wait).await);
-            }
             return Ok(json!({"name": row.name, "events": [], "note": "a room has no tool log, so drain returns nothing"}));
         }
         let Some(sid) = self.r#ref(&row) else {
@@ -357,26 +357,6 @@ impl Channels {
             answer["reset"] = json!(r);
         }
         Ok(answer)
-    }
-
-    /// A service holder's inbox past its cursor, waiting up to `wait` seconds for an entry.
-    async fn drain_inbox(&self, row: &Row, wait: f64) -> Value {
-        let mut bumped = self.inbox.subscribe();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(wait.max(0.0));
-        loop {
-            let (mut events, cursor) = self.transcripts.read_inbox(&row.name, row.log_cursor.max(0) as u64);
-            for file in events.iter_mut().map(|e| &mut e["file"]).filter(|f| f["path"].is_string()) {
-                match std::fs::read(text(file, "path")) {
-                    Ok(bytes) => file["b64"] = json!(crypto::b64(&bytes)),
-                    Err(e) => file["error"] = json!(e.to_string()),
-                }
-            }
-            if !events.is_empty() || tokio::time::timeout_at(deadline, bumped.changed()).await.is_err() {
-                self.store.set_log(&row.name, cursor as i64, None);
-                let open = self.store.get(&row.name).is_some_and(|r| r.open);
-                return json!({"name": row.name, "events": events, "open": open});
-            }
-        }
     }
 
     /// Offer the guest encryption in the live room (R73).
@@ -453,17 +433,6 @@ impl Channels {
                 self.push(&row, lines::notice("room", &row.name, "the encryption offer did not survive a restart of this node's channel service. The room stays open in plaintext. Run `channel encrypt` to offer again."));
             }
         }
-    }
-
-    /// Close each room `plugin`'s service holds, because its process left the hub.
-    pub async fn service_down(&self, plugin: &str) -> Vec<String> {
-        let holder = format!("{SERVICE_PREFIX}{plugin}");
-        let mut closed = vec![];
-        for row in self.store.open_rows().into_iter().filter(|r| r.session == holder) {
-            self.shut(&row, "its service stopped").await;
-            closed.push(row.name);
-        }
-        closed
     }
 
     /// Close every channel whose holding session has ended. "Could not tell" closes nothing.
