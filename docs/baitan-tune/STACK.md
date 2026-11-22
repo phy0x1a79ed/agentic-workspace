@@ -25,12 +25,13 @@ Nothing.
   - `cache-default`: path-identified materials go stale when a file is edited; may be moot if transforms carry metasmith lineage.
 - `node-prep`: (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
 - `tune`: "I want to tune the Baitan service."
-- `rename`: "I also want to rename it." Decided: "renaming everything from baitan -> awm/outsource"; worker running.
+- `rename`: "I also want to rename it." Landed 0385a219 (not deployed). 43 unit tests pass on altair; plugin e2e fails on its `far` link (`ssh localhost` inside the build container) — check against pre-rename code.
+- `deploy`: one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan.
 - carried from dex-poc stack (open there): `test-cases` (msm across HPC clusters), `arrays`, `arbutus-spot`, `backend-hardening`.
 
 ## Workers
 
-- rename worker (sonnet): baitan → outsource across the awm repo, on feat/baitan-tune; no deploy.
+None.
 
 ## Closed
 
