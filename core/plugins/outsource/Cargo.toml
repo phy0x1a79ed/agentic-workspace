@@ -1,0 +1,29 @@
+[package]
+name = "awm-plugin-outsource"
+description = "The outsource binary: market, provider, front, connect and caller surfaces; the awm feature adds the awm plugin mode."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "outsource"
+path = "src/main.rs"
+
+[features]
+default = ["awm"]
+awm = ["dep:awm-plugin-sdk"]
+
+[dependencies]
+outsource = { path = "../../crates/outsource" }
+awm-plugin-sdk = { workspace = true, optional = true }
+anyhow.workspace = true
+outsource-proto = { path = "../../crates/outsource-proto" }
+outsource-market = { path = "../../crates/outsource-market" }
+clap.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

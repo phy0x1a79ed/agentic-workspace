@@ -1,0 +1,15 @@
+[package]
+name = "outsource-market"
+description = "outsource market: bid rounds, pickers, awards and promise state over provider links."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+outsource-proto = { path = "../outsource-proto" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
