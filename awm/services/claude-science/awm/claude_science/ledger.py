@@ -37,16 +37,15 @@ def add(conversation_id: str, mounts: list[str]) -> None:
     _save(rows)
 
 
-def match(ref: str) -> str | None:
-    """The one recorded conversation id that starts with ``ref``."""
-    hits = [cid for cid in load() if cid.lower().startswith(ref.lower())]
-    return hits[0] if len(hits) == 1 else None
-
-
-def pop(conversation_id: str) -> list[str]:
-    """Drop the record; return its mounts that no other record holds."""
+def own_mounts(conversation_id: str) -> list[str]:
+    """The conversation's recorded mounts that no other record holds."""
     rows = load()
     mine = rows.pop(conversation_id, {}).get("mounts", [])
-    _save(rows)
     shared = {m for row in rows.values() for m in row.get("mounts", [])}
     return [m for m in mine if m not in shared]
+
+
+def forget(conversation_id: str) -> None:
+    rows = load()
+    if rows.pop(conversation_id, None) is not None:
+        _save(rows)

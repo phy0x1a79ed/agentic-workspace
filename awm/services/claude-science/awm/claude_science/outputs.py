@@ -1,18 +1,20 @@
 """Per-conversation output folders on the host, kept in step with the workbench.
 
-The sandbox's one standing grant is ``OUTPUTS_ROOT``, read-write, laid out like the workbench: ``<project-slug>/<conversation-id8>/``. The folders
-are a staging area, untracked: one is created empty for every conversation and
-deleted, contents and all, once its conversation is gone. Anything worth keeping
-is copied out before then.
+The sandbox's one standing grant is ``OUTPUTS_ROOT``, read-write, laid out like
+the workbench: ``<project-slug>/<conversation-id8>/``. The folders are a staging
+area, untracked: one is created empty for every conversation and deleted,
+contents and all, once its conversation is gone. Anything worth keeping is
+copied out before then.
 
-**Why the layout is shallow.** Before sandboxed code runs, the daemon scans
-every granted folder for credential files, four levels deep and at most 5,000
-folders. A writable grant whose scan stops short raises a ``grant_scan``
+**Why the layout is shallow.** At boot and before sandboxed code runs, the
+daemon scans every read path for credential files, read-only grants included,
+four levels deep and at most 5,000 folders. The scan blocks the daemon while it
+runs. A writable grant whose scan stops short also raises a ``grant_scan``
 approval that ``--dangerously-skip-approvals`` does not answer, and every
 conversation then hangs on its first command. Two levels of our own leave the
 agents two more before they eat into that cap; ``ALERT_FOLDERS`` warns early.
 The same scan is why a writable grant may not overlap a read grant: an overlap
-makes the daemon judge the read grant too, and ``projects/`` is far past the cap.
+makes the daemon judge the read grant as writable.
 
 **How a conversation finds its folder.** A kernel's working directory is
 ``workspaces/<root-frame-id>``, so each project's context (the instructions the
@@ -47,8 +49,8 @@ SCAN_CAP = 5000
 SCAN_SKIP = frozenset({".git", "node_modules", ".venv", "__pycache__"})
 ALERT_FOLDERS = 4000
 
-#: Inputs staged into a conversation's ``in/`` folder: total bytes, and folders
-#: within the scan depth, kept far under ``SCAN_CAP`` so staging never stalls.
+#: Inputs staged into a conversation's ``in/`` folder: total bytes, and folders,
+#: kept far under ``SCAN_CAP`` so staging never stalls the daemon's scan.
 INPUT_BYTES_CAP = int(os.environ.get("CLAUDE_SCIENCE_INPUT_BYTES", str(200 << 20)))
 INPUT_FOLDERS_CAP = 200
 
@@ -173,7 +175,7 @@ def _project_dirs(root: Path) -> list[Path]:
             if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")]
 
 
-def _existing(root: Path) -> dict[str, Path]:
+def conversation_folders(root: Path) -> dict[str, Path]:
     """``id8 → folder`` for every conversation folder on disk."""
     found: dict[str, Path] = {}
     if not root.is_dir():
@@ -213,7 +215,7 @@ def sync(owner: Owner, root: Path = OUTPUTS_ROOT) -> dict[str, Any]:
             report["contexts"].append(slugs[p["project_id"]])
         (root / slugs[p["project_id"]]).mkdir(exist_ok=True)
 
-    existing = _existing(root)
+    existing = conversation_folders(root)
     for id8, want in live.items():
         have = existing.pop(id8, None)
         if have is None:
@@ -242,34 +244,30 @@ def sync(owner: Owner, root: Path = OUTPUTS_ROOT) -> dict[str, Any]:
     return report
 
 
-def folder_of(conversation_id: str) -> Path | None:
-    return _existing(OUTPUTS_ROOT).get(conversation_id[:8])
-
-
 def check_inputs(paths: list[str]) -> list[Path]:
     """The inputs as absolute paths, or a ValueError naming why one cannot be staged."""
     out: list[Path] = []
+    names: set[str] = set()
     size = folders = 0
     for raw in paths:
         p = Path(raw).expanduser()
         if p.is_symlink() or not p.exists():
             raise ValueError(f"input {raw} is missing or a symlink")
         p = p.resolve()
-        if p.name in {q.name for q in out}:
+        if p.name in names:
             raise ValueError(f"two inputs are named {p.name}")
-        if p.is_dir():
-            folders += 1 + count_folders(p, cap=INPUT_FOLDERS_CAP)
-            size += sum(f.stat().st_size for f in p.rglob("*")
-                        if f.is_file() and not f.is_symlink())
-        else:
-            size += p.stat().st_size
+        names.add(p.name)
         out.append(p)
-    if size > INPUT_BYTES_CAP:
-        raise ValueError(f"inputs total {size >> 20} MB, over the "
-                         f"{INPUT_BYTES_CAP >> 20} MB cap; mount large data instead")
-    if folders > INPUT_FOLDERS_CAP:
-        raise ValueError(f"inputs hold more than {INPUT_FOLDERS_CAP} folders; "
-                         f"mount large trees instead")
+        walk = os.walk(p) if p.is_dir() else [(p.parent, [], [p.name])]
+        for here, dirs, files in walk:
+            folders += len(dirs)
+            size += sum(os.lstat(os.path.join(here, f)).st_size for f in files)
+            if size > INPUT_BYTES_CAP:
+                raise ValueError(f"inputs total over the {INPUT_BYTES_CAP >> 20} "
+                                 f"MB cap; mount large data instead")
+            if folders > INPUT_FOLDERS_CAP:
+                raise ValueError(f"inputs hold more than {INPUT_FOLDERS_CAP} "
+                                 f"folders; mount large trees instead")
     return out
 
 

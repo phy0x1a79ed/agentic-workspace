@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from awm.claude_science import outputs
 from awm.claude_science.api import Owner, WorkbenchError
@@ -157,7 +157,7 @@ INPUTS_LINE = ("\n\nInput files for this request are in the `in/` folder inside 
 
 def open_conversation(owner: Owner, text: str, *, project: str,
                       model: str | None = None, effort: str | None = None,
-                      inputs: list[Path] = (),
+                      inputs: Sequence[Path] = (),
                       root: Path = outputs.OUTPUTS_ROOT) -> dict[str, Any]:
     """Start a new conversation in ``project`` (found or created by name) with
     ``text`` as its first turn, make its output folder and copy ``inputs``
@@ -199,7 +199,7 @@ def open_conversation(owner: Owner, text: str, *, project: str,
         folder = project_folder / cid[:8]
         folder.mkdir(exist_ok=True)
         if inputs:
-            staged = outputs.stage_inputs(list(inputs), folder)
+            staged = outputs.stage_inputs(inputs, folder)
     return {
         "conversation": {"id": cid, "project_id": pid,
                          "project": proj.get("name") or project},
@@ -288,13 +288,13 @@ def read_messages(owner: Owner, frame_id: str, *, since: int | None = None,
     if not include_tools:
         entries = [e for e in entries if e["text"]]
     frame = owner.get(f"/api/frames/{frame_id}", params={"shallow": "true"})
-    done = {} if frame.get("status") == "processing" else {
-        "cleanup": CLEANUP.format(id=frame_id)}
-    return {
-        **done,
+    out = {
         "conversation": summary(frame),
         "messages": entries,
         "cursor": start + len(raw),
         "total": page.get("total"),
         "more": start + len(raw) < int(page.get("total") or 0),
     }
+    if frame.get("status") != "processing":
+        out["cleanup"] = CLEANUP.format(id=frame_id)
+    return out

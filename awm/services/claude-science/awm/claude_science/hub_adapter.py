@@ -337,10 +337,11 @@ def _active() -> dict:
             rows = ledger.load()
             stale = conversations.stale(owner, list(rows), older_than_s=STALE_S,
                                         now=time.time())
+            folders = outputs.conversation_folders(outputs.OUTPUTS_ROOT)
             for row in stale:
                 row["mounts"] = rows[row["id"]].get("mounts", [])
-                folder = outputs.folder_of(row["id"])
-                row["folder"] = None if folder is None else str(folder)
+                folder = folders.get(row["id"][:8])
+                row["folder"] = folder and str(folder)
             return {"conversations": conversations.active(owner),
                     "stale": stale}
     except Exception as exc:  # noqa: BLE001 — status reports, never fails
@@ -435,8 +436,9 @@ def _connector(args: dict) -> dict:
                                   f"{api.LOCAL_ID_PREFIX}{name}")}
 
 
-def _grant(owner: api.Owner, grants: list[dict], path: str, mode: str) -> None:
-    """Add ``path`` in ``mode``, or switch an existing grant of it to ``mode``."""
+def _grant(owner: api.Owner, grants: list[dict], path: str, mode: str) -> bool:
+    """Add ``path`` in ``mode``, or switch an existing grant of it to ``mode``.
+    True when the grant is new."""
     if mode not in ("ro", "rw"):
         raise ValueError(f"mode must be 'ro' or 'rw', not {mode!r}")
     have = next((g for g in grants
@@ -447,6 +449,7 @@ def _grant(owner: api.Owner, grants: list[dict], path: str, mode: str) -> None:
         api.add_grant(owner, path=path, mode=mode)
     elif have.get("mode") != mode:
         api.set_grant_mode(owner, path=path, mode=mode)
+    return have is None
 
 
 def _grants(args: dict) -> dict:
@@ -506,12 +509,9 @@ def _new(args: dict) -> dict:
     inputs = outputs.check_inputs(args.get("inputs") or [])
     SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
-        added = []
-        for path, mode in mounts:
-            grants = api.list_grants(owner)
-            if not any(path in (g.get("hostPath"), g.get("id")) for g in grants):
-                added.append(path)
-            _grant(owner, grants, path, mode)
+        grants = api.list_grants(owner)
+        added = [path for path, mode in mounts
+                 if _grant(owner, grants, path, mode)]
         out = conversations.open_conversation(
             owner, text,
             project=(args.get("project") or "").strip() or DEFAULT_PROJECT,
@@ -527,29 +527,30 @@ def _done(args: dict) -> dict:
         raise ValueError("conversation is required")
     SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
-        try:
-            target = conversations.resolve_conversation(owner, ref)
-        except api.WorkbenchError:
-            cid = ledger.match(ref)
-            if cid is None:
-                raise
-        else:
-            cid = target["id"]
-            if not cid.lower().startswith(ref):
-                raise ValueError(f"name the conversation by id, not {ref!r}")
-            if target.get("status") == "processing":
+        live = {r["id"]: r for r in conversations.list_conversations(owner)}
+        # The ledger keeps a conversation deleted in the GUI closable.
+        hits = sorted({c for c in [*live, *ledger.load()]
+                       if c.lower().startswith(ref)})
+        if len(hits) != 1:
+            raise ValueError(f"{ref!r} matches {len(hits)} conversation ids; "
+                             f"name the conversation by id")
+        cid = hits[0]
+        if cid in live:
+            if live[cid].get("status") == "processing":
                 raise ValueError(f"conversation {cid[:8]} is still processing")
             conversations.delete_conversation(owner, cid)
-        folder = outputs.folder_of(cid)
+        folder = outputs.conversation_folders(outputs.OUTPUTS_ROOT).get(cid[:8])
         if folder is not None:
             shutil.rmtree(folder)
-        revoked = ledger.pop(cid)
-        granted = {g.get("hostPath") for g in api.list_grants(owner)}
-        for path in revoked:
-            if path in granted:
-                api.remove_grant(owner, path=path)
+        revoked = ledger.own_mounts(cid)
+        if revoked:
+            granted = {g.get("hostPath") for g in api.list_grants(owner)}
+            for path in revoked:
+                if path in granted:
+                    api.remove_grant(owner, path=path)
+        ledger.forget(cid)
         return {"deleted": cid,
-                "folder": None if folder is None else str(folder),
+                "folder": folder and str(folder),
                 "mounts_revoked": revoked}
 
 
