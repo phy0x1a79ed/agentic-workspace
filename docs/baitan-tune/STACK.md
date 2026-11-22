@@ -20,7 +20,7 @@ Nothing.
 
 ## Stack
 
-- `call-walkthrough`: "walk through what an actual call would look like and how it can be fullfilled... as in how all the dependencies move over." Gap found: the `task` op stages data but has no model for the software environment. State: environment is a material (Tony, 2026-11-22). Open: "Can we just have it submit Metasmith transforms?" — survey of metasmith transforms running.
+- `call-walkthrough`: "walk through what an actual call would look like and how it can be fullfilled... as in how all the dependencies move over." Gap found: the `task` op stages data but has no model for the software environment. State: environment is a material (Tony, 2026-11-22). Decided 2026-11-22: model the offer on a metasmith transform declaration (requirements, products, protocol), but outsource and metasmith stay distinct tools; no data-type registry. Pending: confirm the declaration shape.
   - `resources-model`: CPUs vs memory. "memory is probably a floor, but memory may also increase with the number of cores. For CPUs, that's probably something more of like a metric ... some stuff just doesn't go faster with more cores." Keep apart from metrics.
   - `cache-default`: path-identified materials go stale when a file is edited; may be moot if transforms carry metasmith lineage.
 - `node-prep`: "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
