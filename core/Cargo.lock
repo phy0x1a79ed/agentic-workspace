@@ -961,6 +961,7 @@ dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
+ "futures-util",
  "hex",
  "hkdf",
  "libc",
@@ -974,6 +975,7 @@ dependencies = [
  "spake2",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
 ]
 
@@ -1070,11 +1072,13 @@ dependencies = [
  "awm-store",
  "base64 0.22.1",
  "chrono",
+ "futures-util",
  "mime_guess",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "uuid",
 ]
