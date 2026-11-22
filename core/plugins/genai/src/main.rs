@@ -4,6 +4,7 @@
 //! provider's jobs in order, and `result` returns the files inline, which the caller's gateway
 //! writes to its own node.
 
+mod link;
 mod muse;
 mod provider;
 mod store;
@@ -164,12 +165,12 @@ impl App {
         }
     }
 
-    async fn run_one(&self, p: &Arc<dyn Provider>, job: Job) {
+    async fn run_one(&self, p: &Arc<dyn Provider>, job: Job, resumed: bool) {
         let outcome = async {
             let style = self.styles.get(&job.style).await?;
             let refs = self.styles.ref_files(&style).await?;
             let work = Work { dir: self.jobs_dir.join(&job.id), job: job.clone(), style, refs };
-            p.run(&work).await
+            if resumed { p.resume(&work).await } else { p.run(&work).await }
         }
         .await;
         let (state, error, outputs) = match outcome {
@@ -184,12 +185,18 @@ impl App {
         self.changed.send_modify(|n| *n += 1);
     }
 
-    /// Run `p`'s queued jobs one at a time, waking on each change of the queue.
+    /// Resume `p`'s jobs a restart left running, then run its queued jobs one at a time while it
+    /// is ready, waking on each change of the queue.
     async fn work(self: Arc<Self>, p: Arc<dyn Provider>) -> anyhow::Result<()> {
         let mut rx = self.changed.subscribe();
+        for job in self.store.running(p.name()).await? {
+            self.run_one(&p, job, true).await;
+        }
         loop {
+            p.ready().await;
             while let Some(job) = self.store.claim(p.name()).await? {
-                self.run_one(&p, job).await;
+                self.run_one(&p, job, false).await;
+                p.ready().await;
             }
             rx.changed().await?;
         }
@@ -239,6 +246,9 @@ async fn main() -> anyhow::Result<()> {
     service(svc, app)
         .on_ready(async move {
             for p in ready.providers.clone() {
+                if let Some(link) = p.link() {
+                    ctx.spawn(&format!("link {}", p.name()), link.run());
+                }
                 ctx.spawn(&format!("worker {}", p.name()), ready.clone().work(p));
             }
         })
