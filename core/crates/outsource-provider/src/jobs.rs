@@ -8,10 +8,12 @@ pub fn q(s: &str) -> String {
 
 /// `cargo` from PATH, else `~/.cargo/bin`.
 pub fn find_cargo() -> Option<PathBuf> {
-    let mut dirs: Vec<String> =
-        std::env::var("PATH").unwrap_or_default().split(':').map(String::from).collect();
-    dirs.push(format!("{}/.cargo/bin", std::env::var("HOME").unwrap_or_default()));
-    dirs.into_iter().map(|d| PathBuf::from(d).join("cargo")).find(|p| p.exists())
+    find_on_path("cargo", &[format!("{}/.cargo/bin", std::env::var("HOME").unwrap_or_default())])
+}
+
+pub fn find_on_path(name: &str, extra: &[String]) -> Option<PathBuf> {
+    let dirs = std::env::var("PATH").unwrap_or_default();
+    dirs.split(':').chain(extra.iter().map(String::as_str)).map(|d| PathBuf::from(d).join(name)).find(|p| p.exists())
 }
 
 /// `*` and `?` stay inside a path segment, `**` crosses them.

@@ -217,6 +217,13 @@ async fn a4_build_then_place_end_to_end() {
     again.start = facts.clone();
     m.run("gamma", "q", &again).await;
     assert!(held_at("alpha").map(|p| elsewhere.join(p.file_name().unwrap()).join("out.txt")).unwrap().exists());
+
+    // `files` places only the listed outputs, at their relative paths, with no wrapper directory.
+    let flat_dest = d.path().join("beta-files");
+    let mut flat = set.clone();
+    flat.steps[1].spec = json!({"path": flat_dest, "files": true});
+    m.run("alpha", "r", &flat).await;
+    assert!(flat_dest.join("out.txt").exists() && !flat_dest.join("skip.dat").exists());
 }
 
 #[tokio::test]
@@ -325,10 +332,12 @@ async fn a11_a19_declines() {
     let d = tempfile::tempdir().unwrap();
     let mut nocargo = cfg(d.path(), "nocargo");
     nocargo.cargo = Some(d.path().join("missing-cargo"));
+    let mut noapp = cfg(d.path(), "noapp");
+    noapp.apptainer = Some(d.path().join("missing-apptainer"));
     let mut po = cfg(d.path(), "po");
     po.placement_only = true;
     po.routes = [("src".into(), "local".into()), ("dest".into(), "local".into())].into();
-    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p")), Provider::local(nocargo), Provider::local(po)]);
+    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p")), Provider::local(nocargo), Provider::local(noapp), Provider::local(po)]);
 
     let mut weird = task(&[], "true", vec![]);
     weird.op = "frobnicate".into();
@@ -345,6 +354,11 @@ async fn a11_a19_declines() {
     };
     let b = m.bid("nocargo", "2", &set_of(vec![cargo])).await;
     assert_eq!(b.reason.as_deref(), Some("no cargo"));
+
+    let mut in_env = task(&[], "true", vec![]);
+    in_env.spec = json!({"script": "true", "stage": {"e.env": {"id": "e"}}, "env": {"stage": "e.env", "container": "docker://x/y:1"}});
+    let b = m.bid("noapp", "5", &set_of(vec![in_env])).await;
+    assert_eq!(b.reason.as_deref(), Some("no apptainer"));
 
     let b = m.bid("po", "3", &set_of(vec![task(&[], "true", vec![])])).await;
     assert!(b.values.is_none(), "placement-only declines compute");
@@ -503,4 +517,51 @@ async fn cargo_kind_builds_through_git_and_records_the_cargo_version() {
     assert_eq!(kept(&o).1[&id], 5);
     assert_eq!(m.bid("p", "same", &step(&[("cargo", "cargo 9.9.9-fake")])).await.hit, Some(Hit::Done));
     assert_eq!(m.bid("p", "other", &step(&[("cargo", "cargo 1.0.0")])).await.hit, None);
+}
+
+#[tokio::test]
+async fn env_task_pulls_once_prices_the_pull_and_runs_the_protocol_inside() {
+    let d = tempfile::tempdir().unwrap();
+    let (log, fake) = (d.path().join("apptainer.log"), d.path().join("apptainer"));
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> {}\ncase \"$1\" in pull) shift; [ \"$1\" = --force ] && shift; echo sif > \"$1\";; exec) shift; while [ \"$1\" = --bind ]; do shift 2; done; shift; exec \"$@\";; esac\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::process::Command::new("chmod").arg("755").arg(&fake).status().unwrap();
+    let mut c = cfg(d.path(), "p");
+    c.apptainer = Some(fake);
+    let p = Provider::local(c);
+    let ids = p.import(&write_library(&d.path().join("lib"), &[("e.env", "1", "container: docker://x/y:1\n")])).unwrap();
+    // A material the caller's own provider holds is named by a `start` fact alone.
+    let data = d.path().join("data.txt");
+    std::fs::write(&data, "mine").unwrap();
+    let job = |tag: &str, script: &str| {
+        let mut s = task(&[("job", tag)], "", [ids.clone(), vec!["data".into()]].concat());
+        s.spec = json!({"script": script, "stage": {"e.env": {"id": ids[0]}, "data.txt": {"id": "data"}}, "outputs": ["out.txt"],
+                        "env": {"stage": "e.env", "container": "docker://x/y:1"}});
+        let mut set = set_of(vec![s]);
+        set.start = vec![Fact::at_path("data", "p", &data.to_string_lossy())];
+        set
+    };
+    let mut m = Mkt::start(vec![p]);
+    let cold = m.bid("p", "cold", &job("a", "cat data.txt > out.txt")).await.values.unwrap()["time"];
+    assert_eq!(cold, 130.0, "default estimate plus the uncached pull");
+    let lost = Phase::Failed { name: raise::CANCELLED.into(), message: String::new() };
+    m.send("p", Msg::Event(PromiseStatus { promise: "cold".into(), phase: lost, life: None }));
+    let o = m.run("p", "a", &job("a", "cat data.txt > out.txt")).await;
+    let dir = kept(&o).0.iter().find_map(Fact::path).map(PathBuf::from).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap().trim(), "mine");
+    let warm = m.bid("p", "warm", &job("b", "echo b > out.txt")).await.values.unwrap()["time"];
+    assert_eq!(warm, 10.0, "the image is cached under the env material's id");
+    m.run("p", "b", &job("b", "echo b > out.txt")).await;
+
+    let log = std::fs::read_to_string(&log).unwrap();
+    let pulls: Vec<_> = log.lines().filter(|l| l.starts_with("pull")).collect();
+    assert!(pulls.len() == 1 && pulls[0].ends_with("docker://x/y:1"), "{log}");
+    let execs: Vec<_> = log.lines().filter(|l| l.starts_with("exec")).collect();
+    assert!(execs.len() == 2 && execs[1].contains(&format!("{}.sif bash -c echo b > out.txt", ids[0])), "{log}");
 }

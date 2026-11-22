@@ -27,6 +27,10 @@ pub struct ProviderConfig {
     pub default_secs: f64,
     /// Used instead of searching PATH and `~/.cargo/bin`; a missing file means no cargo.
     pub cargo: Option<PathBuf>,
+    /// Used instead of searching PATH; a missing file means no apptainer, so env jobs are declined.
+    pub apptainer: Option<PathBuf>,
+    /// Seconds a bid adds for pulling an environment that is not cached.
+    pub env_pull_secs: f64,
 }
 
 impl Default for ProviderConfig {
@@ -43,6 +47,8 @@ impl Default for ProviderConfig {
             route_overhead_s: 1.0,
             default_secs: 60.0,
             cargo: None,
+            apptainer: None,
+            env_pull_secs: 120.0,
         }
     }
 }

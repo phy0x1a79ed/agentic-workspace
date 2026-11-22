@@ -481,13 +481,23 @@ pub struct VerbSpec {
     pub schema: &'static str,
 }
 
+const OFFER_SUMMARY: &str = "Post one job to the compute market; returns a promise id at once (poll `status`). \
+`requires`: paths on this node (absolute or relative to the cwd; files or folders) that appear in the work dir under their base names. \
+`protocol`: one bash command run in the work dir. `produces`: paths relative to the work dir, copied back into `dest` (default the cwd) under the same relative path. \
+A `.env` file in `requires` (YAML with `container: docker://...`) is the environment: the protocol runs inside it with apptainer; at most one. \
+Pass each git repo as its own `requires` path. A result is reused when the protocol and every material are unchanged (a file by mtime, a repo by HEAD commit, any other folder by its own mtime); \
+a repo with uncommitted changes still counts as its commit and the reply warns. Example: \
+{\"requires\":[\"/data/iphop.env\",\"/data/counts.tsv\",\"/src/analysis\"],\"produces\":[\"out/fit.rds\"],\"protocol\":\"mkdir out && Rscript analysis/fit.R counts.tsv out/fit.rds\",\"resources\":{\"cpus\":8,\"mem_mb\":32000}}";
+
+const OFFER_SCHEMA: &str = r#"{"type":"object","properties":{"requires":{"type":"array","items":{"type":"string"},"description":"Input paths on the caller's node, files or folders; each lands in the work dir under its base name. One may be a .env file."},"produces":{"type":"array","items":{"type":"string"},"description":"Paths relative to the work dir to copy back; a folder brings its files."},"protocol":{"type":"string","description":"One bash command, run in the work dir."},"metrics":{"type":"array","items":{"type":"string"},"description":"Axes bids are scored on; default [\"time\"]."},"resources":{"type":"object","description":"{cpus, mem_mb} the job needs; default {cpus:1, mem_mb:2048}."},"dest":{"type":"string","description":"Directory the produces are copied into; default the caller's cwd."}},"required":["requires","produces","protocol"],"additionalProperties":false}"#;
+
 /// The single catalog the CLI, MCP and HTTP surfaces are generated from. Provider verbs are absent.
 pub const CALLER_VERBS: &[VerbSpec] = &[
     VerbSpec {
         name: "offer",
-        summary: "Post one offer set; returns a promise id at once.",
+        summary: OFFER_SUMMARY,
         cli_only: false,
-        schema: r#"{"type":"object","properties":{"set":{"type":"object","description":"Offer set: steps, start, place, axes, picker, checker, window_ms, resources, size."}},"required":["set"],"additionalProperties":false}"#,
+        schema: OFFER_SCHEMA,
     },
     VerbSpec {
         name: "status",

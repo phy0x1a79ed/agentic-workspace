@@ -4,7 +4,7 @@
 use crate::backend::{Backend, Done, JobSpec};
 use crate::config::ProviderConfig;
 use crate::index::{normalize, Entry, Flight, Found, Index, Pair};
-use crate::jobs::{disk_size, find_cargo, glob_match, is_local_route, q, remove_path, walk_files};
+use crate::jobs::{disk_size, find_cargo, find_on_path, glob_match, is_local_route, q, remove_path, walk_files};
 use crate::local::LocalBackend;
 use outsource_proto::*;
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,7 @@ pub(crate) struct Inner {
     peer: Mutex<String>,
     jobs: Arc<Mutex<HashMap<PromiseId, oneshot::Sender<i32>>>>,
     cargo: Option<PathBuf>,
+    apptainer: Option<PathBuf>,
     cargo_ver: OnceCell<String>,
 }
 
@@ -106,6 +107,11 @@ struct Quote {
 }
 
 type JobWaiters = Arc<Mutex<HashMap<PromiseId, oneshot::Sender<i32>>>>;
+
+struct Env {
+    id: Id,
+    container: String,
+}
 
 type Resolved = HashMap<Id, Id>;
 
@@ -145,6 +151,10 @@ impl Provider {
             Some(p) => p.exists().then(|| p.clone()),
             None => find_cargo(),
         };
+        let apptainer = match &cfg.apptainer {
+            Some(p) => p.exists().then(|| p.clone()),
+            None => find_on_path("apptainer", &[]),
+        };
         let jobs: JobWaiters = Default::default();
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let state = State {
@@ -164,6 +174,7 @@ impl Provider {
             peer: Mutex::new("market".into()),
             jobs: jobs.clone(),
             cargo,
+            apptainer,
             cargo_ver: OnceCell::new(),
         });
         tokio::spawn(route_done(done, jobs.clone()));
@@ -309,11 +320,16 @@ impl Inner {
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
+    /// The path a `start` fact gives for `id` on this provider's own filesystem.
+    fn held_here<'a>(&self, set: &'a OfferSet, id: &str) -> Option<&'a str> {
+        set.start.iter().find(|f| f.as_at() == Some((id, self.cfg.id.as_str()))).and_then(Fact::path)
+    }
+
     fn fetch_cost(&self, st: &State, set: &OfferSet, inputs: &[Id], made: &HashSet<Id>) -> Result<f64, String> {
         let each = set.size.unwrap_or(0) as f64 / inputs.len().max(1) as f64;
         let mut total = 0.0;
         for id in inputs {
-            if made.contains(id) || st.instances.contains_key(id) {
+            if made.contains(id) || st.instances.contains_key(id) || self.held_here(set, id).is_some() {
                 continue;
             }
             total += self.nearest(set, id, each).ok_or_else(|| format!("no source for input {id}"))?.0;
@@ -379,7 +395,11 @@ impl Inner {
                     if stored.is_none() {
                         all_hit = false;
                         all_done = false;
-                        let e = self.est(step);
+                        let pull = match self.env_of(step)? {
+                            Some(env) if !self.sif(&env.id).exists() => self.cfg.env_pull_secs,
+                            _ => 0.0,
+                        };
+                        let e = self.est(step) + pull;
                         work += e;
                         seq += e;
                         fetch += self.fetch_cost(&st, set, &inputs, &made)?;
@@ -641,6 +661,9 @@ impl Inner {
                     .into_iter()
                     .filter(|f| !BOOKKEEPING.contains(&f.as_str()) && globs.iter().any(|g| glob_match(g, f)))
                     .collect();
+                if !globs.is_empty() && listing.is_empty() {
+                    return Err("task made none of its outputs".into());
+                }
                 let made = Instance::new(workdir, listing);
                 Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).collect())
             }
@@ -678,6 +701,9 @@ impl Inner {
         if let Some(n) = st.instances.get(id) {
             return Ok(n.path.to_string_lossy().into_owned());
         }
+        if let Some(path) = self.held_here(set, id) {
+            return Ok(path.to_string());
+        }
         let (_, route, held_at) = self.nearest(set, id, 0.0).ok_or_else(|| format!("cannot stage {id}: no route to a holder"))?;
         let src = src.or(held_at).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
         if is_local_route(route) {
@@ -689,9 +715,28 @@ impl Inner {
         Ok(dest)
     }
 
+    /// The environment a task runs in, if its spec names one. Declines without apptainer.
+    fn env_of(&self, step: &Step) -> Result<Option<Env>, String> {
+        let Some(env) = step.spec.get("env") else { return Ok(None) };
+        if self.apptainer.is_none() {
+            return Err("no apptainer".into());
+        }
+        let stage = env["stage"].as_str().ok_or("env names no stage")?;
+        let id = step.spec["stage"][stage]["id"].as_str().ok_or_else(|| format!("env stage {stage} has no id"))?;
+        let container = env["container"].as_str().ok_or("env names no container")?;
+        Ok(Some(Env { id: id.to_string(), container: container.to_string() }))
+    }
+
+    /// Where the pulled image for an environment id is cached.
+    fn sif(&self, id: &str) -> PathBuf {
+        self.state_dir.join("env").join(format!("{id}.sif"))
+    }
+
     fn compile_task(&self, set: &OfferSet, step: &Step, resolved: &Resolved, workdir: &Path) -> Result<String, String> {
         let script = step.spec["script"].as_str().ok_or("task needs a script")?;
+        let env = self.env_of(step)?;
         let mut lines = vec!["set -e".to_string(), "cd \"$(dirname \"$0\")\"".to_string()];
+        let mut binds = vec![];
         let st = self.state.lock().unwrap();
         for (name, item) in step.spec["stage"].as_object().into_iter().flatten() {
             let id = resolve(resolved, item["id"].as_str().ok_or_else(|| format!("stage {name} has no id"))?);
@@ -701,8 +746,20 @@ impl Inner {
                 None => base,
             };
             lines.push(format!("ln -s {} {}", q(&target), q(name)));
+            binds.push(format!("--bind {}", q(&target)));
         }
-        lines.push(script.to_string());
+        match (env, &self.apptainer) {
+            (Some(env), Some(apptainer)) => {
+                let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
+                lines.push(format!("mkdir -p {}", q(&self.state_dir.join("env").to_string_lossy())));
+                lines.push(format!(
+                    "[ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif}; }}",
+                    q(&env.container)
+                ));
+                lines.push(format!("{app} exec {} {sif} bash -c {}", binds.join(" "), q(script)));
+            }
+            _ => lines.push(script.to_string()),
+        }
         Ok(lines.join("\n") + "\n")
     }
 
@@ -750,9 +807,28 @@ impl Inner {
         let workdir = self.state_dir.join("work").join(format!("{promise}-{idx}"));
         let mut lines = vec!["set -e".to_string(), "cd \"$(dirname \"$0\")\"".to_string()];
         let mut placed = vec![];
+        let files_only = step.spec["files"].as_bool().unwrap_or(false);
+        std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
         {
             let st = self.state.lock().unwrap();
-            for id in &ids {
+            for (n, id) in ids.iter().enumerate() {
+                if files_only {
+                    let inst = st.instances.get(id).ok_or_else(|| format!("{id} is not held here"))?;
+                    let list = workdir.join(format!("files-{n}.txt"));
+                    std::fs::write(&list, inst.listing.join("\n") + "\n").map_err(|e| e.to_string())?;
+                    let (from, list) = (q(&inst.path.to_string_lossy()), q(&list.to_string_lossy()));
+                    if is_local_route(route) {
+                        lines.push(format!("mkdir -p {d} && tar -C {from} -cf - -T {list} | tar -C {d} -xf -", d = q(dest)));
+                    } else {
+                        lines.push(format!(
+                            "rsync -a --files-from={list} --rsync-path={} {from}/ {}",
+                            q(&format!("mkdir -p {} && rsync", q(dest))),
+                            q(&format!("{route}:{dest}/"))
+                        ));
+                    }
+                    placed.push((id.clone(), dest.to_string()));
+                    continue;
+                }
                 let src = step.spec["src"][id].as_str();
                 let from = self.locate(&st, set, id, src, &workdir.join("in").join(id), &mut lines)?;
                 if is_local_route(route) {

@@ -18,7 +18,7 @@ pub fn default_socket() -> PathBuf {
     std::env::var_os("OUTSOURCE_SOCKET").map(PathBuf::from).unwrap_or_else(|| outsource_dir().join("market.sock"))
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname").map(|h| h.trim().to_string()).unwrap_or_else(|_| "provider".into())
 }
 

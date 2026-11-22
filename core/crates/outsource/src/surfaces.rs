@@ -1,16 +1,23 @@
 //! The caller surfaces generated from `CALLER_VERBS`: CLI subcommands, a stdio MCP server and `POST /invoke`.
 
 use crate::client::Client;
-use outsource_proto::{Msg, CALLER_VERBS};
+use crate::offer::{self, Compiled, Site};
+use outsource_proto::{Msg, OfferArgs, CALLER_VERBS};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Builds the typed message for a caller verb, refusing provider verbs and unknown args.
-pub fn verb_msg(verb: &str, args: Value) -> Result<Msg, String> {
+/// Builds the typed message for a caller verb, refusing provider verbs and unknown args. An
+/// `offer` is compiled from its transform shape; its warnings come back beside the message.
+pub fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<(Msg, Vec<String>), String> {
     if !CALLER_VERBS.iter().any(|v| v.name == verb) {
         return Err(format!("unknown verb {verb}"));
     }
-    serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())
+    if verb == "offer" {
+        let Compiled { set, warnings } = offer::compile(args, site)?;
+        return Ok((Msg::Offer(OfferArgs { set, promise: None }), warnings));
+    }
+    let msg = serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())?;
+    Ok((msg, vec![]))
 }
 
 /// The reply as the surfaces show it: `return` unwrapped, anything else as an error object.
@@ -22,8 +29,12 @@ pub fn shown(reply: Msg) -> Result<Value, Value> {
 }
 
 pub async fn invoke(client: &Client, verb: &str, args: Value) -> Result<Value, Value> {
-    let msg = verb_msg(verb, args).map_err(|e| json!({"selector": "raise", "args": {"name": "BadArgs", "message": e}}))?;
-    shown(client.ask(msg).await.map_err(|e| json!({"selector": "raise", "args": {"name": "Unavailable", "message": e}}))?)
+    let (msg, warnings) = verb_msg(verb, args, &Site::here()).map_err(|e| json!({"selector": "raise", "args": {"name": "BadArgs", "message": e}}))?;
+    let mut reply = shown(client.ask(msg).await.map_err(|e| json!({"selector": "raise", "args": {"name": "Unavailable", "message": e}}))?)?;
+    if let (false, Some(obj)) = (warnings.is_empty(), reply.as_object_mut()) {
+        obj.insert("warnings".into(), json!(warnings));
+    }
+    Ok(reply)
 }
 
 /// The verbs MCP and HTTP expose: every caller verb but the CLI-only ones.

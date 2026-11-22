@@ -2,5 +2,6 @@
 
 pub mod cli;
 pub mod client;
+pub mod offer;
 pub mod roles;
 pub mod surfaces;
