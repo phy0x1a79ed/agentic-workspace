@@ -31,7 +31,7 @@ Nothing.
 
 ## Workers
 
-None.
+- offer-shape build worker (sonnet): new offer verb, compile to task+place, stat/commit identity with dirty warning, .env via apptainer, catalog example; also checks the e2e `far` failure against pre-rename code. No deploy.
 
 ## Closed
 
