@@ -132,6 +132,7 @@ async fn channel_verb(ch: Arc<Channels>, call: Call) -> Result<Value, VerbError>
             ch.drain(&who, name_arg(&call), wait, number(&call, "until")?, number(&call, "task")?, yes(&call, "raw")).await
         }
         "status" => ch.status(&who, name_arg(&call)).await,
+        "attach" => ch.attach(&who).await,
         "encrypt" => ch.encrypt(&who, name_arg(&call)).await,
         "close" => ch.close(&who, name_arg(&call), number(&call, "task")?).await,
         other => Err(channel::refuse(format!("unknown verb {other}"))),
@@ -198,6 +199,12 @@ async fn run_channel(svc: Service) -> anyhow::Result<()> {
             tokio::spawn(stream.clone().watch_forever(socket));
             ready.resume();
             tokio::spawn(ready.clone().feed_forever());
+            let door = ready.clone();
+            tokio::spawn(async move {
+                if let Err(e) = door.serve_door().await {
+                    tracing::error!("channel's direct socket for services stopped: {e}");
+                }
+            });
             awm_plugin_sdk::sessions::SessionWatch::new(hub, "channel", move |_node| {
                 let ready = ready.clone();
                 async move {

@@ -1,7 +1,7 @@
 use crate::store::Store;
 
 #[tokio::test]
-async fn jobs_run_in_order_and_a_restart_fails_the_running_one() {
+async fn jobs_run_in_order_and_a_restart_keeps_the_running_one_to_resume() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("genai.db");
     let s = Store::open(&path).unwrap();
@@ -22,8 +22,8 @@ async fn jobs_run_in_order_and_a_restart_fails_the_running_one() {
     assert_eq!(s.claim("elevenlabs-voice").await.unwrap().unwrap().id, "v1");
     drop(s);
     let s = Store::open(&path).unwrap();
-    let v1 = s.get("v1").await.unwrap().unwrap();
-    assert_eq!((v1.state.as_str(), v1.error.as_str()), ("failed", "genai restarted while the job ran"));
+    assert_eq!(s.running("elevenlabs-voice").await.unwrap().iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), ["v1"]);
+    assert!(s.running("muse-image").await.unwrap().is_empty());
     assert_eq!(s.get("j1").await.unwrap().unwrap().outputs, ["/out/j1.png"]);
     assert_eq!(s.recent(10, Some("done".into())).await.unwrap().len(), 1);
 }

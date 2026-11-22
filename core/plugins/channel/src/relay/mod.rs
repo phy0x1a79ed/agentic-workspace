@@ -5,7 +5,8 @@
 //! door stamps the node (fleet.md R98). Nothing here calls out: no push, no door, no edge (R79).
 //! A member's node holds a `feed` long-poll instead, which returns what arrived after each
 //! member's cursor and renews each member's lease. A member whose node stops renewing it
-//! lapses, and a room with no member left ends (channels.md R72 item 5).
+//! lapses, and a room with no member left ends (channels.md R72 item 5). A persistent room's
+//! members never lapse: its holder's node may be down for a while, and the room waits for it.
 //!
 //! Messages wait in the store, so a restart loses none that a member has not fetched. An
 //! encrypted room keeps only sealed text and the key exchange, so it has one member (R73).

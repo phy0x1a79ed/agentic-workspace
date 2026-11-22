@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use awm_plugin_sdk::hub::{CallOpts, Hub};
 use serde_json::Value;
 
+use crate::link::Link;
 use crate::store::Job;
 use crate::styles::Style;
 
@@ -30,8 +31,18 @@ pub trait Provider: Send + Sync {
     async fn status(&self) -> Value {
         Value::Null
     }
+    /// The socket to channel the provider holds, which genai runs for as long as it runs.
+    fn link(&self) -> Option<Arc<Link>> {
+        None
+    }
+    /// Wait until the provider can take a job: its jobs stay queued until then.
+    async fn ready(&self) {}
     /// Run one job to its result files, each under `work.dir`. An error fails the job with that text.
     async fn run(&self, work: &Work) -> Result<Vec<PathBuf>, String>;
+    /// Finish a job that was running when genai stopped, without starting it again.
+    async fn resume(&self, _work: &Work) -> Result<Vec<PathBuf>, String> {
+        Err("genai restarted while the job ran".into())
+    }
 }
 
 /// A voice provider that is not set up yet: it proves a second kind fits the seam.
@@ -52,7 +63,7 @@ impl Provider for ElevenLabsVoice {
 
 /// Every provider genai serves. A new provider is one module and one line here.
 pub fn registry(hub: &Hub) -> Vec<Arc<dyn Provider>> {
-    vec![Arc::new(crate::muse::Muse::new(hub.clone())), Arc::new(ElevenLabsVoice)]
+    vec![Arc::new(crate::muse::Muse::new(Link::new(hub.clone()))), Arc::new(ElevenLabsVoice)]
 }
 
 /// One verb of another service, its failure as text naming the verb.

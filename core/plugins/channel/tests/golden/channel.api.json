@@ -128,7 +128,7 @@
     {
       "name": "drain",
       "tool": "channel_drain",
-      "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room a plugin service holds, drain returns what arrived since the last drain, each message as `{seq, by, who, level, text, file}`, where `file` carries the bytes as `b64`. On a room a session holds, drain returns nothing.",
+      "description": "Read a machine's tool log since your last drain: each command, its output and how it ended. This output is never pushed to you and is not in the transcript. `until` with a task id waits for that command to finish. On a room, drain returns nothing.",
       "params": [
         {
           "name": "name",
@@ -169,6 +169,17 @@
           "description": "The channel, by its name. Needed only when you hold more than one; `status` lists yours."
         }
       ]
+    },
+    {
+      "name": "attach",
+      "tool": "channel_attach",
+      "surfaces": [
+        "cli",
+        "http"
+      ],
+      "description": "For a plugin service that holds a persistent room: its room, opened the first time, and the loopback `port` and one-use `token` of channel's direct socket. The service then holds that socket, and the room's messages and its writes cross it, never the gateway. The room outlives the socket.",
+      "params": [],
+      "timeout": 90
     },
     {
       "name": "encrypt",

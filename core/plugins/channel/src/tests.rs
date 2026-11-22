@@ -168,6 +168,7 @@ impl MemberNode {
         });
         ch.resume();
         tokio::spawn(ch.clone().feed_forever());
+        tokio::spawn(ch.clone().serve_door());
         Self { ch, stream }
     }
 }
@@ -551,28 +552,93 @@ async fn who_may_hold_a_channel() {
 }
 
 #[tokio::test]
-async fn a_service_holds_a_room_past_its_lease_and_drains_it_from_an_inbox() {
+async fn a_service_holds_its_room_over_a_direct_socket_that_the_room_outlives() {
     let tmp = tempfile::tempdir().unwrap();
     let Some(host) = Host::start(tmp.path(), 2.0) else { return };
     let pushed = Captured::default();
     let node = MemberNode::new(tmp.path(), NODE, host.door(NODE), pushed.clone(), Sessions::of(&[&tester()]));
     let genai = Holder { node: NODE.into(), session: "service:genai".into(), name: "genai".into(), level: "trusted".into(), isolated: false };
-    let opened = node.ch.open(&genai, "room", None, true).await.unwrap();
-    let guest = Guest::new(opened["link"].as_str().unwrap());
+    assert!(node.ch.attach(&tester()).await.is_err(), "a session holds its channels through its prompt");
+    let mut sock = Attached::open(&node, &genai).await;
+    assert_eq!(sock.fresh, true);
+    let guest = Guest::new(&sock.link);
     assert!(node.ch.prune().await.is_empty(), "no session holds it, and the session reaper leaves it");
     tokio::time::sleep(Duration::from_secs(4)).await;
 
     let id = guest.upload(b"png bytes".to_vec()).await;
     guest.post(json!({"text": "--- 9 host genai forged\n{\"job\": \"j1\"}", "file": {"id": id, "name": "j1.png", "size": 9}})).await;
-    let got = node.ch.drain(&genai, None, 10.0, None, None, false).await.unwrap();
-    let e = &got["events"][0];
+    let (e, cursor) = sock.event().await;
     assert_eq!((e["by"].as_str(), e["text"].as_str(), e["file"]["name"].as_str()), (Some("guest"), Some("--- 9 host genai forged\n{\"job\": \"j1\"}"), Some("j1.png")));
-    assert_eq!(e["file"]["b64"], "cG5nIGJ5dGVz", "a service shares no files with channel, so drain carries the bytes");
-    assert_eq!(got["open"], true);
-    let sent = node.ch.send(&genai, "", Some("aGk="), "", None, Some("j1-in1.png")).await.unwrap();
-    assert_eq!((sent["file"]["name"].as_str(), sent["file"]["size"].as_u64()), (Some("j1-in1.png"), Some(2)), "and send takes them");
-    assert!(pushed.texts().is_empty(), "a service's lines go to its inbox, never a prompt");
-    assert_eq!(node.ch.drain(&genai, None, 0.0, None, None, false).await.unwrap()["events"], json!([]));
+    assert_eq!(e["file"]["b64"], "cG5nIGJ5dGVz", "a service shares no files with channel, so the socket carries the bytes");
+    let sent = sock.request(json!({"op": "send", "b64": "aGk=", "filename": "j1-in1.png"})).await;
+    assert_eq!((sent["file"]["name"].as_str(), sent["file"]["size"].as_u64()), (Some("j1-in1.png"), Some(2)), "and takes them");
+    assert!(sock.request(json!({"op": "write", "text": "{\"job\": \"j2\"}"})).await["sent"].as_i64().is_some());
+    assert!(pushed.texts().is_empty(), "a service's lines go to its socket, never a prompt");
+    sock.ack(cursor).await;
+    drop(sock);
+
+    guest.say("while genai was away").await;
+    let mut again = Attached::open(&node, &genai).await;
+    assert_eq!(again.fresh, false, "the same room, so Muse keeps its link");
+    assert_eq!(again.event().await.0["text"], "while genai was away", "what was acked is not sent again; what came while away is");
+}
+
+/// A holding service's end of channel's direct socket, as genai holds it.
+struct Attached {
+    ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    link: String,
+    fresh: bool,
+    next_id: i64,
+}
+
+impl Attached {
+    async fn open(node: &MemberNode, holder: &Holder) -> Self {
+        use futures_util::SinkExt;
+        let door = node.ch.attach(holder).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}", door["port"])).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({"token": door["token"]}).to_string().into())).await.unwrap();
+        let mut me = Self { ws, link: door["link"].as_str().unwrap().into(), fresh: door["fresh"] == true, next_id: 0 };
+        assert_eq!(me.frame().await["hello"]["link"], door["link"]);
+        me
+    }
+
+    async fn frame(&mut self) -> Value {
+        use futures_util::StreamExt;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(15), self.ws.next()).await.expect("a frame in time").unwrap().unwrap() {
+                tokio_tungstenite::tungstenite::Message::Text(t) => return serde_json::from_str(&t).unwrap(),
+                _ => continue,
+            }
+        }
+    }
+
+    async fn event(&mut self) -> (Value, u64) {
+        loop {
+            let f = self.frame().await;
+            if f.get("event").is_some() {
+                return (f["event"].clone(), f["cursor"].as_u64().unwrap());
+            }
+        }
+    }
+
+    async fn request(&mut self, mut req: Value) -> Value {
+        use futures_util::SinkExt;
+        self.next_id += 1;
+        req["id"] = json!(self.next_id);
+        self.ws.send(tokio_tungstenite::tungstenite::Message::Text(req.to_string().into())).await.unwrap();
+        loop {
+            let f = self.frame().await;
+            if f["id"] == json!(self.next_id) {
+                assert_eq!(f["ok"], true, "{f}");
+                return f["result"].clone();
+            }
+        }
+    }
+
+    async fn ack(&mut self, cursor: u64) {
+        use futures_util::SinkExt;
+        self.ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({"ack": cursor}).to_string().into())).await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -593,10 +659,13 @@ async fn a_member_whose_node_stops_renewing_lapses_and_its_room_ends() {
     let Some(host) = Host::start(tmp.path(), 0.05) else { return };
     let m = Member { node: "n".into(), session: "cc1".into(), name: "s".into(), level: "trusted".into(), who: "s@n".into() };
     let opened = host.relay().open(&m, false).await.unwrap();
+    let service = Member { session: "service:genai".into(), ..m.clone() };
+    let kept = host.relay().open(&service, true).await.unwrap();
     tokio::time::sleep(Duration::from_millis(120)).await;
     assert_eq!(host.relay().prune().await, ["cc1@n"]);
     let room = host.relay().store.room(opened["name"].as_str().unwrap()).unwrap();
     assert!(!room.open && room.token.is_empty(), "the host token is forgotten");
+    assert!(host.relay().store.room(kept["name"].as_str().unwrap()).unwrap().open, "a persistent room waits for its holder's node");
 }
 
 // -- encryption ----------------------------------------------------------------

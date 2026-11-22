@@ -87,16 +87,22 @@ impl Transcripts {
         }
     }
 
-    /// The whole entries written past `offset`, and the offset after the last of them.
-    pub fn read_inbox(&self, name: &str, offset: u64) -> (Vec<serde_json::Value>, u64) {
+    /// The whole entries written past `offset`, each with the offset just after it.
+    pub fn read_inbox(&self, name: &str, offset: u64) -> Vec<(serde_json::Value, u64)> {
         let mut rest = vec![];
         let read = std::fs::File::open(self.inbox_path(name)).and_then(|mut f| f.seek(std::io::SeekFrom::Start(offset)).and_then(|_| f.read_to_end(&mut rest)));
         if read.is_err() {
-            return (vec![], offset);
+            return vec![];
         }
-        let whole = rest.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-        let entries = rest[..whole].split(|b| *b == b'\n').filter(|l| !l.is_empty()).filter_map(|l| serde_json::from_slice(l).ok()).collect();
-        (entries, offset + whole as u64)
+        let mut entries = vec![];
+        let mut at = 0;
+        while let Some(n) = rest[at..].iter().position(|b| *b == b'\n') {
+            if let Ok(entry) = serde_json::from_slice(&rest[at..at + n]) {
+                entries.push((entry, offset + (at + n + 1) as u64));
+            }
+            at += n + 1;
+        }
+        entries
     }
 }
 

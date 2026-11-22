@@ -1,8 +1,7 @@
-//! `genai.db`: one row per job, and a small key-value table for the provider's own state.
+//! `genai.db`: one row per job.
 //!
 //! A job moves queued → running → done | failed, or to cancelled from queued or running.
-//! A job running when the service stops is failed on the next start: its provider's side of
-//! the work cannot be resumed from here.
+//! A job running when the service stops stays running, and its provider resumes it on the next start.
 
 use std::path::Path;
 
@@ -76,9 +75,7 @@ impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let db = awm_store::Store::open(path)?;
         db.init(SCHEMA_SQL, SCHEMA_VERSION, &[])?;
-        let s = Store { db };
-        s.db.blocking_write(|c| c.execute("UPDATE jobs SET state = 'failed', error = 'genai restarted while the job ran', updated_at = ?1 WHERE state = 'running'", [now()]).map_err(StoreError::from))?;
-        Ok(s)
+        Ok(Store { db })
     }
 
     async fn run<T: Send + 'static>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static) -> anyhow::Result<T> {
@@ -99,6 +96,17 @@ impl Store {
         self.run(move |c| {
             let mut st = c.prepare(&format!("SELECT {COLS} FROM jobs WHERE ?1 IS NULL OR state = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2"))?;
             let rows = st.query_map(params![state, limit], job)?.collect();
+            rows
+        })
+        .await
+    }
+
+    /// `provider`'s running jobs, oldest first: after a restart, the ones to resume.
+    pub async fn running(&self, provider: &str) -> anyhow::Result<Vec<Job>> {
+        let provider = provider.to_string();
+        self.run(move |c| {
+            let mut st = c.prepare(&format!("SELECT {COLS} FROM jobs WHERE provider = ?1 AND state = 'running' ORDER BY created_at, rowid"))?;
+            let rows = st.query_map([provider], job)?.collect();
             rows
         })
         .await
