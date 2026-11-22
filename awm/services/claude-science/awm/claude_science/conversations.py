@@ -147,11 +147,21 @@ def post_message(owner: Owner, frame_id: str, text: str) -> dict[str, Any]:
     return {"result": sent, "cursor": page.get("total")}
 
 
+CLEANUP = ("When finished, copy what is worth keeping out of the output "
+           "folder, then call `science done conversation={id}`: it deletes the "
+           "conversation, its folder and the mounts `new` added for it.")
+
+INPUTS_LINE = ("\n\nInput files for this request are in the `in/` folder inside "
+               "your output folder.")
+
+
 def open_conversation(owner: Owner, text: str, *, project: str,
                       model: str | None = None, effort: str | None = None,
+                      inputs: list[Path] = (),
                       root: Path = outputs.OUTPUTS_ROOT) -> dict[str, Any]:
     """Start a new conversation in ``project`` (found or created by name) with
-    ``text`` as its first turn, and make its output folder.
+    ``text`` as its first turn, make its output folder and copy ``inputs``
+    into its ``in/``.
 
     The create is never retried: a request that fails in flight may still have
     started the conversation, and a second one would start it twice.
@@ -166,6 +176,10 @@ def open_conversation(owner: Owner, text: str, *, project: str,
         log.warning("claude-science: no output folder for project %s: %s",
                     pid, exc)
         project_folder = None
+    if inputs:
+        if project_folder is None:
+            raise WorkbenchError(f"no output folder under {root} to stage inputs in")
+        text += INPUTS_LINE
     body: dict[str, Any] = {"input_data": {"request": text}}
     if model:
         body["model"] = model
@@ -179,17 +193,48 @@ def open_conversation(owner: Owner, text: str, *, project: str,
                 f"{exc} — the conversation may have started anyway; list the "
                 f"project with `science read` before trying again") from exc
         raise
-    folder = None
-    if project_folder is not None and sent.get("root_frame_id"):
-        folder = project_folder / sent["root_frame_id"][:8]
+    cid = sent.get("root_frame_id")
+    folder = staged = None
+    if project_folder is not None and cid:
+        folder = project_folder / cid[:8]
         folder.mkdir(exist_ok=True)
+        if inputs:
+            staged = outputs.stage_inputs(list(inputs), folder)
     return {
-        "conversation": {"id": sent.get("root_frame_id"), "project_id": pid,
+        "conversation": {"id": cid, "project_id": pid,
                          "project": proj.get("name") or project},
         "status": sent.get("status"),
         "cursor": 0,
         "output_folder": None if folder is None else str(folder),
+        "inputs_folder": None if staged is None else str(staged),
+        "cleanup": CLEANUP.format(id=cid),
     }
+
+
+def delete_conversation(owner: Owner, frame_id: str) -> None:
+    """Delete a root conversation and its sub-frames in the workbench."""
+    owner.request("DELETE", f"/api/frames/{frame_id}")
+
+
+def stale(owner: Owner, ids: list[str], *, older_than_s: float,
+          now: float) -> list[dict[str, Any]]:
+    """Of ``ids``, the conversations idle past ``older_than_s``, or gone."""
+    out = []
+    for cid in ids:
+        try:
+            frame = owner.get(f"/api/frames/{cid}", params={"shallow": "true"})
+        except WorkbenchError as exc:
+            if exc.status == 404:
+                out.append({"id": cid, "status": "gone"})
+            continue
+        updated = frame.get("updated_at") or ""
+        try:
+            age = now - datetime.fromisoformat(updated).timestamp()
+        except ValueError:
+            continue
+        if frame.get("status") != "processing" and age > older_than_s:
+            out.append({**summary(frame), "id": cid})
+    return out
 
 
 def _iso(ms: Any) -> str | None:
@@ -243,7 +288,10 @@ def read_messages(owner: Owner, frame_id: str, *, since: int | None = None,
     if not include_tools:
         entries = [e for e in entries if e["text"]]
     frame = owner.get(f"/api/frames/{frame_id}", params={"shallow": "true"})
+    done = {} if frame.get("status") == "processing" else {
+        "cleanup": CLEANUP.format(id=frame_id)}
     return {
+        **done,
         "conversation": summary(frame),
         "messages": entries,
         "cursor": start + len(raw),

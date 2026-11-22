@@ -22,6 +22,7 @@ NAME.md
 # Workspace runtime directories (not tracked)
 data/
 projects/
+science-outputs/
 # Per-task workspace units (workspace service execution sandboxes — gitignored,
 # the DAG-node analog of projects/).
 tasks/

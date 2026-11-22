@@ -13,7 +13,7 @@ import json
 import httpx
 import pytest
 
-from awm.claude_science import api, conversations
+from awm.claude_science import api, conversations, hub_adapter, ledger, outputs
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -52,16 +52,22 @@ def _assistant_text(text):
 class Stub:
     """Just enough of the workbench to route the verbs' requests."""
 
-    def __init__(self, frames, transcripts=None, post_status=200):
+    def __init__(self, frames, transcripts=None, post_status=200, grants=()):
         self.frames = frames
         self.transcripts = transcripts or {}
         self.post_status = post_status
+        self.grants = [{"hostPath": g, "mode": "ro"} for g in grants]
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
         q = request.url.params
+        if path == "/api/preferences/host-grants":
+            if request.method == "DELETE":
+                gone = json.loads(request.content)["path"]
+                self.grants = [g for g in self.grants if g["hostPath"] != gone]
+            return httpx.Response(200, json={"grants": self.grants})
         if request.method == "GET" and path == "/api/frames":
             assert q["root_only"] == "true"
             return httpx.Response(200, json=self.frames)
@@ -90,6 +96,9 @@ class Stub:
             return httpx.Response(200, json={
                 "frame_id": fid, "from": start, "total": len(msgs),
                 "messages": msgs[start:start + limit]})
+        if request.method == "DELETE" and len(parts) == 3:
+            self.frames = [f for f in self.frames if f["id"] != fid]
+            return httpx.Response(200, json={"frame_id": fid})
         if request.method == "POST" and parts[3] == "message":
             if self.post_status != 200:
                 return httpx.Response(
@@ -164,6 +173,41 @@ def test_a_new_conversation_gets_its_output_folder(tmp_path, monkeypatch):
     assert (tmp_path / "agents" / "eeee5555").is_dir()
 
 
+def test_inputs_are_staged_in_the_output_folder(tmp_path, monkeypatch):
+    (tmp_path / "agents").mkdir()
+    monkeypatch.setattr(conversations.outputs, "ensure_project",
+                        lambda owner, pid, root: tmp_path / "agents")
+    src = tmp_path / "src"
+    (src / "tables").mkdir(parents=True)
+    (src / "notes.md").write_text("context")
+    (src / "tables" / "a.csv").write_text("1,2")
+    inputs = outputs.check_inputs([str(src / "notes.md"), str(src / "tables")])
+    stub = Stub(FRAMES)
+    with stub.owner() as owner:
+        out = conversations.open_conversation(owner, "x", project="Agents",
+                                              inputs=inputs, root=tmp_path)
+    staged = tmp_path / "agents" / "eeee5555" / "in"
+    assert out["inputs_folder"] == str(staged)
+    assert (staged / "notes.md").read_text() == "context"
+    assert (staged / "tables" / "a.csv").read_text() == "1,2"
+    request = json.loads(stub.posts()[-1].content)["input_data"]["request"]
+    assert request == "x" + conversations.INPUTS_LINE
+    assert "science done conversation=eeee5555-0" in out["cleanup"]
+
+
+@pytest.mark.parametrize("make, why", [
+    (lambda d: [str(d / "missing")], "missing"),
+    (lambda d: [str(d / "big"), str(d / "big")], "two inputs"),
+    (lambda d: [str(d / "big")], "cap"),
+])
+def test_an_input_that_cannot_be_staged_is_refused(tmp_path, monkeypatch,
+                                                   make, why):
+    (tmp_path / "big").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(outputs, "INPUT_BYTES_CAP", 1024)
+    with pytest.raises(ValueError, match=why):
+        outputs.check_inputs(make(tmp_path))
+
+
 def test_a_create_lost_in_flight_is_not_retried_and_says_so():
     stub = Stub(FRAMES, post_status=None)
     with stub.owner() as owner:
@@ -197,6 +241,16 @@ def test_a_read_from_a_cursor_returns_the_rest_and_the_next_cursor():
     assert out["cursor"] == 5 and out["total"] == 5 and out["more"] is False
     assert out["conversation"]["status"] == "completed"
     assert not stub.posts()
+
+
+def test_only_a_finished_conversation_carries_the_cleanup_line():
+    frames = [*FRAMES, _blocked("ffff6666-0")]
+    stub = Stub(frames, {"bbbb2222-0": TRANSCRIPT, "ffff6666-0": TRANSCRIPT})
+    with stub.owner() as owner:
+        finished = conversations.read_messages(owner, "bbbb2222-0")
+        busy = conversations.read_messages(owner, "ffff6666-0")
+    assert "bbbb2222-0" in finished["cleanup"]
+    assert "cleanup" not in busy
 
 
 def test_a_cursor_past_the_end_is_clamped_not_an_error():
@@ -239,3 +293,46 @@ def test_a_message_to_a_blocked_conversation_is_refused_before_posting():
             conversations.post_message(owner, "ffff6666-0", "hello?")
     assert err.value.status == 409
     assert not stub.posts()
+
+
+# ---------------------------------------------------------------------------
+# Closing
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def closing(tmp_path, monkeypatch):
+    """``done`` against a stub, with a ledger and an output root in tmp_path."""
+    root = tmp_path / "out"
+    (root / "agents" / "bbbb2222").mkdir(parents=True)
+    monkeypatch.setattr(ledger, "LEDGER", tmp_path / "ledger.json")
+    monkeypatch.setattr(outputs, "OUTPUTS_ROOT", root)
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "ensure_running", lambda: None)
+    monkeypatch.setattr(hub_adapter.SUPERVISOR, "login_url", lambda: "u")
+
+    def run(stub, ref):
+        monkeypatch.setattr(hub_adapter.api, "connect", lambda url: stub.owner())
+        return hub_adapter._done({"conversation": ref})
+    return run, root
+
+
+def test_done_deletes_the_conversation_its_folder_and_its_own_mounts(closing):
+    run, root = closing
+    ledger.add("bbbb2222-0", ["/data/mine", "/data/shared"])
+    ledger.add("aaaa1111-0", ["/data/shared"])
+    stub = Stub(FRAMES, grants=["/data/mine", "/data/shared", "/standing"])
+    out = run(stub, "bbbb")
+    assert out["mounts_revoked"] == ["/data/mine"]
+    assert not (root / "agents" / "bbbb2222").exists()
+    assert "bbbb2222-0" not in {f["id"] for f in stub.frames}
+    assert [g["hostPath"] for g in stub.grants] == ["/data/shared", "/standing"]
+    assert set(ledger.load()) == {"aaaa1111-0"}
+
+
+def test_done_refuses_a_busy_conversation_and_a_name(closing):
+    run, root = closing
+    stub = Stub([*FRAMES, _blocked("ffff6666-0")])
+    with pytest.raises(ValueError, match="still processing"):
+        run(stub, "ffff")
+    with pytest.raises(ValueError, match="by id"):
+        run(stub, "optimize")
+    assert not [r for r in stub.requests if r.method == "DELETE"]

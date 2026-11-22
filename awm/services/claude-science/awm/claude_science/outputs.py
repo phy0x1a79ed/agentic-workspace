@@ -1,7 +1,6 @@
 """Per-conversation output folders on the host, kept in step with the workbench.
 
-The sandbox reads all of ``projects/`` but writes only under ``OUTPUTS_ROOT``,
-laid out like the workbench: ``<project-slug>/<conversation-id8>/``. The folders
+The sandbox's one standing grant is ``OUTPUTS_ROOT``, read-write, laid out like the workbench: ``<project-slug>/<conversation-id8>/``. The folders
 are a staging area, untracked: one is created empty for every conversation and
 deleted, contents and all, once its conversation is gone. Anything worth keeping
 is copied out before then.
@@ -47,6 +46,11 @@ SCAN_DEPTH = 4
 SCAN_CAP = 5000
 SCAN_SKIP = frozenset({".git", "node_modules", ".venv", "__pycache__"})
 ALERT_FOLDERS = 4000
+
+#: Inputs staged into a conversation's ``in/`` folder: total bytes, and folders
+#: within the scan depth, kept far under ``SCAN_CAP`` so staging never stalls.
+INPUT_BYTES_CAP = int(os.environ.get("CLAUDE_SCIENCE_INPUT_BYTES", str(200 << 20)))
+INPUT_FOLDERS_CAP = 200
 
 MARKER = "Output folder (awm):"
 ID8 = re.compile(r"^[0-9a-f]{8}$")
@@ -236,6 +240,49 @@ def sync(owner: Owner, root: Path = OUTPUTS_ROOT) -> dict[str, Any]:
                     "scan depth; at %d every conversation stalls on a grant_scan "
                     "approval", root, report["folders"], SCAN_CAP)
     return report
+
+
+def folder_of(conversation_id: str) -> Path | None:
+    return _existing(OUTPUTS_ROOT).get(conversation_id[:8])
+
+
+def check_inputs(paths: list[str]) -> list[Path]:
+    """The inputs as absolute paths, or a ValueError naming why one cannot be staged."""
+    out: list[Path] = []
+    size = folders = 0
+    for raw in paths:
+        p = Path(raw).expanduser()
+        if p.is_symlink() or not p.exists():
+            raise ValueError(f"input {raw} is missing or a symlink")
+        p = p.resolve()
+        if p.name in {q.name for q in out}:
+            raise ValueError(f"two inputs are named {p.name}")
+        if p.is_dir():
+            folders += 1 + count_folders(p, cap=INPUT_FOLDERS_CAP)
+            size += sum(f.stat().st_size for f in p.rglob("*")
+                        if f.is_file() and not f.is_symlink())
+        else:
+            size += p.stat().st_size
+        out.append(p)
+    if size > INPUT_BYTES_CAP:
+        raise ValueError(f"inputs total {size >> 20} MB, over the "
+                         f"{INPUT_BYTES_CAP >> 20} MB cap; mount large data instead")
+    if folders > INPUT_FOLDERS_CAP:
+        raise ValueError(f"inputs hold more than {INPUT_FOLDERS_CAP} folders; "
+                         f"mount large trees instead")
+    return out
+
+
+def stage_inputs(sources: list[Path], folder: Path) -> Path:
+    """Copy ``sources`` into ``folder/in/``."""
+    dest = folder / "in"
+    dest.mkdir(exist_ok=True)
+    for src in sources:
+        if src.is_dir():
+            shutil.copytree(src, dest / src.name, symlinks=True)
+        else:
+            shutil.copy2(src, dest / src.name)
+    return dest
 
 
 def check_writable_grant(path: str, grants: list[dict[str, Any]]) -> None:

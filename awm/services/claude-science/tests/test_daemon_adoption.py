@@ -379,7 +379,7 @@ def test_signin_counts_as_activity_and_waits_for_the_daemon():
     assert _get("/_signin")[1].ensured == 0
 
 
-@pytest.mark.parametrize("verb", ["url", "connector", "grants", "message", "new", "read"])
+@pytest.mark.parametrize("verb", ["url", "connector", "grants", "message", "new", "read", "done"])
 def test_a_verb_that_needs_the_daemon_starts_it_first(verb, monkeypatch):
     import asyncio
 
@@ -399,7 +399,7 @@ def test_a_verb_that_needs_the_daemon_starts_it_first(verb, monkeypatch):
 
     monkeypatch.setattr(hub_adapter.SUPERVISOR, "ensure_running", ensure)
     monkeypatch.setattr(hub_adapter.SUPERVISOR, "login_url", after)
-    args = {"text": "hi"}
+    args = {"text": "hi", "conversation": "aaaa"}
     with pytest.raises(Stop):
         asyncio.run(hub_adapter.HANDLERS[verb](args))
     assert order == ["ensure", "api"]

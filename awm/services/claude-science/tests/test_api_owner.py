@@ -106,9 +106,11 @@ def test_a_malformed_store_reads_as_empty_rather_than_raising(tmp_path,
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def wired(monkeypatch):
+def wired(monkeypatch, tmp_path):
     """Drive the verbs against a recording daemon."""
     from awm.claude_science import hub_adapter
+
+    monkeypatch.setattr(hub_adapter.ledger, "LEDGER", tmp_path / "ledger.json")
 
     calls: list[tuple[str, str]] = []
     state: dict = {"grants": [], "servers": [], "tools": [{"name": "t"}]}
@@ -220,12 +222,15 @@ def test_remove_revokes_the_grant(wired):
 def test_new_grants_its_mounts_before_the_first_turn(wired, tmp_path,
                                                      monkeypatch):
     hub_adapter, calls, state = wired
+    state["grants"].append({"id": "/ws/data", "hostPath": "/ws/data", "mode": "ro"})
     monkeypatch.setattr(hub_adapter.outputs, "ensure_project",
                         lambda owner, pid, root: tmp_path)
     hub_adapter._new({"text": "hi",
                       "mounts": ["/ws/data", f"{tmp_path}:rw"]})
     assert {(g["hostPath"], g["mode"]) for g in state["grants"]} == {
         ("/ws/data", "ro"), (str(tmp_path), "rw")}
+    # The standing grant is not the conversation's to revoke.
+    assert hub_adapter.ledger.load() == {"f" * 32: {"mounts": [str(tmp_path)]}}
     first_turn = calls.index(("POST", "/api/projects/proj_1/request"))
     assert calls.index(("POST", "/api/preferences/host-grants")) < first_turn
 

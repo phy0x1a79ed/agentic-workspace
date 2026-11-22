@@ -35,13 +35,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 import time
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, call, spawn_supervised
 
-from awm.claude_science import (api, conversations, daemon, mcp_bridge, outputs,
-                                signin)
+from awm.claude_science import (api, conversations, daemon, ledger, mcp_bridge,
+                                outputs, signin)
 
 log = logging.getLogger("awm.claude_science.hub_adapter")
 
@@ -59,6 +61,9 @@ SUPERVISOR = daemon.Supervisor(
 #: ``surfaces``.
 #: Where `new` opens a conversation when the caller names no project.
 DEFAULT_PROJECT = "Agents"
+
+#: Seconds a finished conversation may sit before ``status`` lists it as stale.
+STALE_S = float(os.environ.get("CLAUDE_SCIENCE_STALE_S", "86400"))
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -228,13 +233,15 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Start a new Claude Science conversation with text as its "
                 "first turn, in a project named by name (found or created). "
-                "Returns the conversation id, its output folder on the host "
-                "and a cursor: read from it to follow the reply. mounts are "
-                "granted first, as `grants` would, and a refusal fails the "
-                "call before the conversation opens. Mounts outlast the "
-                "conversation until `grants` removes them, and every other "
-                "conversation on the node sees them too. Never retry a "
-                "failed call blindly; it may have started the conversation."
+                "The agent sees only its output folder and what you hand it: "
+                "inputs are copied into the folder's in/ (small files, "
+                "200 MB total), mounts are granted read-only (large data; "
+                "every conversation on the node sees them until `done`). A "
+                "refused input or mount fails the call before the "
+                "conversation opens. Returns the conversation id, its output "
+                "folder and a cursor to read from. Call `done` when finished. "
+                "Never retry a failed call blindly; it may have started the "
+                "conversation."
             ),
             "params": [
                 {"name": "text", "type": "string", "required": True,
@@ -245,6 +252,9 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Model id. Omit for the workbench default."},
                 {"name": "effort", "type": "string",
                  "description": "Effort level. Omit for the workbench default."},
+                {"name": "inputs", "type": "array",
+                 "description": "Host files or folders to copy into the "
+                                "output folder's in/."},
                 {"name": "mounts", "type": "array",
                  "description": "Host folders to grant first: \"path\", "
                                 "\"path:ro\" or \"path:rw\" (default ro)."},
@@ -260,7 +270,9 @@ API_MANIFEST: dict[str, Any] = {
                 "('processing' means a reply is still coming) and the next "
                 "cursor to pass as since. With no since, returns the tail. A "
                 "conversation blocked on an approval or a question carries "
-                "pending_approval {kind, summary}."
+                "pending_approval {kind, summary}. A finished conversation "
+                "carries a cleanup line: copy out what to keep, then call "
+                "`done`."
             ),
             "params": [
                 {"name": "conversation", "type": "string",
@@ -275,6 +287,23 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "include_tools", "type": "boolean",
                  "description": "Keep messages that carry no text, such as "
                                 "tool results. Default false."},
+            ],
+            "timeout": 240,
+        },
+        {
+            "name": "done",
+            "tool": "science_done",
+            "description": (
+                "Close a finished Claude Science conversation: delete it in "
+                "the workbench, delete its output folder, and revoke the "
+                "mounts `new` added for it that no other open conversation "
+                "uses. Copy out anything worth keeping first; the folder is "
+                "gone after this. Refused while the conversation is "
+                "processing."
+            ),
+            "params": [
+                {"name": "conversation", "type": "string", "required": True,
+                 "description": "Conversation id or id prefix."},
             ],
             "timeout": 240,
         },
@@ -305,7 +334,15 @@ API_MANIFEST: dict[str, Any] = {
 def _active() -> dict:
     try:
         with api.connect(SUPERVISOR.login_url()) as owner:
-            return {"conversations": conversations.active(owner)}
+            rows = ledger.load()
+            stale = conversations.stale(owner, list(rows), older_than_s=STALE_S,
+                                        now=time.time())
+            for row in stale:
+                row["mounts"] = rows[row["id"]].get("mounts", [])
+                folder = outputs.folder_of(row["id"])
+                row["folder"] = None if folder is None else str(folder)
+            return {"conversations": conversations.active(owner),
+                    "stale": stale}
     except Exception as exc:  # noqa: BLE001 — status reports, never fails
         return {"error": str(exc)}
 
@@ -466,14 +503,54 @@ def _new(args: dict) -> dict:
     if not text:
         raise ValueError("text is required")
     mounts = _mounts(args.get("mounts") or [])
+    inputs = outputs.check_inputs(args.get("inputs") or [])
     SUPERVISOR.ensure_running()
     with api.connect(SUPERVISOR.login_url()) as owner:
+        added = []
         for path, mode in mounts:
-            _grant(owner, api.list_grants(owner), path, mode)
-        return conversations.open_conversation(
+            grants = api.list_grants(owner)
+            if not any(path in (g.get("hostPath"), g.get("id")) for g in grants):
+                added.append(path)
+            _grant(owner, grants, path, mode)
+        out = conversations.open_conversation(
             owner, text,
             project=(args.get("project") or "").strip() or DEFAULT_PROJECT,
-            model=args.get("model"), effort=args.get("effort"))
+            model=args.get("model"), effort=args.get("effort"), inputs=inputs)
+        ledger.add(out["conversation"]["id"], added)
+        return out
+
+
+def _done(args: dict) -> dict:
+    """Close a conversation. Runs on a worker thread."""
+    ref = (args.get("conversation") or "").strip().lower()
+    if not ref:
+        raise ValueError("conversation is required")
+    SUPERVISOR.ensure_running()
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        try:
+            target = conversations.resolve_conversation(owner, ref)
+        except api.WorkbenchError:
+            cid = ledger.match(ref)
+            if cid is None:
+                raise
+        else:
+            cid = target["id"]
+            if not cid.lower().startswith(ref):
+                raise ValueError(f"name the conversation by id, not {ref!r}")
+            if target.get("status") == "processing":
+                raise ValueError(f"conversation {cid[:8]} is still processing")
+            conversations.delete_conversation(owner, cid)
+        folder = outputs.folder_of(cid)
+        if folder is not None:
+            shutil.rmtree(folder)
+        revoked = ledger.pop(cid)
+        granted = {g.get("hostPath") for g in api.list_grants(owner)}
+        for path in revoked:
+            if path in granted:
+                api.remove_grant(owner, path=path)
+        return {"deleted": cid,
+                "folder": None if folder is None else str(folder),
+                "mounts_revoked": revoked}
 
 
 def _read(args: dict) -> dict:
@@ -503,6 +580,10 @@ async def _h_read(args: dict) -> dict:
     return await asyncio.to_thread(_read, args)
 
 
+async def _h_done(args: dict) -> dict:
+    return await asyncio.to_thread(_done, args)
+
+
 async def _h_update_check(args: dict) -> dict:
     return await asyncio.to_thread(SUPERVISOR.update_check)
 
@@ -520,6 +601,7 @@ HANDLERS = {
     "message": _h_message,
     "new": _h_new,
     "read": _h_read,
+    "done": _h_done,
     "update_check": _h_update_check,
 }
 
