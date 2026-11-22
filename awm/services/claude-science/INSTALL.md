@@ -168,6 +168,7 @@ not.
 | POST | `/api/frames/:id/message` | owner bearer | send a turn: `{"input_data": {"request": "<text>"}}` | no |
 | POST | `/api/projects` | owner bearer | find or create a project: `{"name", "find_or_create": true}` | yes |
 | POST | `/api/projects/:pid/request` | owner bearer | open a conversation and run its first turn in the background. Answers `{root_frame_id, status: "accepted"}` | yes |
+| DELETE | `/api/frames/:id` | owner bearer | delete a root conversation and its sub-frames. Refuses a sub-frame | yes |
 
 The transcript page counts from 0; `from` past the end clamps to `total`, and an
 omitted `from` with a `limit` returns the tail. The post route queues the turn
@@ -304,8 +305,8 @@ Two facts are worth keeping anyway, because both cost a diagnosis to learn:
   alone would call it healthy.
 - Most of `$HOME` is invisible inside the sandbox, so a server installed there
   fails to exec with a bare `not found`. `[sandbox] user_read_paths` in
-  `<data-dir>/config.toml` is the fix, and altair keeps grants for the awm
-  interpreter and source tree so this is one less thing to rediscover.
+  `<data-dir>/config.toml` is the fix. Each path costs a credential scan (see
+  § Host file access), so no node keeps one while no local server is registered.
 
 The one channel that does cross is the filesystem: a FIFO pair in a server's own
 `workspaces/_mcp-<name>/` directory round-trips fine, which is the same shape
@@ -329,40 +330,62 @@ any verb of any tool from it. The bridge ships an explicit
 ## Host file access
 
 Claude sees only what it is granted. Grants are consent rows plus live bind
-mounts, persisted and replayed at boot, and each carries a mode — `ro` or `rw`.
-Grant a folder with `awm science grants --path <p> --mode ro`. Called with no
-path, the verb lists what a node already has. Give an existing grant a new
-`--mode` to switch it in place. Pass `--remove` to revoke it. `science new`
-takes `mounts` (`"path"`, `"path:ro"` or `"path:rw"`, default `ro`) and grants
-them before the first turn. Grants are global to the daemon, so every
-conversation on the node sees a mount, and it lasts until `grants` removes it.
-Read-only may be anything. Keep read-write small and local: `science grants`
-refuses a writable grant under `/mnt/`, where the scan crawls a WSL drive.
+mounts, persisted and replayed at boot. Each carries a mode, `ro` or `rw`.
+`awm science grants` lists, adds, re-modes and removes them. Grants are global
+to the daemon, so every conversation on the node sees every grant.
 
-| Path | Mode |
-|---|---|
-| `<workspace>/projects` | `ro` |
-| `<workspace>/data` | `ro` |
-| `<workspace>/science-outputs` | `rw` |
+Each node keeps one standing grant: `<workspace>/science-outputs`, `rw`. Create
+the folder before you grant it. The workspace `.gitignore` lists it, so a
+deploy's `git clean` spares it. The service keeps one folder in it per
+conversation, `<project-slug>/<conversation-id8>/`, and deletes the folder with
+its conversation. Each project's context carries a line that tells the agent
+where its folder is. `outputs.py` says why the layout is shallow. A node
+without the folder skips the sync.
 
-Create `science-outputs` on the node before you grant it. The service keeps one
-empty folder in it per conversation, `<project-slug>/<conversation-id8>/`, and
-deletes the folder with its conversation. Each project's context carries a line
-that tells the agent where its folder is. `outputs.py` says why the layout is
-shallow. A node without the folder skips the sync.
+**CAUTION** **Every read path costs a credential scan.** At boot and before
+sandboxed code runs, the daemon scans each grant and each `[sandbox]
+user_read_paths` entry for credential files, read-only included. The scan goes
+four levels deep, stops at 5,000 folders, and blocks the daemon's HTTP while it
+runs. On altair, standing `projects`, `data` and `miniforge3` read paths kept
+the daemon silent for about 8 minutes after boot, far past the 60 s peer-call
+timeout. Keep no standing grant besides `science-outputs`.
+
+An outer session hands a conversation files through `science new`:
+
+- `inputs` copies host files or folders into the conversation's `in/`. The
+  total is capped at 200 MB (`CLAUDE_SCIENCE_INPUT_BYTES`) and 200 folders.
+- `mounts` grants host folders before the first turn, `ro` by default, for data
+  too large to copy. A mount is node-wide while it lasts.
+
+**CAUTION** The daemon refuses a mount under `/tmp` with "Directory could not
+be accessed". Mount from under `$HOME`. `inputs` copies from anywhere.
+
+Close each conversation when its research ends:
+
+1. Read until the result carries a `cleanup` line. `new` returns one, and
+   `read` repeats it once the conversation stops processing.
+2. Copy what is worth keeping out of the output folder.
+3. Call `science done conversation=<id>`.
+
+`done` deletes the conversation, its folder and each mount `new` added for it
+that no other open conversation recorded. `new` records those mounts in
+`<AWM_DIR>/claude-science-ledger.json`, outside the sandbox. A grant that
+existed before `new` is never recorded, so `done` never revokes a standing
+grant. `science status` lists finished conversations left open past
+`CLAUDE_SCIENCE_STALE_S` (default 24 h) under `active.stale`. Nothing deletes
+them automatically, because the folder can hold the only copy of a result.
 
 Five things that bite:
 
-- **CAUTION** **A writable grant must not overlap a read grant.** Before
-  sandboxed code runs, the daemon scans each judged grant for credential files,
-  four levels deep and at most 5,000 folders. Every writable grant is judged.
+- **CAUTION** **A writable grant must not overlap a read grant.** Every grant
+  is scanned, but only a judged grant can stall a conversation. Every writable
+  grant is judged.
   A read grant is judged when it overlaps a writable one, was writable earlier
   in the daemon's life, or has a record in `sandbox-grant-scans.json`. A judged
   grant whose scan stops short raises a `grant_scan` approval that
   `--dangerously-skip-approvals` does not answer, and every conversation hangs
-  on its first command. `projects/` is far past the cap. `science grants`
-  refuses an overlapping or oversized writable grant. A grant added in the UI
-  bypasses that check.
+  on its first command. `science grants` refuses an overlapping, oversized or
+  `/mnt/` writable grant. A grant added in the UI bypasses that check.
 - **A stale judgement outlives the grant.** A record in
   `sandbox-grant-scans.json` outlives its grant, so a removed or downgraded
   grant stays judged. Every stop this service makes (`stop`, `restart`, the

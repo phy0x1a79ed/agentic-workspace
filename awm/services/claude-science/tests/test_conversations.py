@@ -197,12 +197,13 @@ def test_inputs_are_staged_in_the_output_folder(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("make, why", [
     (lambda d: [str(d / "missing")], "missing"),
-    (lambda d: [str(d / "big"), str(d / "big")], "two inputs"),
+    (lambda d: [str(d / "small"), str(d / "small")], "two inputs"),
     (lambda d: [str(d / "big")], "cap"),
 ])
 def test_an_input_that_cannot_be_staged_is_refused(tmp_path, monkeypatch,
                                                    make, why):
     (tmp_path / "big").write_bytes(b"x" * 2048)
+    (tmp_path / "small").write_bytes(b"x")
     monkeypatch.setattr(outputs, "INPUT_BYTES_CAP", 1024)
     with pytest.raises(ValueError, match=why):
         outputs.check_inputs(make(tmp_path))
