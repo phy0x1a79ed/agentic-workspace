@@ -15,18 +15,20 @@ Nothing.
 ## Preferences
 
 - 2026-11-22: General compute, not workflow-only.
+- 2026-11-22: Deploy once, with the rename plus every change decided in the walkthrough.
+- 2026-11-22: Offer = materials (paths, some folders) + method (a bash command) + metrics to bid against.
 
 ## Stack
 
 - `call-walkthrough`: "walk through what an actual call would look like and how it can be fullfilled... as in how all the dependencies move over." Gap found: the `task` op stages data but has no model for the software environment.
 - `node-prep`: "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
 - `tune`: "I want to tune the Baitan service."
-- `rename`: "I also want to rename it." Candidate: "lets call it awm/outsource?" — confirm whether that is the tool name, the crate prefix, or both.
+- `rename`: "I also want to rename it." Decided: "renaming everything from baitan -> awm/outsource"; worker running.
 - carried from dex-poc stack (open there): `test-cases` (msm across HPC clusters), `arrays`, `arbutus-spot`, `backend-hardening`.
 
 ## Workers
 
-None.
+- rename worker (sonnet): baitan → outsource across the awm repo, on feat/baitan-tune; no deploy.
 
 ## Closed
 
