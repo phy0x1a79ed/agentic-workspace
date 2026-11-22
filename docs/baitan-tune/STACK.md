@@ -6,7 +6,7 @@
 
 ## Current
 
-`call-walkthrough`: one real call end to end; how its dependencies move.
+`resources-model`: CPUs vs memory.
 
 ## Waiting on the user
 
@@ -20,9 +20,9 @@ Nothing.
 
 ## Stack
 
-- `call-walkthrough`: "walk through what an actual call would look like and how it can be fullfilled... as in how all the dependencies move over." Gap found: the `task` op stages data but has no model for the software environment. State: environment is a material (Tony, 2026-11-22). Decided 2026-11-22: model the offer on a metasmith transform declaration (requirements, products, protocol), but outsource and metasmith stay distinct tools; no data-type registry. Keyless (2026-11-22): `requires` is a list of paths; `produces` is paths copied back; no named slots ("I don't think model should then become this universal reference across all time"). Identity: metasmith-style stat ids, no content hashing. No props (2026-11-22). Folders: no stat walk; a folder holding `.git` is identified by its commit hash; plain folders use top-level stat and accept the risk; instructions tell agents to list each repo as its own material. DVC pins need no rule (tracked in the repo). Open: dirty working trees.
+- `call-walkthrough`: "walk through what an actual call would look like and how it can be fullfilled". Shape closed as `offer-shape`; build worker running; try it live once built ("need to try for real").
   - `resources-model`: CPUs vs memory. "memory is probably a floor, but memory may also increase with the number of cores. For CPUs, that's probably something more of like a metric ... some stuff just doesn't go faster with more cores." Keep apart from metrics.
-  - `cache-default`: path-identified materials go stale when a file is edited; may be moot if transforms carry metasmith lineage.
+- `discovery`: agents can't find outsource (no AGENTS.md, skill, or describe example).
 - `node-prep`: (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
 - `tune`: "I want to tune the Baitan service."
 - `rename`: "I also want to rename it." Landed 0385a219 (not deployed). 43 unit tests pass on altair; plugin e2e fails on its `far` link (`ssh localhost` inside the build container) — check against pre-rename code.
@@ -35,4 +35,5 @@ None.
 
 ## Closed
 
+- `offer-shape` (absorbs `cache-default`): transform-shaped, keyless requires/produces, protocol, .env material, stat/commit identity, no props.
 - `adoption`: general compute; any heavy agent command is a candidate.
