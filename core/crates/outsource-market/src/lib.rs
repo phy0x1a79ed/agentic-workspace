@@ -5,7 +5,7 @@ mod picker;
 mod tests;
 
 use outsource_proto::{
-    raise, raise_msg, AwardArgs, BidArgs, DnuArgs, DisposeArgs, Envelope, Fact, Id, Msg, OfferArgs, OfferSet, Outcome,
+    raise, raise_msg, AwardArgs, BidArgs, DnuArgs, DisposeArgs, Envelope, Fact, Id, ImportArgs, Msg, OfferArgs, OfferSet, Outcome,
     Phase, PromiseId, PromiseRef, PromiseStatus, PropSet, ProviderId, ReviewArgs, SettleArgs, StartedArgs, TIME_AXIS,
 };
 use serde_json::{json, Value};
@@ -34,7 +34,8 @@ struct Inner {
     links: HashMap<LinkId, UnboundedSender<Envelope>>,
     providers: HashMap<ProviderId, Prov>,
     promises: HashMap<PromiseId, Promise>,
-    holders: HashMap<Id, ProviderId>,
+    /// The `at` fact of the latest settle or import that named each id.
+    holders: HashMap<Id, Fact>,
     stats: HashMap<(ProviderId, String), Stats>,
     watchers: Vec<Watch>,
     pending: HashMap<String, (LinkId, oneshot::Sender<Envelope>)>,
@@ -173,7 +174,7 @@ impl Market {
     pub async fn serve(&self, tx: UnboundedSender<Envelope>, mut rx: UnboundedReceiver<Envelope>) {
         let link = self.attach(tx);
         while let Some(env) = rx.recv().await {
-            if env.reply_to.is_none() && matches!(env.selector.as_str(), "status" | "dispose") {
+            if env.reply_to.is_none() && matches!(env.selector.as_str(), "status" | "dispose" | "import") {
                 let m = self.clone();
                 tokio::spawn(async move { m.inbound(link, env).await });
             } else {
@@ -197,6 +198,7 @@ impl Market {
         let reply = match &msg {
             Msg::Status(r) => Some(self.status(r).await),
             Msg::Dispose(a) => Some(self.dispose(a).await),
+            Msg::Import(a) => Some(self.import(a).await),
             _ => self.lock().handle(link, &env, msg.clone()),
         };
         if let Some(r) = reply {
@@ -247,7 +249,7 @@ impl Market {
             let mut g = self.lock();
             let mut groups: BTreeMap<ProviderId, Vec<Id>> = BTreeMap::new();
             for id in &a.ids {
-                if let Some(h) = a.holder.clone().or_else(|| g.holders.get(id).cloned()) {
+                if let Some(h) = a.holder.clone().or_else(|| g.holders.get(id).and_then(|f| Some(f.as_at()?.1.to_string()))) {
                     groups.entry(h).or_default().push(id.clone());
                 }
             }
@@ -279,6 +281,30 @@ impl Market {
         match failure {
             None => ok(),
             Some(name) => raise_msg(&name, "a holder did not dispose"),
+        }
+    }
+}
+
+impl Market {
+    /// Sends the paths to the named provider and records the holder facts it returns.
+    async fn import(&self, a: &ImportArgs) -> Msg {
+        let rx = self.lock().ask_provider(&a.to, &Msg::Import(a.clone()), None);
+        match rx {
+            Some(rx) => match rx.await.ok().and_then(|e| e.msg().ok()) {
+                Some(Msg::Return(v)) => {
+                    let facts: Vec<Fact> = serde_json::from_value(v["facts"].clone()).unwrap_or_default();
+                    let mut g = self.lock();
+                    for f in facts {
+                        if let Some((id, _)) = f.as_at() {
+                            g.holders.insert(id.to_string(), f.clone());
+                        }
+                    }
+                    Msg::Return(v)
+                }
+                Some(Msg::Raise(r)) => Msg::Raise(r),
+                _ => raise_msg(UNAVAILABLE, format!("{} did not answer", a.to)),
+            },
+            None => raise_msg(UNAVAILABLE, format!("no link to {}", a.to)),
         }
     }
 }
@@ -357,7 +383,7 @@ impl Inner {
                 }
             }
             Msg::Return(_) | Msg::Raise(_) | Msg::DoesNotUnderstand(_) => return None,
-            Msg::Status(_) | Msg::Dispose(_) | Msg::Award(_) | Msg::Event(_) => {
+            Msg::Status(_) | Msg::Dispose(_) | Msg::Import(_) | Msg::Award(_) | Msg::Event(_) => {
                 Msg::DoesNotUnderstand(DnuArgs { selector: env.selector.clone() })
             }
         })
@@ -387,11 +413,18 @@ impl Inner {
             return raise_msg(raise::BAD_ARGS, "offer has no steps");
         }
         let id = outsource_proto::new_id();
-        let contract = contract_of(&a.set);
+        let mut set = a.set;
+        // A material named by id alone is found at its holder: copy the holder's fact into `start`.
+        for input in set.steps.iter().filter(|s| !s.is_placement()).flat_map(|s| &s.inputs) {
+            if let Some(f) = self.holders.get(input).filter(|f| !set.start.contains(f)) {
+                set.start.push(f.clone());
+            }
+        }
+        let contract = contract_of(&set);
         self.promises.insert(
             id.clone(),
             Promise {
-                set: a.set,
+                set,
                 v,
                 contract,
                 phase: Phase::Open,
@@ -421,6 +454,7 @@ impl Inner {
                     && pr.versions[0] <= v
                     && v <= pr.versions[1]
                     && !p.broken_by.contains(*pid)
+                    && p.set.to.as_ref().is_none_or(|to| to == *pid)
                     && p.set.place.as_ref().is_none_or(|pl| pl.iter().all(|(k, val)| pr.props.get(k) == Some(val)))
             })
             .map(|(pid, _)| pid.clone())
@@ -540,8 +574,10 @@ impl Inner {
             Outcome::Kept { facts, sizes, listing } => {
                 stats.kept += 1;
                 stats.add_err(TIME_AXIS, elapsed, time_bid);
-                for (fid, at) in facts.iter().filter_map(Fact::as_at) {
-                    self.holders.insert(fid.to_string(), at.to_string());
+                for f in &facts {
+                    if let Some((fid, _)) = f.as_at() {
+                        self.holders.insert(fid.to_string(), f.clone());
+                    }
                 }
                 self.set_phase(id, Phase::Settled { provider: provider.into(), facts, sizes, listing });
             }

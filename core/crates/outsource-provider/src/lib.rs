@@ -2,6 +2,7 @@
 
 pub mod backend;
 mod config;
+mod identity;
 mod import;
 mod index;
 mod jobs;
@@ -11,6 +12,7 @@ mod serve;
 
 pub use backend::{Backend, Done, DoneTx, JobSpec};
 pub use config::ProviderConfig;
+pub use identity::material_id;
 pub use jobs::{disk_size, find_cargo};
 pub use local::LocalBackend;
 pub use provider::{DoneRx, Provider};

@@ -1,5 +1,5 @@
 use super::*;
-use outsource_proto::{Axis, Hit, RegisterArgs, WatchArgs};
+use outsource_proto::{Axis, Hit, ImportItem, RegisterArgs, WatchArgs};
 use std::collections::VecDeque;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -172,6 +172,15 @@ async fn a2_version_ranges_and_place_gate_offers() {
     assert!(b.none_pending());
     a.bid(&id, None).await;
     far.bid(&id, None).await;
+    assert_eq!(failed_name(&c.status(&id).await), raise::NO_BIDS);
+
+    // A directed offer asks only its provider, and an unknown provider means no bids.
+    let id = c.offer(set(json!({"to": "far"}))).await;
+    assert_eq!(far.expect_offer().await, id);
+    assert!(a.none_pending());
+    far.bid(&id, Some(t(1.0))).await;
+    assert_eq!(far.expect_award().await, id);
+    let id = c.offer(set(json!({"to": "nobody"}))).await;
     assert_eq!(failed_name(&c.status(&id).await), raise::NO_BIDS);
 
     let id = c.offer(set(json!({"place": {"site": "y"}}))).await;
@@ -454,4 +463,38 @@ async fn a20_dropped_link_and_reregister() {
         seen.1 |= ev.promise == idb && matches!(&ev.phase, Phase::Failed { name, .. } if name == raise::NO_BIDS);
     }
     assert!(matches!(c.status(&ida).await.phase, Phase::Settled { .. }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn holder_records_fill_start_and_import_goes_straight_to_its_provider() {
+    let m = Market::new("market");
+    let (mut c, mut p) = (Peer::new(&m, "c"), Peer::new(&m, "p"));
+    p.reg([1, 1], &[]).await;
+    let by_input = |id: &str| set(json!({"steps": [{"op": "task", "props": {"contract": "c"}, "inputs": [id]}]}));
+    let start_of = |msg: Msg| match msg {
+        Msg::Offer(a) => a.set.start,
+        m => panic!("{m:?}"),
+    };
+
+    // A settle that names an id is its holder record: an offer naming only that id gets the fact.
+    let held = Fact::at_path("T", "p", "/db/T");
+    let id = award_to(&mut p, &mut c, 1.0).await;
+    p.started(&id).await;
+    p.settle(&id, Outcome::Kept { facts: vec![held.clone()], sizes: BTreeMap::new(), listing: BTreeMap::new() }).await;
+    c.offer(by_input("T")).await;
+    assert_eq!(start_of(p.next().await), [held]);
+
+    // `import` is asked of the named provider alone, and its facts become holder records.
+    let args = ImportArgs { to: "p".into(), materials: vec![ImportItem { path: "/x".into(), ty: None }] };
+    let reply = Msg::Return(json!({"ids": ["X"], "facts": [Fact::at_path("X", "p", "/x")]}));
+    let (r, ()) = tokio::join!(c.ask(Msg::Import(args.clone())), async {
+        let e = p.next_env().await;
+        assert_eq!(e.msg().unwrap(), Msg::Import(args.clone()));
+        p.reply(&e, reply.clone()).await;
+    });
+    assert_eq!(r, reply);
+    c.offer(by_input("X")).await;
+    assert_eq!(start_of(p.next().await), [Fact::at_path("X", "p", "/x")]);
+    let nobody = ImportArgs { to: "nobody".into(), ..args };
+    assert!(matches!(c.ask(Msg::Import(nobody)).await, Msg::Raise(r) if r.name == UNAVAILABLE));
 }

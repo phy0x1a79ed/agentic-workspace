@@ -78,7 +78,7 @@ pub(crate) struct State {
 }
 
 pub(crate) struct Inner {
-    cfg: ProviderConfig,
+    pub(crate) cfg: ProviderConfig,
     state_dir: PathBuf,
     /// Runs compute steps.
     backend: Arc<dyn Backend>,
@@ -127,6 +127,40 @@ fn request_pairs(step: &Step, inputs: &[Id]) -> Vec<Pair> {
             .chain([("op".to_string(), step.op.clone())])
             .chain(inputs.iter().map(|i| ("input".to_string(), i.clone()))),
     )
+}
+
+const OUT: &str = "out";
+
+/// The index pairs a staged material answers to: its type's properties when it has one (a
+/// held instance with more properties still hits), else its own id.
+fn stage_pairs(item: &Value, id: &str) -> Vec<Pair> {
+    match serde_json::from_value::<PropSet>(item["type"].clone()) {
+        Ok(ty) => normalize(ty),
+        Err(_) => vec![("id".into(), id.into())],
+    }
+}
+
+/// The `(id, pairs)` of each material a step stages.
+fn staged(step: &Step) -> Vec<(Id, Vec<Pair>)> {
+    step.spec["stage"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|item| item["id"].as_str().map(|id| (id.to_string(), stage_pairs(item, id))))
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct Typed {
+    path: String,
+    #[serde(rename = "type")]
+    ty: PropSet,
+}
+
+/// The outputs a task keeps under a type: `(id, pairs, path)`.
+fn typed_outputs(step: &Step) -> Vec<(Id, Vec<Pair>, String)> {
+    let typed: Vec<Typed> = serde_json::from_value(step.spec["typed"].clone()).unwrap_or_default();
+    typed.into_iter().map(|t| (instance_id(&t.ty), normalize(t.ty), t.path)).collect()
 }
 
 fn contract_of(set: &OfferSet) -> String {
@@ -251,6 +285,13 @@ impl Provider {
             Msg::Status(r) => me.on_status(&env, r).await,
             Msg::Cancel(r) => me.on_cancel(&env, r).await,
             Msg::Dispose(a) => me.on_dispose(&env, a),
+            Msg::Import(a) => {
+                let reply = match self.import_materials(&a.materials) {
+                    Ok(v) => Msg::Return(v),
+                    Err(e) => raise_msg(raise::BAD_ARGS, e),
+                };
+                me.reply_env(env.reply(&reply));
+            }
             Msg::Review(a) => me.on_review(&env, a),
             Msg::Return(_) => {}
             Msg::Raise(r) => tracing::warn!("{} raised {}: {}", env.from, r.name, r.message),
@@ -325,6 +366,53 @@ impl Inner {
         set.start.iter().find(|f| f.as_at() == Some((id, self.cfg.id.as_str()))).and_then(Fact::path)
     }
 
+    /// Maps each material the step stages to the instance this provider holds under its type, and
+    /// returns the longest time a transfer of one still has to run.
+    fn resolve_stage(&self, st: &State, step: &Step, resolved: &mut Resolved, made: &mut HashSet<Id>) -> Option<f64> {
+        let mut flying: Option<f64> = None;
+        for (id, pairs) in staged(step) {
+            let slots = match st.index.lookup(&pairs, &[OUT.to_string()]) {
+                Some(Found::Done(slots)) => slots,
+                Some(Found::Flying { remaining, slots, .. }) => {
+                    flying = Some(flying.map_or(remaining, |f| f.max(remaining)));
+                    slots
+                }
+                None => continue,
+            };
+            made.insert(slots[OUT].clone());
+            resolved.insert(id, slots[OUT].clone());
+        }
+        flying
+    }
+
+    /// Like `resolve_stage` at run time: waits out each transfer in flight, then maps what is held.
+    async fn resolve_staged(&self, step: &Step, resolved: &mut Resolved) {
+        for (id, pairs) in staged(step) {
+            loop {
+                let found = self.state.lock().unwrap().index.lookup(&pairs, &[OUT.to_string()]);
+                match found {
+                    Some(Found::Done(slots)) => {
+                        resolved.insert(id, slots[OUT].clone());
+                        break;
+                    }
+                    Some(Found::Flying { eid, .. }) => {
+                        let Some(mut rx) = self.state.lock().unwrap().waiters.get(&eid).map(|w| w.subscribe()) else { break };
+                        while rx.changed().await.is_ok() {}
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    /// Seconds a bid adds for pulling the step's environment, zero when cached or absent.
+    fn pull_secs(&self, step: &Step) -> Result<f64, String> {
+        Ok(match self.env_of(step)? {
+            Some(env) if !self.sif(&env.id).exists() => self.cfg.env_pull_secs,
+            _ => 0.0,
+        })
+    }
+
     fn fetch_cost(&self, st: &State, set: &OfferSet, inputs: &[Id], made: &HashSet<Id>) -> Result<f64, String> {
         let each = set.size.unwrap_or(0) as f64 / inputs.len().max(1) as f64;
         let mut total = 0.0;
@@ -355,7 +443,7 @@ impl Inner {
         if set.steps.is_empty() {
             return Err("empty set".into());
         }
-        if self.cfg.placement_only && set.steps.iter().any(|s| !s.is_placement()) {
+        if self.cfg.placement_only && set.steps.iter().any(|s| !s.is_move()) {
             return Err("placement only".into());
         }
         let mut st = self.state.lock().unwrap();
@@ -364,8 +452,22 @@ impl Inner {
         let (mut seq, mut flying, mut work, mut fetch) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         let (mut all_hit, mut all_done, mut places) = (true, true, false);
         for step in &set.steps {
+            if let Some(remaining) = self.resolve_stage(&st, step, &mut resolved, &mut made) {
+                all_done = false;
+                flying = flying.max(remaining);
+            }
             let inputs: Vec<Id> = step.inputs.iter().map(|i| resolve(&resolved, i)).collect();
             match step.op.as_str() {
+                "prep" => {
+                    let lacks = inputs.iter().any(|i| !made.contains(i) && !st.instances.contains_key(i) && self.held_here(set, i).is_none());
+                    let pull = self.pull_secs(step)?;
+                    if lacks || pull > 0.0 {
+                        all_hit = false;
+                        all_done = false;
+                        fetch += self.fetch_cost(&st, set, &inputs, &made)?;
+                        seq += pull;
+                    }
+                }
                 "place" => {
                     places = true;
                     fetch += self.fetch_cost(&st, set, &inputs, &made)?;
@@ -395,11 +497,7 @@ impl Inner {
                     if stored.is_none() {
                         all_hit = false;
                         all_done = false;
-                        let pull = match self.env_of(step)? {
-                            Some(env) if !self.sif(&env.id).exists() => self.cfg.env_pull_secs,
-                            _ => 0.0,
-                        };
-                        let e = self.est(step) + pull;
+                        let e = self.est(step) + self.pull_secs(step)?;
                         work += e;
                         seq += e;
                         fetch += self.fetch_cost(&st, set, &inputs, &made)?;
@@ -519,6 +617,7 @@ impl Inner {
                     }
                 }
                 "task" | "cargo" => here.extend(self.compute(promise, idx, step, set, &mut resolved).await?),
+                "prep" => here.extend(self.prep(promise, idx, step, set, &mut resolved).await?),
                 other => return Err(format!("unknown op {other}")),
             }
         }
@@ -567,6 +666,7 @@ impl Inner {
         set: &OfferSet,
         resolved: &mut Resolved,
     ) -> Result<Vec<Id>, String> {
+        self.resolve_staged(step, resolved).await;
         let inputs: Vec<Id> = step.inputs.iter().map(|i| resolve(resolved, i)).collect();
         let pairs = request_pairs(step, &inputs);
         let extras: Vec<Pair> =
@@ -576,7 +676,7 @@ impl Inner {
             enum Act {
                 Hit(BTreeMap<String, Id>),
                 Wait(watch::Receiver<()>),
-                Run(u64),
+                Run(u64, Vec<u64>),
             }
             let act = {
                 let mut st = self.state.lock().unwrap();
@@ -590,7 +690,17 @@ impl Inner {
                             flight: Some(Flight { since: Instant::now(), est: self.est(step), owner: promise.into() }),
                         });
                         st.waiters.insert(eid, watch::channel(()).0);
-                        Act::Run(eid)
+                        let kept = typed_outputs(step)
+                            .into_iter()
+                            .map(|(id, pairs, _)| {
+                                st.index.drop_ids(std::slice::from_ref(&id));
+                                let flight = Some(Flight { since: Instant::now(), est: self.est(step), owner: promise.into() });
+                                let teid = st.index.insert(Entry { pairs, slots: [(OUT.to_string(), id)].into(), flight });
+                                st.waiters.insert(teid, watch::channel(()).0);
+                                teid
+                            })
+                            .collect();
+                        Act::Run(eid, kept)
                     }
                 }
             };
@@ -602,20 +712,24 @@ impl Inner {
                         resolved.insert(rid.clone(), sid.clone());
                         ids.push(sid);
                     }
+                    let st = self.state.lock().unwrap();
+                    ids.extend(typed_outputs(step).into_iter().map(|t| t.0).filter(|id| st.instances.contains_key(id)));
                     return Ok(ids);
                 }
                 Act::Wait(mut rx) => while rx.changed().await.is_ok() {},
-                Act::Run(eid) => {
+                Act::Run(eid, typed) => {
                     let made = self.run_job(promise, idx, step, set, resolved).await;
                     let mut st = self.state.lock().unwrap();
-                    match &made {
-                        Ok(instances) => {
-                            st.instances.extend(instances.iter().cloned());
-                            st.index.finish(eid);
+                    for e in std::iter::once(&eid).chain(&typed) {
+                        match &made {
+                            Ok(_) => st.index.finish(*e),
+                            Err(_) => st.index.remove(*e),
                         }
-                        Err(_) => st.index.remove(eid),
+                        st.waiters.remove(e);
                     }
-                    st.waiters.remove(&eid);
+                    if let Ok(instances) = &made {
+                        st.instances.extend(instances.iter().cloned());
+                    }
                     self.persist(&st);
                     return made.map(|m| m.into_iter().map(|(id, _)| id).collect());
                 }
@@ -664,8 +778,17 @@ impl Inner {
                 if !globs.is_empty() && listing.is_empty() {
                     return Err("task made none of its outputs".into());
                 }
+                let mut kept = vec![];
+                for (id, _, path) in typed_outputs(step) {
+                    let at = workdir.join(&path);
+                    if !at.exists() {
+                        return Err(format!("task made no {path}, typed output"));
+                    }
+                    let files = if at.is_dir() { walk_files(&at) } else { vec![] };
+                    kept.push((id, Instance::new(at, files)));
+                }
                 let made = Instance::new(workdir, listing);
-                Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).collect())
+                Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).chain(kept).collect())
             }
         }
     }
@@ -732,6 +855,15 @@ impl Inner {
         self.state_dir.join("env").join(format!("{id}.sif"))
     }
 
+    /// Shell lines that pull the environment's image into the cache unless it is there.
+    fn pull_lines(&self, env: &Env, apptainer: &Path) -> Vec<String> {
+        let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
+        vec![
+            format!("mkdir -p {}", q(&self.state_dir.join("env").to_string_lossy())),
+            format!("[ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif}; }}", q(&env.container)),
+        ]
+    }
+
     fn compile_task(&self, set: &OfferSet, step: &Step, resolved: &Resolved, workdir: &Path) -> Result<String, String> {
         let script = step.spec["script"].as_str().ok_or("task needs a script")?;
         let env = self.env_of(step)?;
@@ -750,12 +882,8 @@ impl Inner {
         }
         match (env, &self.apptainer) {
             (Some(env), Some(apptainer)) => {
+                lines.extend(self.pull_lines(&env, apptainer));
                 let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
-                lines.push(format!("mkdir -p {}", q(&self.state_dir.join("env").to_string_lossy())));
-                lines.push(format!(
-                    "[ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif}; }}",
-                    q(&env.container)
-                ));
                 lines.push(format!("{app} exec {} {sif} bash -c {}", binds.join(" "), q(script)));
             }
             _ => lines.push(script.to_string()),
@@ -786,6 +914,71 @@ impl Inner {
             q(rev),
             q(&built)
         ))
+    }
+
+    /// Settles a `prep` step: fetches each staged material not already held into `held/<id>/`,
+    /// holds it, and pulls the environment image. Returns the ids now held here.
+    async fn prep(self: &Arc<Self>, promise: &str, idx: usize, step: &Step, set: &OfferSet, resolved: &mut Resolved) -> Result<Vec<Id>, String> {
+        self.resolve_staged(step, resolved).await;
+        let mut lines = vec!["set -e".to_string(), "cd \"$(dirname \"$0\")\"".to_string()];
+        let (mut ids, mut fetched) = (vec![], vec![]);
+        {
+            let mut st = self.state.lock().unwrap();
+            for item in step.spec["stage"].as_object().into_iter().flat_map(|m| m.values()) {
+                let id = item["id"].as_str().ok_or("stage item has no id")?;
+                let held = resolve(resolved, id);
+                ids.push(held.clone());
+                if st.instances.contains_key(&held) || self.held_here(set, id).is_some() {
+                    continue;
+                }
+                let (_, route, held_at) = self.nearest(set, id, 0.0).ok_or_else(|| format!("cannot stage {id}: no route to a holder"))?;
+                let src = item["src"].as_str().or(held_at).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
+                let dir = self.state_dir.join("held").join(id);
+                lines.push(format!("mkdir -p {}", q(&dir.to_string_lossy())));
+                lines.push(if is_local_route(route) {
+                    format!("cp -a {} {}/", q(src), q(&dir.to_string_lossy()))
+                } else {
+                    format!("rsync -a {} {}/", q(&format!("{route}:{src}")), q(&dir.to_string_lossy()))
+                });
+                let base = Path::new(src.trim_end_matches('/')).file_name().ok_or_else(|| format!("{src} has no base name"))?;
+                let pairs = stage_pairs(item, id);
+                let flight = Some(Flight { since: Instant::now(), est: self.est(step), owner: promise.into() });
+                let eid = st.index.insert(Entry { pairs, slots: [(OUT.to_string(), id.to_string())].into(), flight });
+                st.waiters.insert(eid, watch::channel(()).0);
+                fetched.push((id.to_string(), dir.join(base), eid));
+            }
+        }
+        if let (Some(env), Some(apptainer)) = (self.env_of(step)?, &self.apptainer) {
+            lines.extend(self.pull_lines(&env, apptainer));
+        }
+        let ran = if lines.len() > 2 {
+            let workdir = self.state_dir.join("work").join(format!("{promise}-{idx}"));
+            std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
+            if !workdir.join("run.sh").exists() {
+                std::fs::write(workdir.join("run.sh"), lines.join("\n") + "\n").map_err(|e| e.to_string())?;
+            }
+            match self.exec(&self.local, promise, &workdir, &set.resources).await {
+                Ok(0) => Ok(()),
+                Ok(code) => Err(format!("prep exited {code}")),
+                Err(e) => Err(e),
+            }
+        } else {
+            Ok(())
+        };
+        let mut st = self.state.lock().unwrap();
+        for (id, path, eid) in fetched {
+            match &ran {
+                Ok(()) => {
+                    let listing = if path.is_dir() { walk_files(&path) } else { vec![] };
+                    st.instances.insert(id, Instance::new(path, listing));
+                    st.index.finish(eid);
+                }
+                Err(_) => st.index.remove(eid),
+            }
+            st.waiters.remove(&eid);
+        }
+        self.persist(&st);
+        ran.map(|()| ids)
     }
 
     async fn place(
@@ -858,7 +1051,7 @@ impl Inner {
     // ---- caller verbs --------------------------------------------------------------------
 
     async fn on_status(&self, env: &Envelope, r: PromiseRef) {
-        let rec = self.state.lock().unwrap().promises.get(&r.promise).map(|p| (p.phase.clone(), p.set.steps.iter().all(Step::is_placement)));
+        let rec = self.state.lock().unwrap().promises.get(&r.promise).map(|p| (p.phase.clone(), p.set.steps.iter().all(Step::is_move)));
         let Some((phase, moves_only)) = rec else {
             return self.reply_env(env.reply(&raise_msg(raise::UNKNOWN_PROMISE, r.promise)));
         };

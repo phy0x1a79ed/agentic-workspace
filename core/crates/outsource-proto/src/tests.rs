@@ -31,6 +31,10 @@ fn every_msg_round_trips() {
         Msg::Status(PromiseRef { promise: "p1".into() }),
         Msg::Cancel(PromiseRef { promise: "p1".into() }),
         Msg::Dispose(DisposeArgs { ids: vec!["i1".into()], holder: Some("capella".into()) }),
+        Msg::Import(ImportArgs {
+            to: "capella".into(),
+            materials: vec![ImportItem { path: "/db/u.dmnd".into(), ty: Some(props([("db", "uniref50")])) }, ImportItem { path: "/x".into(), ty: None }],
+        }),
         Msg::Review(ReviewArgs { promise: "p1".into(), scores: [("completeness".into(), 0.9)].into() }),
         Msg::Watch(WatchArgs { promises: vec![] }),
         Msg::Register(RegisterArgs { provider: "capella".into(), versions: [1, 1], props: props([("cargo", "1")]) }),
@@ -153,7 +157,7 @@ fn at_fact() {
 #[test]
 fn catalog_keeps_watch_off_mcp_and_http() {
     let names: Vec<_> = CALLER_VERBS.iter().map(|v| v.name).collect();
-    assert_eq!(names, ["offer", "status", "cancel", "dispose", "review", "watch"]);
+    assert_eq!(names, ["offer", "prep", "import", "status", "cancel", "dispose", "review", "watch"]);
     assert!(CALLER_VERBS.iter().all(|v| v.cli_only == (v.name == "watch")));
     for v in CALLER_VERBS {
         serde_json::from_str::<Value>(v.schema).unwrap();

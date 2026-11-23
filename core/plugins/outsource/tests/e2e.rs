@@ -126,5 +126,5 @@ fn serve_dials_providers_and_callers_offer_through_the_socket() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(names, ["offer", "status", "cancel", "dispose", "review"]);
+    assert_eq!(names, ["offer", "prep", "import", "status", "cancel", "dispose", "review"]);
 }

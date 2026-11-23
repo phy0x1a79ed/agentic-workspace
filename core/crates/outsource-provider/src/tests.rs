@@ -158,6 +158,41 @@ fn write_library(root: &Path, files: &[(&str, &str, &str)]) -> PathBuf {
     index
 }
 
+/// An apptainer that logs its arguments, makes `pull` write the image and runs `exec` plainly.
+fn fake_apptainer(dir: &Path) -> (PathBuf, PathBuf) {
+    let (log, fake) = (dir.join("apptainer.log"), dir.join("apptainer"));
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> {}\ncase \"$1\" in pull) shift; [ \"$1\" = --force ] && shift; echo sif > \"$1\";; exec) shift; while [ \"$1\" = --bind ]; do shift 2; done; shift; exec \"$@\";; esac\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::process::Command::new("chmod").arg("755").arg(&fake).status().unwrap();
+    (log, fake)
+}
+
+fn ty(kv: &[(&str, &str)]) -> PropSet {
+    props(kv.iter().copied())
+}
+
+/// A `prep` set staging one material by type, with `start` facts and an optional env stage.
+fn prep_of(kv: &[(&str, &str)], start: Vec<Fact>) -> (OfferSet, Id) {
+    let (t, id) = (ty(kv), instance_id(&ty(kv)));
+    let step = Step {
+        op: "prep".into(),
+        props: ty(&[("contract", "outsource-prep")]),
+        inputs: vec![id.clone()],
+        slots: vec![],
+        spec: json!({"stage": {"m": {"id": id, "type": t}}}),
+        to: None,
+    };
+    let mut set = set_of(vec![step]);
+    set.start = start;
+    (set, id)
+}
+
 #[tokio::test]
 async fn a3_inputs_priced_from_the_nearest_place() {
     let d = tempfile::tempdir().unwrap();
@@ -522,16 +557,7 @@ async fn cargo_kind_builds_through_git_and_records_the_cargo_version() {
 #[tokio::test]
 async fn env_task_pulls_once_prices_the_pull_and_runs_the_protocol_inside() {
     let d = tempfile::tempdir().unwrap();
-    let (log, fake) = (d.path().join("apptainer.log"), d.path().join("apptainer"));
-    std::fs::write(
-        &fake,
-        format!(
-            "#!/bin/sh\necho \"$@\" >> {}\ncase \"$1\" in pull) shift; [ \"$1\" = --force ] && shift; echo sif > \"$1\";; exec) shift; while [ \"$1\" = --bind ]; do shift 2; done; shift; exec \"$@\";; esac\n",
-            log.display()
-        ),
-    )
-    .unwrap();
-    std::process::Command::new("chmod").arg("755").arg(&fake).status().unwrap();
+    let (log, fake) = fake_apptainer(d.path());
     let mut c = cfg(d.path(), "p");
     c.apptainer = Some(fake);
     let p = Provider::local(c);
@@ -564,4 +590,86 @@ async fn env_task_pulls_once_prices_the_pull_and_runs_the_protocol_inside() {
     assert!(pulls.len() == 1 && pulls[0].ends_with("docker://x/y:1"), "{log}");
     let execs: Vec<_> = log.lines().filter(|l| l.starts_with("exec")).collect();
     assert!(execs.len() == 2 && execs[1].contains(&format!("{}.sif bash -c echo b > out.txt", ids[0])), "{log}");
+}
+
+#[tokio::test]
+async fn typed_outputs_are_held_by_type_and_a_prep_sees_them_in_flight_then_done() {
+    let d = tempfile::tempdir().unwrap();
+    let t = [("db", "uniref50"), ("release", "1")];
+    let mut dl = task(&[("contract", "dl")], &format!("{}; echo db > db.dmnd", gate_script(d.path(), "begun", "gate", "count")), vec![]);
+    dl.spec["typed"] = json!([{"path": "db.dmnd", "type": ty(&t)}]);
+    let dl = set_of(vec![dl]);
+    let (want, _) = prep_of(&[("db", "uniref50")], vec![]);
+    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p"))]);
+
+    // While the download runs, a prep for its type waits on it: done at the remaining time.
+    m.bid("p", "dl", &dl).await;
+    m.award("p", "dl", &dl);
+    until(&d.path().join("begun")).await;
+    let flying = m.bid("p", "w", &want).await;
+    assert_eq!(flying.hit, Some(Hit::InFlight));
+    assert!(flying.values.unwrap()["time"] <= 10.0);
+    std::fs::write(d.path().join("gate"), "").unwrap();
+    let o = m.settle("dl").await;
+
+    // Settled: the output is held under the type's id and a looser request hits it by subset.
+    let held = instance_id(&ty(&t));
+    let at = kept(&o).0.iter().find(|f| f.as_at() == Some((held.as_str(), "p"))).and_then(Fact::path).map(PathBuf::from).unwrap();
+    assert_eq!(std::fs::read_to_string(at).unwrap().trim(), "db");
+    let done = m.bid("p", "x", &want).await;
+    assert_eq!((done.hit, done.values.unwrap()["time"]), (Some(Hit::Done), 0.0));
+    let (other, _) = prep_of(&[("db", "nr")], vec![]);
+    assert!(m.bid("p", "y", &other).await.values.is_none(), "an unheld type with no source is declined");
+    assert_eq!(runs(&d.path().join("count")), 1);
+
+    // A producer that makes no file at the typed path breaks, and leaves no type behind.
+    let mut bad = task(&[("contract", "bad")], "echo x > out.txt", vec![]);
+    bad.spec["typed"] = json!([{"path": "nope", "type": ty(&[("db", "never")])}]);
+    assert!(matches!(m.run("p", "bad", &set_of(vec![bad])).await, Outcome::Broken { .. }));
+    assert!(m.bid("p", "z", &prep_of(&[("db", "never")], vec![]).0).await.values.is_none());
+}
+
+#[tokio::test]
+async fn prep_stages_and_pulls_the_image_without_running_anything() {
+    let d = tempfile::tempdir().unwrap();
+    let (log, fake) = fake_apptainer(d.path());
+    let mut c2 = cfg(d.path(), "p2");
+    c2.routes = [("p1".into(), "local".into())].into();
+    c2.apptainer = Some(fake);
+    let (p1, p2) = (Provider::local(cfg(d.path(), "p1")), Provider::local(c2));
+    let mut m = Mkt::start(vec![p1, p2]);
+
+    // `import` registers what p1 already holds: by type, or by identity; a missing path is an error.
+    let db = d.path().join("u.dmnd");
+    std::fs::write(&db, "DB").unwrap();
+    let import = |items: Value| Msg::Import(serde_json::from_value(json!({"to": "p1", "materials": items})).unwrap());
+    let Msg::Return(r) = m.ask("p1", import(json!([{"path": db, "type": {"db": "uniref50", "release": "1"}}, {"path": d.path()}]))).await else { panic!("imports") };
+    let plain = crate::material_id(&d.path().canonicalize().unwrap(), "p1", &mut vec![]).unwrap();
+    assert_eq!(r["ids"], json!([instance_id(&ty(&[("db", "uniref50"), ("release", "1")])), plain]));
+    let facts: Vec<Fact> = serde_json::from_value(r["facts"].clone()).unwrap();
+    assert_eq!(facts[0].path(), Some(db.to_str().unwrap()));
+    for bad in [json!([{"path": d.path().join("absent")}, {"path": db}]), json!([{"path": "rel"}])] {
+        assert!(matches!(m.ask("p1", import(bad)).await, Msg::Raise(r) if r.name == raise::BAD_ARGS));
+    }
+
+    // The holder answers a looser type by subset with nothing to do.
+    let (want, id) = prep_of(&[("db", "uniref50")], vec![]);
+    assert_eq!(m.bid("p1", "h", &want).await.hit, Some(Hit::Done));
+
+    // p2 stages it from p1 and pulls the env image, running no protocol.
+    let (mut set, id2) = prep_of(&[("db", "uniref50"), ("release", "1")], vec![Fact::at_path(&instance_id(&ty(&[("db", "uniref50"), ("release", "1")])), "p1", &db.to_string_lossy())]);
+    assert_ne!(id, id2);
+    let env = d.path().join("e.env");
+    std::fs::write(&env, "container: docker://x/y:1\n").unwrap();
+    set.steps[0].spec["stage"]["e.env"] = json!({"id": "env1"});
+    set.steps[0].spec["env"] = json!({"stage": "e.env", "container": "docker://x/y:1"});
+    set.steps[0].inputs.push("env1".into());
+    set.start.push(Fact::at_path("env1", "p1", &env.to_string_lossy()));
+    assert_eq!(m.bid("p2", "cold", &set).await.hit, None);
+    let o = m.run("p2", "stage", &set).await;
+    let staged = kept(&o).0.iter().find_map(|f| f.path().filter(|p| p.ends_with("u.dmnd"))).map(PathBuf::from).unwrap();
+    assert!(staged.starts_with(d.path().join("p2/held")) && std::fs::read_to_string(&staged).unwrap() == "DB");
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert!(log.lines().count() == 1 && log.starts_with("pull"), "one pull, no exec: {log}");
+    assert_eq!(m.bid("p2", "warm", &set).await.hit, Some(Hit::Done));
 }

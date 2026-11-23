@@ -50,6 +50,7 @@ pub enum Msg {
     Status(PromiseRef),
     Cancel(PromiseRef),
     Dispose(DisposeArgs),
+    Import(ImportArgs),
     Review(ReviewArgs),
     Watch(WatchArgs),
     // Provider verbs.
@@ -67,7 +68,7 @@ pub enum Msg {
 }
 
 pub const SELECTORS: &[&str] = &[
-    "offer", "status", "cancel", "dispose", "review", "watch", "register", "bid", "started", "settle",
+    "offer", "status", "cancel", "dispose", "import", "review", "watch", "register", "bid", "started", "settle",
     "award", "event", "return", "raise", "doesNotUnderstand",
 ];
 
@@ -93,6 +94,24 @@ pub struct DisposeArgs {
     pub ids: Vec<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holder: Option<ProviderId>,
+}
+
+/// Registers material that already sits at provider `to`. The market sends it straight there,
+/// with no bid round. A material with a `ty` is held under the id of that property set; any
+/// other is held under its stat or commit identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportArgs {
+    pub to: ProviderId,
+    pub materials: Vec<ImportItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportItem {
+    pub path: String,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub ty: Option<PropSet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -271,7 +290,8 @@ pub fn props<'a>(kv: impl IntoIterator<Item = (&'a str, &'a str)>) -> PropSet {
 
 /// One unit of work: a chain of steps sharing the place variable L, bound to the one provider
 /// that wins the whole set. `start` lists `(input, at, place)` facts, several per input allowed.
-/// `place` narrows providers to those whose registered props hold it.
+/// `place` narrows providers to those whose registered props hold it. `to` runs the bid round
+/// with that one provider alone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OfferSet {
@@ -280,6 +300,8 @@ pub struct OfferSet {
     pub start: Vec<Fact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<PropSet>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<ProviderId>,
     #[serde(default = "default_axes")]
     pub axes: Vec<Axis>,
     #[serde(default = "default_picker")]
@@ -318,6 +340,11 @@ pub struct Step {
 impl Step {
     pub fn is_placement(&self) -> bool {
         self.op == "place"
+    }
+
+    /// A step that only moves data: a placement or a `prep`.
+    pub fn is_move(&self) -> bool {
+        self.is_placement() || self.op == "prep"
     }
 
     pub fn key(&self) -> Id {
@@ -482,14 +509,32 @@ pub struct VerbSpec {
 }
 
 const OFFER_SUMMARY: &str = "Post one job to the compute market; returns a promise id at once (poll `status`). \
-`requires`: paths on this node (absolute or relative to the cwd; files or folders) that appear in the work dir under their base names. \
-`protocol`: one bash command run in the work dir. `produces`: paths relative to the work dir, copied back into `dest` (default the cwd) under the same relative path. \
+`requires`: a path on this node (absolute or relative to the cwd; file or folder) that appears in the work dir under its base name, or an object `{path?, type?, name?}`. \
+`type` is a property set (string to string) that is the material's identity in place of its stat or commit: every copy of it, at any path on any provider, has one id, and a provider that holds it fetches nothing. \
+An entry with a `type` and no `path` names material that already sits at a provider (the market finds the holder); it appears under `name`, default the type's values joined by `-`. \
+`protocol`: one bash command run in the work dir. `produces`: a path relative to the work dir, copied back into `dest` (default the cwd) under the same relative path, or `{path, type}`: the output stays at the provider and is held under that type for later offers to require. \
+`to`: a provider id; only that provider is asked to bid. \
 A `.env` file in `requires` (YAML with `container: docker://...`) is the environment: the protocol runs inside it with apptainer; at most one. \
 Pass each git repo as its own `requires` path. A result is reused when the protocol and every material are unchanged (a file by mtime, a repo by HEAD commit, any other folder by its own mtime); \
 a repo with uncommitted changes still counts as its commit and the reply warns. Example: \
-{\"requires\":[\"/data/iphop.env\",\"/data/counts.tsv\",\"/src/analysis\"],\"produces\":[\"out/fit.rds\"],\"protocol\":\"mkdir out && Rscript analysis/fit.R counts.tsv out/fit.rds\",\"resources\":{\"cpus\":8,\"mem_mb\":32000}}";
+{\"requires\":[\"/data/iphop.env\",\"/data/counts.tsv\",{\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"},\"name\":\"uniref50\"}],\"produces\":[\"out/fit.rds\"],\"protocol\":\"mkdir out && Rscript fit.R counts.tsv uniref50 out/fit.rds\",\"to\":\"sockeye\",\"resources\":{\"cpus\":8,\"mem_mb\":32000}}. \
+A remote download is the same verb with a typed output: {\"requires\":[],\"produces\":[{\"path\":\"uniref50.dmnd\",\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"}}],\"protocol\":\"wget -q https://example.org/uniref50.fa.gz && diamond makedb --in uniref50.fa.gz -d uniref50\",\"to\":\"sockeye\"}";
 
-const OFFER_SCHEMA: &str = r#"{"type":"object","properties":{"requires":{"type":"array","items":{"type":"string"},"description":"Input paths on the caller's node, files or folders; each lands in the work dir under its base name. One may be a .env file."},"produces":{"type":"array","items":{"type":"string"},"description":"Paths relative to the work dir to copy back; a folder brings its files."},"protocol":{"type":"string","description":"One bash command, run in the work dir."},"metrics":{"type":"array","items":{"type":"string"},"description":"Axes bids are scored on; default [\"time\"]."},"resources":{"type":"object","description":"{cpus, mem_mb} the job needs; default {cpus:1, mem_mb:2048}."},"dest":{"type":"string","description":"Directory the produces are copied into; default the caller's cwd."}},"required":["requires","produces","protocol"],"additionalProperties":false}"#;
+const OFFER_SCHEMA: &str = r#"{"type":"object","properties":{"requires":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"object","additionalProperties":{"type":"string"}},"name":{"type":"string"}},"additionalProperties":false}]},"description":"Inputs: a path on the caller's node (file or folder, lands in the work dir under its base name), or {path?, type?, name?}. One may be a .env file."},"produces":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"object","additionalProperties":{"type":"string"}}},"required":["path","type"],"additionalProperties":false}]},"description":"Paths relative to the work dir to copy back (a folder brings its files), or {path, type} to keep at the provider under that type."},"protocol":{"type":"string","description":"One bash command, run in the work dir."},"to":{"type":"string","description":"Provider id: only it is asked to bid."},"metrics":{"type":"array","items":{"type":"string"},"description":"Axes bids are scored on; default [\"time\"]."},"resources":{"type":"object","description":"{cpus, mem_mb} the job needs; default {cpus:1, mem_mb:2048}."},"dest":{"type":"string","description":"Directory the produces are copied into; default the caller's cwd."}},"required":["requires","produces","protocol"],"additionalProperties":false}"#;
+
+const PREP_SUMMARY: &str = "Stage materials at one provider ahead of the jobs that need them: the data-transfer form of a directed offer, with no protocol. \
+The provider fetches each material it lacks (rsync) and pulls a `.env` image into its cache; material it holds, or has in flight, costs nothing. Returns a promise id like `offer`. \
+`requires` takes the same entries as `offer`. Example: \
+{\"to\":\"sockeye\",\"requires\":[\"/data/iphop.env\",\"/data/counts.tsv\",{\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"}}]}";
+
+const PREP_SCHEMA: &str = r#"{"type":"object","properties":{"requires":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"object","additionalProperties":{"type":"string"}},"name":{"type":"string"}},"additionalProperties":false}]},"description":"Materials to stage, as in `offer`."},"to":{"type":"string","description":"Provider id that stages them."}},"required":["requires","to"],"additionalProperties":false}"#;
+
+const IMPORT_SUMMARY: &str = "Register material that already sits at a provider; it checks, where `prep` moves. Goes straight to that provider with no bid round. \
+Each path (absolute, on the provider) must exist, else the call fails. A material with a `type` is held under that property set, so later offers can require it by type; one without is held under its stat or commit identity. \
+Returns the ids and the holder facts. Example: \
+{\"to\":\"sockeye\",\"materials\":[{\"path\":\"/scratch/db/uniref50.dmnd\",\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"}}]}";
+
+const IMPORT_SCHEMA: &str = r#"{"type":"object","properties":{"to":{"type":"string","description":"Provider id that holds the paths."},"materials":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"object","additionalProperties":{"type":"string"}}},"required":["path"],"additionalProperties":false}}},"required":["to","materials"],"additionalProperties":false}"#;
 
 /// The single catalog the CLI, MCP and HTTP surfaces are generated from. Provider verbs are absent.
 pub const CALLER_VERBS: &[VerbSpec] = &[
@@ -498,6 +543,18 @@ pub const CALLER_VERBS: &[VerbSpec] = &[
         summary: OFFER_SUMMARY,
         cli_only: false,
         schema: OFFER_SCHEMA,
+    },
+    VerbSpec {
+        name: "prep",
+        summary: PREP_SUMMARY,
+        cli_only: false,
+        schema: PREP_SCHEMA,
+    },
+    VerbSpec {
+        name: "import",
+        summary: IMPORT_SUMMARY,
+        cli_only: false,
+        schema: IMPORT_SCHEMA,
     },
     VerbSpec {
         name: "status",

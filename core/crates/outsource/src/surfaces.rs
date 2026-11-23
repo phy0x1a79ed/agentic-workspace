@@ -7,13 +7,13 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// Builds the typed message for a caller verb, refusing provider verbs and unknown args. An
-/// `offer` is compiled from its transform shape; its warnings come back beside the message.
+/// `offer` or `prep` is compiled from its transform shape; its warnings come back beside the message.
 pub fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<(Msg, Vec<String>), String> {
     if !CALLER_VERBS.iter().any(|v| v.name == verb) {
         return Err(format!("unknown verb {verb}"));
     }
-    if verb == "offer" {
-        let Compiled { set, warnings } = offer::compile(args, site)?;
+    if verb == "offer" || verb == "prep" {
+        let Compiled { set, warnings } = if verb == "offer" { offer::compile(args, site)? } else { offer::compile_prep(args, site)? };
         return Ok((Msg::Offer(OfferArgs { set, promise: None }), warnings));
     }
     let msg = serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())?;

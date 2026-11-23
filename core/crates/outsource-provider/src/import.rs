@@ -1,11 +1,14 @@
-//! Imports from a metasmith-style index YAML: each manifest path declares a property set, and
-//! its instance id is the hash of that set. Content is never read.
+//! Registers material already on this host as held instances: from a metasmith-style index YAML
+//! (each manifest path declares a property set, whose hash is its instance id) or from the
+//! `import` verb. Content is never read.
 
 use crate::index::{normalize, Entry};
-use crate::provider::{Instance, Provider};
+use crate::provider::{Instance, Provider, State};
 use crate::jobs::walk_files;
 use anyhow::Context;
-use outsource_proto::{instance_id, Id, PropSet};
+use crate::identity::material_id;
+use outsource_proto::{instance_id, Fact, Id, ImportItem, PropSet};
+use serde_json::{json, Value};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +28,26 @@ struct Item {
     props: PropSet,
     /// The slot this instance answers for a hit; default `out`.
     slot: Option<String>,
+}
+
+impl State {
+    /// Holds `path` as instance `id`; with `declared` (a property set and the slot it answers
+    /// for) a request whose pairs are a subset of it hits. Holding the same path again changes nothing.
+    pub(crate) fn hold(&mut self, id: &Id, path: PathBuf, declared: Option<(&PropSet, String)>) {
+        if self.instances.get(id).is_some_and(|n| n.path == path) {
+            return;
+        }
+        let listing = if path.is_dir() { walk_files(&path) } else { vec![] };
+        self.index.drop_ids(std::slice::from_ref(id));
+        if let Some((props, slot)) = declared {
+            self.index.insert(Entry {
+                pairs: normalize(props.iter().map(|(k, v)| (k.clone(), v.clone()))),
+                slots: BTreeMap::from([(slot, id.clone())]),
+                flight: None,
+            });
+        }
+        self.instances.insert(id.clone(), Instance::new(path, listing));
+    }
 }
 
 impl Provider {
@@ -48,21 +71,37 @@ impl Provider {
                 declared.insert("type".into(), t);
             }
             let id = instance_id(&declared);
-            if st.instances.get(&id).is_some_and(|n| n.path == path) {
-                ids.push(id);
-                continue;
-            }
-            let listing = if path.is_dir() { walk_files(&path) } else { vec![] };
-            st.index.drop_ids(std::slice::from_ref(&id));
-            st.index.insert(Entry {
-                pairs: normalize(declared.iter().map(|(k, v)| (k.clone(), v.clone()))),
-                slots: BTreeMap::from([(item.slot.unwrap_or_else(|| "out".into()), id.clone())]),
-                flight: None,
-            });
-            st.instances.insert(id.clone(), Instance::new(path, listing));
+            st.hold(&id, path, Some((&declared, item.slot.unwrap_or_else(|| "out".into()))));
             ids.push(id);
         }
         self.inner.persist(&st);
         Ok(ids)
+    }
+
+    /// The `import` verb: every path must exist (absolute, on this host) or nothing is held.
+    /// Returns the ids, the `at` facts naming each path, and any repo warnings.
+    pub(crate) fn import_materials(&self, items: &[ImportItem]) -> Result<Value, String> {
+        let mut warnings = vec![];
+        let mut staged = vec![];
+        for item in items {
+            if !Path::new(&item.path).is_absolute() {
+                return Err(format!("{} is not an absolute path", item.path));
+            }
+            let path = Path::new(&item.path).canonicalize().map_err(|_| format!("{} does not exist", item.path))?;
+            let id = match &item.ty {
+                Some(t) if t.is_empty() => return Err(format!("{} has an empty type", item.path)),
+                Some(t) => instance_id(t),
+                None => material_id(&path, &self.inner.cfg.id, &mut warnings)?,
+            };
+            staged.push((id, path, item.ty.as_ref()));
+        }
+        let mut st = self.inner.state.lock().unwrap();
+        for (id, path, ty) in &staged {
+            st.hold(id, path.clone(), ty.map(|t| (t, "out".into())));
+        }
+        self.inner.persist(&st);
+        let ids: Vec<&Id> = staged.iter().map(|s| &s.0).collect();
+        let facts: Vec<Fact> = staged.iter().map(|(id, path, _)| Fact::at_path(id, &self.inner.cfg.id, &path.to_string_lossy())).collect();
+        Ok(json!({"ids": ids, "facts": facts, "warnings": warnings}))
     }
 }
