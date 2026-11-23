@@ -25,6 +25,10 @@ const UNAVAILABLE: &str = "unavailable";
 /// A directed offer waits this long for its one provider, which may sit behind a slow link.
 const DIRECTED_WINDOW_MS: u64 = 300_000;
 
+fn window_ms(set: &OfferSet) -> u64 {
+    if set.to.is_some() { set.window_ms.max(DIRECTED_WINDOW_MS) } else { set.window_ms }
+}
+
 /// Cheap handle to one market. Carriers attach links and feed it envelopes.
 #[derive(Clone)]
 pub struct Market {
@@ -534,7 +538,7 @@ impl Inner {
         p.round += 1;
         p.bids.clear();
         let (v, round) = (p.v, p.round);
-        let window = if p.set.to.is_some() { p.set.window_ms.max(DIRECTED_WINDOW_MS) } else { p.set.window_ms };
+        let window = window_ms(&p.set);
         let eligible: BTreeSet<ProviderId> = self
             .providers
             .iter()
@@ -603,7 +607,7 @@ impl Inner {
         if live.is_empty() {
             let silent: Vec<&str> = p.eligible.iter().filter(|e| !p.bids.contains_key(*e)).map(String::as_str).collect();
             let why = match (&p.set.to, silent.is_empty()) {
-                (Some(to), false) => format!("{to} did not bid within {} s", p.set.window_ms.max(DIRECTED_WINDOW_MS) / 1000),
+                (Some(to), false) => format!("{to} did not bid within {} s", window_ms(&p.set) / 1000),
                 _ => "no bids".to_string(),
             };
             return self.no_bids(id, &why);
@@ -626,10 +630,13 @@ impl Inner {
     fn bid(&mut self, a: BidArgs) -> Msg {
         let Some(p) = self.promises.get_mut(&a.promise) else { return unknown(&a.promise) };
         let open = matches!(p.phase, Phase::Open);
-        match (&a.values, &a.reason) {
-            _ if !open => tracing::info!("late bid from {} on {}, round closed", a.provider, a.promise),
-            (Some(v), _) => tracing::info!("{} bids {:?} on {}", a.provider, v, a.promise),
-            (None, r) => tracing::info!("{} declines {}: {}", a.provider, a.promise, r.as_deref().unwrap_or("-")),
+        if !open {
+            tracing::info!("late bid from {} on {}, round closed", a.provider, a.promise);
+        } else {
+            match (&a.values, &a.reason) {
+                (Some(v), _) => tracing::info!("{} bids {:?} on {}", a.provider, v, a.promise),
+                (None, r) => tracing::info!("{} declines {}: {}", a.provider, a.promise, r.as_deref().unwrap_or("-")),
+            }
         }
         if open && p.eligible.contains(&a.provider) && !p.bids.contains_key(&a.provider) {
             p.bids.insert(a.provider, a.values);

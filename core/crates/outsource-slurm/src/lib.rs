@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use outsource_proto::{PromiseId, Resources};
-use outsource_provider::backend::{Backend, DoneTx, JobSpec, RUN_LINE};
+use outsource_provider::backend::{Backend, DoneTx, JobSpec, RUN_JOB};
 use outsource_provider::{q, Host};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,7 +29,7 @@ const MAX_QUEUE_WAIT: f64 = 3600.0;
 const PER_PENDING: f64 = 5.0;
 /// Fair-share factor assumed before the first `sshare` answer.
 const DEFAULT_SHARE: f64 = 0.5;
-/// Share of the cap a job's walltime may reach: twice its estimate.
+/// Walltime as a multiple of the estimate.
 const WALLTIME_FACTOR: f64 = 2.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,19 +165,18 @@ impl State {
         self.jobs.values().any(|(_, s)| matches!(s, Slot::Sent(_)))
     }
 
-    /// The `squeue` listing is due: outstanding tasks keep it fresh, which is how a vanished task
-    /// is noticed.
-    fn want_squeue(&self) -> bool {
-        self.wanted || self.has_sent()
+    /// When `sshare` is next worth asking, `None` unless a bid or sign-of-life wants it.
+    fn share_at(&self, now: Instant) -> Option<Instant> {
+        self.wanted.then(|| due_at(self.share.as_ref().map(|c| c.0), now))
     }
 
     /// When the next slot is worth taking, `None` if nothing is due ever.
     fn next_slot(&self, now: Instant) -> Option<Instant> {
         let kills = (!self.kills.is_empty()).then_some(now);
         let holds = self.queues.iter().map(|q| q.since + HOLD).min();
-        let squeue = self.want_squeue().then(|| due_at(self.squeue.as_ref().map(|c| c.0), now));
-        let share = self.wanted.then(|| due_at(self.share.as_ref().map(|c| c.0), now));
-        let t = [kills, holds, squeue, share].into_iter().flatten().min()?;
+        // Outstanding tasks keep the `squeue` listing fresh, which is how a vanished task is noticed.
+        let squeue = (self.wanted || self.has_sent()).then(|| due_at(self.squeue.as_ref().map(|c| c.0), now));
+        let t = [kills, holds, squeue, self.share_at(now)].into_iter().flatten().min()?;
         Some(t.max(self.next_ok.unwrap_or(now)))
     }
 }
@@ -282,13 +281,9 @@ impl Inner {
     /// cap; the cap itself when there is no estimate.
     fn walltime(&self, est_s: Option<f64>) -> String {
         let cap = limit_secs(&self.cfg.walltime);
-        match (est_s.filter(|e| *e > 0.0), cap) {
-            (Some(e), Some(cap)) => {
-                let hours = (WALLTIME_FACTOR * e / 3600.0).ceil().max(1.0) as u64;
-                if hours * 3600 < cap { format!("{hours}:00:00") } else { self.cfg.walltime.clone() }
-            }
-            _ => self.cfg.walltime.clone(),
-        }
+        let (Some(e), Some(cap)) = (est_s.filter(|e| *e > 0.0), cap) else { return self.cfg.walltime.clone() };
+        let hours = (WALLTIME_FACTOR * e / 3600.0).ceil().max(1.0) as u64;
+        if hours * 3600 < cap { format!("{hours}:00:00") } else { self.cfg.walltime.clone() }
     }
 
     fn profile(&self, job: &JobSpec) -> Profile {
@@ -304,9 +299,9 @@ impl Inner {
         // A task whose work dir already holds `exit` (resubmitted
         // after a restart) keeps it rather than running again.
         let task = format!(
-            "#!/bin/sh\nd=$(sed -n \"$((SLURM_ARRAY_TASK_ID + 1))p\" {})\ncd \"$d\" || exit 1\n[ -f exit ] && exit 0\n{{ {}; }} >log 2>&1\necho $? > exit.tmp && mv exit.tmp exit\n",
+            "#!/bin/sh\nd=$(sed -n \"$((SLURM_ARRAY_TASK_ID + 1))p\" {})\ncd \"$d\" || exit 1\n[ -f exit ] && exit 0\n{}\n",
             q(&list_path.to_string_lossy()),
-            RUN_LINE
+            RUN_JOB
         );
         let script_path = dir.join("task.sh");
         let write = |path: &Path, text: &str| format!("printf '%s' {} > {}\n", q(text), q(&path.to_string_lossy()));
@@ -357,7 +352,7 @@ impl Inner {
                     Slot::Queued => None,
                 })
                 .collect();
-            let share = st.wanted && stale(st.share.as_ref().map(|c| c.0), now);
+            let share = st.share_at(now).is_some_and(|t| t <= now);
             (std::mem::take(&mut st.kills), due, sent, share)
         };
         let mut body = String::new();
@@ -419,31 +414,33 @@ impl Inner {
     fn settle(&self, reply: Reply, queues: Vec<(String, Queue)>, share_asked: bool) {
         let now = Instant::now();
         let mut st = self.st.lock().unwrap();
+        let mut changed = false;
         for (key, queue) in queues {
-            let id = reply.sbatch.get(&key).and_then(|a| a.split("Submitted batch job ").nth(1)).and_then(|t| t.split_whitespace().next()?.parse::<u64>().ok());
-            let Some(id) = id else {
-                match reply.sbatch.get(&key) {
-                    // Slurm answered with an error: the group's jobs fail with its text.
-                    Some(err) => {
-                        tracing::warn!("sbatch: {err}");
-                        st.error = Some(format!("sbatch: {err}"));
-                        for j in &queue.jobs {
-                            if st.jobs.remove(&j.promise).is_some() {
-                                let _ = self.done.send((j.promise.clone(), -1));
-                            }
+            let answer = reply.sbatch.get(&key);
+            match (answer, answer.and_then(|a| submitted(a))) {
+                (_, Some(id)) => {
+                    changed = true;
+                    for (i, j) in queue.jobs.iter().enumerate() {
+                        let task = format!("{id}_{i}");
+                        match st.jobs.get_mut(&j.promise) {
+                            Some(e) => e.1 = Slot::Sent(task),
+                            None => st.kills.push(task), // killed while sbatch was running
                         }
                     }
-                    // No answer at all: the script ended before it; try the group again.
-                    None => st.queues.push(queue),
                 }
-                continue;
-            };
-            for (i, j) in queue.jobs.iter().enumerate() {
-                let task = format!("{id}_{i}");
-                match st.jobs.get_mut(&j.promise) {
-                    Some(e) => e.1 = Slot::Sent(task),
-                    None => st.kills.push(task), // killed while sbatch was running
+                // Slurm answered with an error: the group's jobs fail with its text.
+                (Some(err), None) => {
+                    tracing::warn!("sbatch: {err}");
+                    st.error = Some(format!("sbatch: {err}"));
+                    for j in &queue.jobs {
+                        if st.jobs.remove(&j.promise).is_some() {
+                            changed = true;
+                            let _ = self.done.send((j.promise.clone(), -1));
+                        }
+                    }
                 }
+                // No answer at all: the script ended before it; try the group again.
+                (None, None) => st.queues.push(queue),
             }
         }
         if share_asked {
@@ -468,6 +465,7 @@ impl Inner {
                 }
             }
         }
+        changed |= !ended.is_empty();
         for (promise, _) in &ended {
             st.jobs.remove(promise);
         }
@@ -479,8 +477,15 @@ impl Inner {
             st.missing = missing;
         }
         st.wanted = false;
-        self.persist(&st);
+        if changed {
+            self.persist(&st);
+        }
     }
+}
+
+/// The job id in an `sbatch` reply (`Submitted batch job <id>`).
+fn submitted(ans: &str) -> Option<u64> {
+    ans.split("Submitted batch job ").nth(1)?.split_whitespace().next()?.parse().ok()
 }
 
 #[async_trait]
