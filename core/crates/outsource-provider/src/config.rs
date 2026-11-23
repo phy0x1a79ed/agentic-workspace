@@ -23,6 +23,10 @@ pub struct ProviderConfig {
     pub versions: [u32; 2],
     /// Concurrent jobs the provider prices its queue against.
     pub slots: u32,
+    /// The most cpus and memory one job may ask for; a bigger offer is declined. Absent means this
+    /// host's, or no limit when `ssh` names another host.
+    pub cpus: Option<u32>,
+    pub mem_mb: Option<u64>,
     pub placement_only: bool,
     /// Provider id to `[user@]host` for rsync over ssh. Empty or `local` means the same filesystem.
     pub routes: BTreeMap<ProviderId, String>,
@@ -50,6 +54,8 @@ impl Default for ProviderConfig {
             props: PropSet::new(),
             versions: [outsource_proto::SUPPORTED[0], outsource_proto::SUPPORTED[1]],
             slots: 4,
+            cpus: None,
+            mem_mb: None,
             placement_only: false,
             routes: BTreeMap::new(),
             bandwidth: 100e6,

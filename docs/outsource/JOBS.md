@@ -48,6 +48,7 @@ A step's `op` picks the kind. The provider writes each kind as a `run.sh` in a f
 - `src` (per stage item, or `place.src` keyed by id) is the absolute path at the input's place. Give it only when the input's `start` fact names no `path`.
 - A settled `at` fact names the holder's path in `o.path`. Copy settled facts into a later set's `start`, and the next provider fetches without `src`.
 - A provider runs `place` as one shell script on the host that holds its instances, never through its backend. A cluster provider therefore moves data from the login node over one ssh call and queues nothing for it.
+- A provider declines a set with a compute step whose `resources` exceed its `cpus` or `mem_mb`. A compute step with no `est` takes `default_secs` at its declared `cpus` and less on a provider with more, by Amdahl's law with a serial share of `1/cpus`.
 - A provider without cargo declines `cargo`. A placement-only provider declines every set that holds a non-placement step.
 - A placement step's inputs are slot ids of earlier steps in the same set, or ids the provider holds. A provider resolves a slot id that a cache hit replaced to the stored id.
 - A step whose input the provider does not hold is fetched from the nearest place in the set's `start` facts. The fetch time goes into the bid. A holder the provider has no route to, but that is `inbound`, prices and moves like a pull: at run time the provider asks a `transfer` into `held/<id>/` and holds the result before the step runs.

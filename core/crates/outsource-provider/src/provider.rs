@@ -97,6 +97,9 @@ pub(crate) struct Inner {
     asks: Mutex<HashMap<String, oneshot::Sender<Msg>>>,
     cargo: Option<PathBuf>,
     apptainer: Option<PathBuf>,
+    /// The most a job may ask for; `None` is no limit.
+    cpus: Option<u32>,
+    mem_mb: Option<u64>,
     cargo_ver: OnceCell<String>,
 }
 
@@ -240,6 +243,8 @@ impl Provider {
             None if host.is_local() => find_on_path("apptainer", &[]),
             None => None,
         };
+        let cpus = cfg.cpus.or_else(|| host.is_local().then(local_cpus));
+        let mem_mb = cfg.mem_mb.or_else(|| host.is_local().then(local_mem_mb).flatten());
         let work_dir = if cfg.work_dir.as_os_str().is_empty() { state_dir.join("work") } else { cfg.work_dir.clone() };
         let jobs: JobWaiters = Default::default();
         let state = State {
@@ -262,6 +267,8 @@ impl Provider {
             asks: Mutex::default(),
             cargo,
             apptainer,
+            cpus,
+            mem_mb,
             cargo_ver: OnceCell::new(),
         });
         tokio::spawn(route_done(done, jobs));
@@ -365,6 +372,16 @@ impl Provider {
     }
 }
 
+fn local_cpus() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
+}
+
+fn local_mem_mb() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb = info.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse::<u64>().ok()?;
+    Some(kb / 1024)
+}
+
 async fn route_done(mut rx: DoneRx, jobs: JobWaiters) {
     while let Some((promise, code)) = rx.recv().await {
         if let Some(tx) = jobs.lock().unwrap().remove(&promise) {
@@ -402,8 +419,25 @@ impl Inner {
 
     // ---- pricing -------------------------------------------------------------------------
 
-    fn est(&self, step: &Step) -> f64 {
-        step.spec.get("est").and_then(Value::as_f64).unwrap_or(self.cfg.default_secs)
+    /// A step's `est`, else `default_secs` scaled by Amdahl's law with a serial share of 1/cpus:
+    /// the declared size takes `default_secs`, more provider cpus take less, one cpu is the same everywhere.
+    fn est(&self, step: &Step, res: &Resources) -> f64 {
+        if let Some(e) = step.spec.get("est").and_then(Value::as_f64) {
+            return e;
+        }
+        let job = res.cpus.max(1) as f64;
+        let here = self.cpus.map_or(job, |c| job.max(c as f64));
+        self.cfg.default_secs * (1.0 + (job - 1.0) / here) / (1.0 + (job - 1.0) / job)
+    }
+
+    fn fits(&self, res: &Resources) -> Result<(), String> {
+        if let Some(c) = self.cpus.filter(|c| res.cpus > *c) {
+            return Err(format!("needs {} cpus, has {c}", res.cpus));
+        }
+        if let Some(m) = self.mem_mb.filter(|m| res.mem_mb > *m) {
+            return Err(format!("needs {} MB, has {m} MB", res.mem_mb));
+        }
+        Ok(())
     }
 
     /// Seconds to move `bytes` over `route`; `None` is a holder pushing over its own route.
@@ -515,8 +549,11 @@ impl Inner {
         if set.steps.is_empty() {
             return Err("empty set".into());
         }
-        if self.cfg.placement_only && set.steps.iter().any(|s| !s.is_move()) {
-            return Err("placement only".into());
+        if set.steps.iter().any(|s| !s.is_move()) {
+            if self.cfg.placement_only {
+                return Err("placement only".into());
+            }
+            self.fits(&set.resources)?;
         }
         let mut st = self.state.lock().unwrap();
         let mut resolved = Resolved::new();
@@ -569,7 +606,7 @@ impl Inner {
                     if stored.is_none() {
                         all_hit = false;
                         all_done = false;
-                        let e = self.est(step) + self.pull_secs(step)?;
+                        let e = self.est(step, &set.resources) + self.pull_secs(step)?;
                         work += e;
                         seq += e;
                         fetch += self.fetch_cost(&st, set, &inputs, &made, pushes)?;
@@ -757,14 +794,14 @@ impl Inner {
                         let eid = st.index.insert(Entry {
                             pairs: normalize(pairs.iter().cloned().chain(extras.iter().cloned())),
                             slots: wanted.iter().cloned().collect(),
-                            flight: Some(Flight { since: Instant::now(), est: self.est(step), owner: promise.into() }),
+                            flight: Some(Flight { since: Instant::now(), est: self.est(step, &set.resources), owner: promise.into() }),
                         });
                         st.waiters.insert(eid, watch::channel(()).0);
                         let kept = typed_outputs(step)
                             .into_iter()
                             .map(|(id, pairs, _)| {
                                 st.index.drop_ids(std::slice::from_ref(&id));
-                                let flight = Some(Flight { since: Instant::now(), est: self.est(step), owner: promise.into() });
+                                let flight = Some(Flight { since: Instant::now(), est: self.est(step, &set.resources), owner: promise.into() });
                                 let teid = st.index.insert(Entry { pairs, slots: [(OUT.to_string(), id)].into(), flight });
                                 st.waiters.insert(teid, watch::channel(()).0);
                                 teid
@@ -1039,7 +1076,7 @@ impl Inner {
                 });
                 let base = Path::new(src.trim_end_matches('/')).file_name().ok_or_else(|| format!("{src} has no base name"))?;
                 let pairs = stage_pairs(item, id);
-                let flight = Some(Flight { since: Instant::now(), est: self.est(step), owner: promise.into() });
+                let flight = Some(Flight { since: Instant::now(), est: self.est(step, &set.resources), owner: promise.into() });
                 let eid = st.index.insert(Entry { pairs, slots: [(OUT.to_string(), id.to_string())].into(), flight });
                 st.waiters.insert(eid, watch::channel(()).0);
                 fetched.push((id.to_string(), dir.join(base), eid));

@@ -375,6 +375,21 @@ async fn a11_price_follows_open_bids_and_a_loss_releases_them() {
     m.send("p", lost("1", Phase::Awarded { provider: "other".into() }));
     m.send("p", lost("2", Phase::Failed { name: raise::NO_BIDS.into(), message: String::new() }));
     assert_eq!(t(m.bid("p", "4", &one("d")).await), 20.0, "only bid 3 is still open");
+
+    // With no `est`, a multi-core job quotes less on more cpus; a single-core job quotes the same.
+    let sized = |n: u32| {
+        let c = ProviderConfig { cpus: Some(n), ..cfg(d.path(), &format!("c{n}")) };
+        Provider::local(c)
+    };
+    let mut m = Mkt::start(vec![sized(8), sized(16)]);
+    assert_eq!((t(m.bid("c8", "5", &one("e")).await), t(m.bid("c16", "5", &one("e")).await)), (10.0, 10.0));
+    for c in ["c8", "c16"] {
+        m.send(c, lost("5", Phase::Awarded { provider: "other".into() }));
+    }
+    let mut eight = one("f");
+    eight.resources.cpus = 8;
+    let (on8, on16) = (t(m.bid("c8", "6", &eight).await), t(m.bid("c16", "6", &eight).await));
+    assert!(on8 == 10.0 && on16 < on8, "{on8} {on16}");
 }
 
 #[tokio::test]
@@ -384,10 +399,11 @@ async fn a11_a19_declines() {
     nocargo.cargo = Some(d.path().join("missing-cargo"));
     let mut noapp = cfg(d.path(), "noapp");
     noapp.apptainer = Some(d.path().join("missing-apptainer"));
+    let small = ProviderConfig { cpus: Some(2), mem_mb: Some(1000), ..cfg(d.path(), "small") };
     let mut po = cfg(d.path(), "po");
     po.placement_only = true;
     po.routes = [("src".into(), "local".into()), ("dest".into(), "local".into())].into();
-    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p")), Provider::local(nocargo), Provider::local(noapp), Provider::local(po)]);
+    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p")), Provider::local(nocargo), Provider::local(noapp), Provider::local(po), Provider::local(small)]);
 
     let mut weird = task(&[], "true", vec![]);
     weird.op = "frobnicate".into();
@@ -409,6 +425,12 @@ async fn a11_a19_declines() {
     in_env.spec = json!({"script": "true", "stage": {"e.env": {"id": "e"}}, "env": {"stage": "e.env", "container": "docker://x/y:1"}});
     let b = m.bid("noapp", "5", &set_of(vec![in_env])).await;
     assert_eq!(b.reason.as_deref(), Some("no apptainer"));
+
+    let mut big = set_of(vec![task(&[], "true", vec![])]);
+    big.resources = Resources { cpus: 8, mem_mb: 500 };
+    assert_eq!(m.bid("small", "6", &big).await.reason.as_deref(), Some("needs 8 cpus, has 2"));
+    big.resources = Resources { cpus: 2, mem_mb: 4096 };
+    assert_eq!(m.bid("small", "7", &big).await.reason.as_deref(), Some("needs 4096 MB, has 1000 MB"));
 
     let b = m.bid("po", "3", &set_of(vec![task(&[], "true", vec![])])).await;
     assert!(b.values.is_none(), "placement-only declines compute");
