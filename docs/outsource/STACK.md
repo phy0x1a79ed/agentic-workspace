@@ -6,7 +6,7 @@
 
 ## Current
 
-`remote-fetch`: download a typed material at the provider.
+`globus`: Globus transfers between clusters.
 
 ## Waiting on the user
 
@@ -21,8 +21,8 @@ Nothing.
 ## Stack
 
 - `node-prep`: Core closed as `prep-verb` (prep verb, `to`, typed materials). (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
-  - `remote-fetch`: "for something like uniref50, we'd want to be able to run the download remotely as well." A typed material whose source is a download run at the provider, not an rsync from the caller.
   - `globus`: "we need to consider things like globus transfer..." Transfer method between providers (clusters) other than rsync over ssh. "if globus is a provider, then providers are not linked to a box, since globus can initiate transfer between 2 compute providers like sockeye and fir". Choices: globus as a third-party transfer provider bidding on moves between two others (needs per-step bids, deferred in dex-poc) vs. globus as a method inside the destination provider's bid.
+- `ontology`: "we need some controlled ontology for types or rather properties".
 - `discovery`: agents can't find outsource (no AGENTS.md or skill; describe example now in catalog). Agents must pass absolute paths (plugin has no per-call cwd).
 - `tune`: "I want to tune the Baitan service."
 - `deploy`: try a real job live after deploy ("need to try for real"). Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
@@ -35,6 +35,7 @@ None.
 ## Closed
 
 - `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
+- `remote-fetch`: download = directed compute offer with typed produces; requires by type alone; `source` recipes deferred.
 - `prep-verb`: prep verb = directed transfer offer; `to` runs a one-provider round; materials may carry a `type`.
 - `call-walkthrough`: closed through its children.
 - `resources-model`: fixed size as today; peak memory and CPU use are runtime statistics to gather.

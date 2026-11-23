@@ -72,3 +72,19 @@ Child of `node-prep`.
 - A material may carry a `type`, a property set that replaces its stat or commit identity, e.g. `{path, type: {db=uniref50, release=2024_01}}`. Every copy of it, on any provider and at any path, has one id, so a holder bids "done" and an in-flight transfer bids "done at T"; two sessions never move it twice. This revises `offer-shape`'s "no props" at the material level only.
 
 **Landed.** Pending build, with `remote-fetch` and `globus`.
+
+## remote-fetch (2026-11-22)
+
+Child of `node-prep`.
+
+**Question.** How does an offer download a typed material (uniref50) at the provider instead of moving it from the caller?
+
+**User's words.** "a works. we need some controlled ontology for types or rather properties"
+
+**Decided.**
+- A download is an ordinary directed compute offer whose output is typed: `produces: [{path, type: {...}}]`, `to: <provider>`. The provider then holds that type.
+- `requires` may name a material by `type` alone, with no path. The market fills its location from its holder records (the settles it already keeps for `dispose`).
+- A material carrying its own `source` recipe, so bidders choose between copying from a holder and running the recipe, is deferred until real runs compare downloads with copies.
+- Property names and values need a controlled vocabulary: topic `ontology`.
+
+**Landed.** Pending build, with `prep-verb` and `globus`.
