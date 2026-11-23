@@ -88,3 +88,17 @@ Child of `node-prep`.
 - Property names and values need a controlled vocabulary: topic `ontology`.
 
 **Landed.** Pending build, with `prep-verb` and `globus`.
+
+## globus (2026-11-22)
+
+Child of `node-prep`, which closes with it.
+
+**Question.** How does Globus fit in as a transfer method between clusters?
+
+**User's words.** "Let's just not worry about Globus, but make it possible where agents can run Globus by themselves as an alternative. Then we can have outsourcing just use rsync by default. Well, I guess with no alternative. At least natively supported." On how an agent registers its own transfer: "a separate import verb, because prep is like do, whereas import is more like check."
+
+**Decided.**
+- outsource moves data with rsync only. Globus is not natively supported; agents may run it themselves.
+- A new `import {to, materials: [{path, type?}]}` verb registers material that already sits at a provider. It goes straight to that provider, with no bid round (like `dispose`). The provider checks each path exists, records it under its type (or its stat or commit identity), and returns the ids; a missing path is an error. It reuses the provider's existing index-YAML importer. `prep` does; `import` checks.
+
+**Landed.** Pending build, with `prep-verb` and `remote-fetch`.

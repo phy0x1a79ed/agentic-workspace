@@ -6,7 +6,7 @@
 
 ## Current
 
-`globus`: Globus transfers between clusters.
+`ontology`: controlled vocabulary for properties.
 
 ## Waiting on the user
 
@@ -20,8 +20,6 @@ Nothing.
 
 ## Stack
 
-- `node-prep`: Core closed as `prep-verb` (prep verb, `to`, typed materials). (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
-  - `globus`: "we need to consider things like globus transfer..." Transfer method between providers (clusters) other than rsync over ssh. "if globus is a provider, then providers are not linked to a box, since globus can initiate transfer between 2 compute providers like sockeye and fir". Choices: globus as a third-party transfer provider bidding on moves between two others (needs per-step bids, deferred in dex-poc) vs. globus as a method inside the destination provider's bid.
 - `ontology`: "we need some controlled ontology for types or rather properties".
 - `discovery`: agents can't find outsource (no AGENTS.md or skill; describe example now in catalog). Agents must pass absolute paths (plugin has no per-call cwd).
 - `tune`: "I want to tune the Baitan service."
@@ -35,6 +33,8 @@ None.
 ## Closed
 
 - `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
+- `node-prep`: closed through its children.
+- `globus`: rsync only natively; agents may run Globus themselves; `import` verb registers material already at a provider.
 - `remote-fetch`: download = directed compute offer with typed produces; requires by type alone; `source` recipes deferred.
 - `prep-verb`: prep verb = directed transfer offer; `to` runs a one-provider round; materials may carry a `type`.
 - `call-walkthrough`: closed through its children.
