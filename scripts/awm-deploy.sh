@@ -45,6 +45,15 @@ if [ -z "$dry" ] && [ "$(cat "$awm_dir/models/.pin" 2>/dev/null)" != "$models_sh
     printf '%s\n' "$models_sha" > "$awm_dir/models/.pin"
 fi
 
+# A core plugin's skill/SKILL.md is the Claude skill named after the plugin, on every node.
+if [ -z "$dry" ]; then
+    for name in "${plugins[@]}"; do
+        skill="$root/core/plugins/$name/skill/SKILL.md"
+        [ -f "$skill" ] || continue
+        install -D -m 0644 "$skill" "$HOME/.claude/skills/$name/SKILL.md"
+    done
+fi
+
 # A plugin restarts when this deploy replaced its binary, or when an earlier deploy did and
 # failed before its reload (the marker <AWM_DIR>/bin/.<name>.restart outlives that deploy).
 restart=()

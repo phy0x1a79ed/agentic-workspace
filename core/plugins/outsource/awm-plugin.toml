@@ -1,0 +1,18 @@
+# outsource: the compute market. The service hosts the market, dials the provider links in
+# ~/.outsource/outsource.toml and serves the caller verbs to agents. Design: docs/dex-poc/DECISIONS.md.
+[plugin]
+name = "outsource"
+version = "0.1.0"
+
+[[service]]
+name = "outsource"
+
+[[tool]]
+name = "outsource"
+major = 1
+tier = "on"
+
+[needs]
+secrets = []
+network = []
+platform = ["linux"]

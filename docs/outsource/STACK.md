@@ -1,0 +1,52 @@
+# outsource: Discussion stack
+
+**Goal.** Tune the outsource compute market (formerly baitan) so agents doing compute-heavy work (metasmith sessions on altair) actually use it, and rename it.
+
+**Decisions.** `docs/outsource/DECISIONS.md`. **Prior design.** awm `feat/dex-poc`, `docs/dex-poc/DECISIONS.md`.
+
+## Current
+
+`deploy`: apply the decided changes and try a real job. Tony 2026-11-22: "lets deploy outsource and have the test trim as another test case". Next steps, in order:
+1. Wait for the slurm-hang worker; confirm all outsource crate tests and the plugin e2e (except the known `far` link) pass.
+2. Load the `ship` skill; merge feat/outsource to dev and run the release train.
+3. Node migration (list under `deploy` in Stack); avoid capella (never wake it); lyra is unreachable.
+4. Real job 1: metasmith solver build (`src/workflow_solver`), no `to`. Only altair can build it today (cargo+musl, apptainer); Slurm fronts can bid only with a Rust/musl `.env`.
+5. Real job 2: test-trim shards on HPC (`test-trim-hpc`).
+
+## Waiting on the user
+
+Nothing.
+
+## Preferences
+
+- 2026-11-22: The real try posts with no `to`: "it should pick the best node, which prolly wont be the slurm ones given the queue delay".
+- 2026-11-22: General compute, not workflow-only.
+- 2026-11-22: Deploy once, with the rename plus every change decided in the walkthrough.
+- 2026-11-22: Offer = materials (paths, some folders) + method (a bash command) + metrics to bid against.
+- 2026-11-22: Keep `prep` and `import`: "they cover real steps in the user story". After the solver build and the v26 test-trim run, debrief; Tony reviews the lift in the next session.
+
+## Stack
+
+- `deploy`: "I just meant to now apply these changes and try it for real". Order: prep worker landed 1f763a67 → ontology + runtime stats landed 5d2de1fd (vocab in ~/.outsource/vocab.json; stats via /usr/bin/time; adding values to an open key closes it) → slurm-test-hang → docs landed (AGENTS.md line 7a81a304; skill at core/plugins/outsource/skill, installed per node by awm-deploy.sh; JOBS.md moved to docs/outsource 3ef97248) → ship → node migration → real job. First real job (Tony): "rust build for the metasmith solver" — `src/workflow_solver` (msm_solver, edition 2024, path deps on sibling crates solver_witness{,_audit}, musl target per build.sh). Requires the metasmith repo root as one material (a worktree's `.git` is a file; identity.rs uses `.exists()`, so it counts). Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
+- `test-trim-hpc`: "can metasmith v26 bug test trim use outsource to run the metasmith tests in parallel on some other, prolly HPC provider". Session metasmith-v26-bugs-test-trim (altair, metasmith/engine/test-trim) is itself asking Tony how Sockeye fits (its recommendation: release tier, no docker; smoke/merge stay local). Coordinated 2026-11-22 (message sent to that session over Remote Control; read not confirmed): plan its HPC lane as outsource offers, wait for deploy, report breakage to awm/outsource. Second real job after deploy: one offer per test shard, metasmith .env container, repo as material, junit back.
+- `slurm-test-hang`: `cargo test -p outsource-slurm` hung for 3–4 h on altair in two runs (test binary `outsource_slurm-…` never exits); containers stopped 2026-11-22. Fix before ship; earlier workers skipped or misread slurm results.
+- carried from dex-poc stack (open there): `test-cases` (msm across HPC clusters), `arrays`, `arbutus-spot`, `backend-hardening`.
+
+## Workers
+
+- slurm-hang worker (sonnet): find and fix the outsource-slurm test hang; run the plugin e2e to completion.
+
+## Closed
+
+- `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
+- `tune`: means apply the changes and try for real; folded into `deploy`.
+- `discovery`: one AGENTS.md sentence (MCP tools list) + an `outsource` skill; threshold ~10 min or 4 cores; no hook. Written with deploy.
+- `ontology`: market-held vocabulary, descriptions, optional allowed values, unknown keys rejected, `property_add`, lowercase values. Build queued after prep worker.
+- `node-prep`: closed through its children.
+- `globus`: rsync only natively; agents may run Globus themselves; `import` verb registers material already at a provider.
+- `remote-fetch`: download = directed compute offer with typed produces; requires by type alone; `source` recipes deferred.
+- `prep-verb`: prep verb = directed transfer offer; `to` runs a one-provider round; materials may carry a `type`.
+- `call-walkthrough`: closed through its children.
+- `resources-model`: fixed size as today; peak memory and CPU use are runtime statistics to gather.
+- `offer-shape` (absorbs `cache-default`): transform-shaped, keyless requires/produces, protocol, .env material, stat/commit identity, no props.
+- `adoption`: general compute; any heavy agent command is a candidate.
