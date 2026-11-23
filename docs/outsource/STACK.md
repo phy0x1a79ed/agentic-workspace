@@ -28,7 +28,7 @@ Nothing.
 
 ## Workers
 
-None.
+- prep build worker (sonnet): `to`, typed requires/produces, type-only requires from holders, `prep`, `import`, catalog examples. No deploy.
 
 ## Closed
 
