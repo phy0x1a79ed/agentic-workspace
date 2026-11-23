@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 /// Builds the typed message for a caller verb, refusing provider verbs and unknown args. An
 /// `offer` or `prep` is compiled from its transform shape; its warnings come back beside the message.
-pub fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<(Msg, Vec<String>), String> {
+pub async fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<(Msg, Vec<String>), String> {
     if !CALLER_VERBS.iter().any(|v| v.name == verb) {
         return Err(format!("unknown verb {verb}"));
     }
     if verb == "offer" || verb == "prep" {
-        let Compiled { set, warnings } = if verb == "offer" { offer::compile(args, site)? } else { offer::compile_prep(args, site)? };
+        let Compiled { set, warnings } = if verb == "offer" { offer::compile(args, site).await? } else { offer::compile_prep(args, site).await? };
         return Ok((Msg::Offer(OfferArgs { set, promise: None, inbound: vec![] }), warnings));
     }
     let msg = serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())?;
@@ -28,8 +28,9 @@ pub fn shown(reply: Msg) -> Result<Value, Value> {
     }
 }
 
-pub async fn invoke(client: &Client, verb: &str, args: Value) -> Result<Value, Value> {
-    let (msg, warnings) = verb_msg(verb, args, &Site::here()).map_err(|e| json!({"selector": "raise", "args": {"name": "BadArgs", "message": e}}))?;
+/// Runs a caller verb; an offer's materials are read at `site`.
+pub async fn invoke(client: &Client, verb: &str, args: Value, site: &Site) -> Result<Value, Value> {
+    let (msg, warnings) = verb_msg(verb, args, site).await.map_err(|e| json!({"selector": "raise", "args": {"name": "BadArgs", "message": e}}))?;
     let mut reply = shown(client.ask(msg).await.map_err(|e| json!({"selector": "raise", "args": {"name": "Unavailable", "message": e}}))?)?;
     if let (false, Some(obj)) = (warnings.is_empty(), reply.as_object_mut()) {
         obj.insert("warnings".into(), json!(warnings));
@@ -111,7 +112,7 @@ pub async fn mcp_handle(client: &Client, req: &Value) -> Option<Value> {
             let name = req["params"]["name"].as_str().unwrap_or("");
             let args = req["params"].get("arguments").cloned().unwrap_or(json!({}));
             let out = if remote_verbs().any(|v| v.name == name) {
-                invoke(client, name, args).await
+                invoke(client, name, args, &Site::here()).await
             } else {
                 Err(json!({"selector": "doesNotUnderstand", "args": {"selector": name}}))
             };
@@ -145,7 +146,7 @@ pub fn http_router(client: Arc<Client>) -> axum::Router {
                 if !remote_verbs().any(|v| v.name == verb) {
                     return (StatusCode::NOT_FOUND, Json(json!({"selector": "doesNotUnderstand", "args": {"selector": verb}})));
                 }
-                match invoke(&client, &verb, body.get("args").cloned().unwrap_or(json!({}))).await {
+                match invoke(&client, &verb, body.get("args").cloned().unwrap_or(json!({})), &Site::here()).await {
                     Ok(v) => (StatusCode::OK, Json(v)),
                     Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, Json(e)),
                 }

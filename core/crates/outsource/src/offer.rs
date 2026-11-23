@@ -4,7 +4,7 @@
 //! when it has one, else from its stat or git commit; content is never read.
 
 use outsource_proto::{fold_type, instance_id, props, slot_id, Axis, Fact, OfferSet, PropSet, Resources, Step, TIME_AXIS};
-use outsource_provider::material_id;
+use outsource_provider::{identify, is_local_route, q, Host};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -65,19 +65,42 @@ pub struct Prep {
     pub to: String,
 }
 
-/// Where the caller stands: its node's provider id (the `origin` of every material) and the
-/// directory its relative paths mean.
+/// Where the caller stands: its node's provider id (the `origin` of every material), the
+/// directory its relative paths mean when known, and the host its files are read on.
 #[derive(Debug, Clone)]
 pub struct Site {
     pub node: String,
-    pub cwd: PathBuf,
+    pub cwd: Option<PathBuf>,
+    pub host: Host,
 }
 
 impl Site {
     /// `OUTSOURCE_NODE`, else the hostname a provider takes as its default id, and this process's cwd.
     pub fn here() -> Site {
         let node = std::env::var("OUTSOURCE_NODE").ok().filter(|n| !n.is_empty()).unwrap_or_else(crate::roles::hostname);
-        Site { node, cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) }
+        Site { node, cwd: std::env::current_dir().ok(), host: Host::default() }
+    }
+
+    /// A caller on `node`: `here` when that is this node, else read over this node's route to it,
+    /// with no cwd.
+    pub fn of_caller(node: Option<&str>) -> Site {
+        let here = Site::here();
+        match node {
+            Some(n) if n != here.node => {
+                let route = crate::roles::route_to(n).unwrap_or_else(|| n.to_string());
+                let host = if is_local_route(&route) { Host::default() } else { Host::new(Some(route)) };
+                Site { node: n.into(), cwd: None, host }
+            }
+            _ => here,
+        }
+    }
+
+    fn path(&self, raw: &str, what: &str) -> Result<PathBuf, String> {
+        match &self.cwd {
+            Some(cwd) => Ok(cwd.join(raw)),
+            None if Path::new(raw).is_absolute() => Ok(raw.into()),
+            None => Err(format!("{what} {raw}: a call from {} must give an absolute path", self.node)),
+        }
     }
 }
 
@@ -92,6 +115,8 @@ struct Material {
     path: Option<PathBuf>,
     ty: Option<PropSet>,
     id: String,
+    file: bool,
+    size: u64,
 }
 
 /// The materials of a request: no two share a name, and at most one is a `.env` file.
@@ -101,19 +126,19 @@ struct Materials {
 }
 
 impl Materials {
-    fn gather(reqs: &[Req], site: &Site, warnings: &mut Vec<String>) -> Result<Materials, String> {
+    async fn gather(reqs: &[Req], site: &Site, warnings: &mut Vec<String>) -> Result<Materials, String> {
         let mut all: Vec<Material> = vec![];
         for req in reqs {
-            let m = material(req, site, warnings)?;
+            let m = material(req, site, warnings).await?;
             if all.iter().any(|o| o.name == m.name) {
                 return Err(format!("two requires share the name {}", m.name));
             }
             all.push(m);
         }
-        let mut envs = all.iter().filter(|m| m.name.ends_with(".env") && m.path.as_deref().is_some_and(Path::is_file));
+        let mut envs = all.iter().filter(|m| m.name.ends_with(".env") && m.file);
         let env = match (envs.next(), envs.next()) {
             (Some(_), Some(_)) => return Err("requires holds more than one .env file".into()),
-            (Some(m), None) => Some(json!({"stage": m.name, "container": container_of(m.path.as_deref().expect("a file"))?})),
+            (Some(m), None) => Some(json!({"stage": m.name, "container": container_of(m.path.as_deref().expect("a file"), site).await?})),
             _ => None,
         };
         Ok(Materials { all, env })
@@ -140,7 +165,7 @@ impl Materials {
     }
 
     fn size(&self) -> u64 {
-        self.all.iter().filter_map(|m| m.path.as_deref()).map(outsource_provider::disk_size).sum()
+        self.all.iter().map(|m| m.size).sum()
     }
 }
 
@@ -153,10 +178,10 @@ fn new_set(steps: Vec<Step>, mats: &Materials, site: &Site, to: Option<String>) 
     set
 }
 
-pub fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
+pub async fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
     let t: Transform = serde_json::from_value(args).map_err(|e| e.to_string())?;
     let mut warnings = vec![];
-    let mats = Materials::gather(&t.requires, site, &mut warnings)?;
+    let mats = Materials::gather(&t.requires, site, &mut warnings).await?;
 
     let (mut copied, mut kept) = (vec![], vec![]);
     for out in &t.produces {
@@ -203,8 +228,8 @@ pub fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
     let mut steps = vec![];
     if !copied.is_empty() {
         let dest = match &t.dest {
-            Some(d) => site.cwd.join(d),
-            None => site.cwd.clone(),
+            Some(d) => site.path(d, "dest")?,
+            None => site.cwd.clone().ok_or_else(|| format!("a call from {} must give an absolute dest for its produces", site.node))?,
         };
         steps.push(Step {
             op: "place".into(),
@@ -225,10 +250,10 @@ pub fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
 }
 
 /// A directed offer with no protocol: one `prep` step that stages the materials at `to`.
-pub fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> {
+pub async fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> {
     let p: Prep = serde_json::from_value(args).map_err(|e| e.to_string())?;
     let mut warnings = vec![];
-    let mats = Materials::gather(&p.requires, site, &mut warnings)?;
+    let mats = Materials::gather(&p.requires, site, &mut warnings).await?;
     let mut spec = json!({"stage": mats.stage()});
     if let Some(env) = mats.env.clone() {
         spec["env"] = env;
@@ -244,8 +269,8 @@ pub fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> {
     Ok(Compiled { set: new_set(vec![step], &mats, site, Some(p.to)), warnings })
 }
 
-fn container_of(env: &Path) -> Result<String, String> {
-    let text = std::fs::read_to_string(env).map_err(|e| format!("{}: {e}", env.display()))?;
+async fn container_of(env: &Path, site: &Site) -> Result<String, String> {
+    let text = site.host.sh(&format!("cat {}", q(&env.to_string_lossy()))).await.map_err(|e| format!("{} on {}: {e}", env.display(), site.node))?;
     let yaml: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", env.display()))?;
     yaml.get("container")
         .and_then(serde_yaml::Value::as_str)
@@ -255,7 +280,7 @@ fn container_of(env: &Path) -> Result<String, String> {
 
 /// A typed material's id is its type's id, wherever it sits. Otherwise a file or a plain folder
 /// is `{path, mtime_ns, origin}` and a folder holding `.git` is `{git: HEAD, origin}`.
-fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<Material, String> {
+async fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<Material, String> {
     let (raw, ty, name) = match req {
         Req::Path(p) => (Some(p.as_str()), None, None),
         Req::Material(m) => (m.path.as_deref(), m.ty.as_ref().map(fold_type), m.name.clone()),
@@ -266,21 +291,28 @@ fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<Materi
     if ty.as_ref().is_some_and(PropSet::is_empty) {
         return Err("a requires type must name at least one property".into());
     }
-    let path = raw
-        .map(|raw| std::fs::canonicalize(site.cwd.join(raw)).map_err(|e| format!("requires {raw}: {e}")))
-        .transpose()?;
+    let probed = match raw {
+        Some(raw) => {
+            let path = site.path(raw, "requires")?;
+            let probed = identify(&site.host, &path.to_string_lossy(), &site.node, true, warnings).await;
+            Some(probed.map_err(|e| format!("requires {raw} on {}: {e}", site.node))?)
+        }
+        None => None,
+    };
+    let path = probed.as_ref().map(|p| PathBuf::from(&p.path));
     let base = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
     let by_type = || ty.iter().flat_map(|t| t.values().map(String::as_str)).collect::<Vec<_>>().join("-");
     let name = name.or(base).unwrap_or_else(by_type);
     if name.is_empty() || name.contains('/') {
         return Err(format!("requires name {name:?} is not a base name"));
     }
-    let id = match (&ty, &path) {
+    let (file, size) = probed.as_ref().map_or((false, 0), |p| (p.file, p.size));
+    let id = match (&ty, probed) {
         (Some(ty), _) => instance_id(ty),
-        (None, Some(path)) => material_id(path, &site.node, warnings)?,
+        (None, Some(p)) => p.id,
         (None, None) => unreachable!("checked above"),
     };
-    Ok(Material { name, path, ty, id })
+    Ok(Material { name, path, ty, id, file, size })
 }
 
 #[cfg(test)]
@@ -299,7 +331,7 @@ mod tests {
     }
 
     fn site(dir: &Path) -> Site {
-        Site { node: "mine".into(), cwd: dir.to_path_buf() }
+        Site { node: "mine".into(), cwd: Some(dir.to_path_buf()), host: Host::default() }
     }
 
     fn job(requires: &[&str], protocol: &str) -> Value {
@@ -310,15 +342,15 @@ mod tests {
         c.set.steps[0].spec["stage"][name]["id"].as_str().unwrap().to_string()
     }
 
-    #[test]
-    fn shape_compiles_to_a_task_and_a_place_home() {
+    #[tokio::test]
+    async fn shape_compiles_to_a_task_and_a_place_home() {
         let d = tempfile::tempdir().unwrap();
         let d = d.path().canonicalize().unwrap();
         std::fs::write(d.join("iphop.env"), "container: docker://x/iphop:1\nconda: iphop\n").unwrap();
         std::fs::write(d.join("counts.tsv"), "a").unwrap();
         std::fs::create_dir(d.join("plain")).unwrap();
         repo(&d, "analysis");
-        let c = compile(job(&["iphop.env", "counts.tsv", "analysis", "plain"], "Rscript analysis/fit.R"), &site(&d)).unwrap();
+        let c = compile(job(&["iphop.env", "counts.tsv", "analysis", "plain"], "Rscript analysis/fit.R"), &site(&d)).await.unwrap();
         let [task, place] = &c.set.steps[..] else { panic!("two steps") };
         assert_eq!((task.op.as_str(), place.op.as_str()), ("task", "place"));
         assert_eq!(task.spec["script"], "Rscript analysis/fit.R");
@@ -335,95 +367,121 @@ mod tests {
 
         let two = {
             std::fs::write(d.join("b.env"), "container: docker://y\n").unwrap();
-            compile(job(&["iphop.env", "b.env"], "x"), &site(&d)).unwrap_err()
+            compile(job(&["iphop.env", "b.env"], "x"), &site(&d)).await.unwrap_err()
         };
         assert!(two.contains("more than one .env"), "{two}");
         std::fs::write(d.join("conda.env"), "conda: only\n").unwrap();
-        assert!(compile(job(&["conda.env"], "x"), &site(&d)).unwrap_err().contains("only containers"));
-        assert!(compile(json!({"requires": [], "produces": ["/abs"], "protocol": "x"}), &site(&d)).is_err());
-        assert!(compile(json!({"requires": [], "produces": [], "protocol": "x", "set": {}}), &site(&d)).is_err());
+        assert!(compile(job(&["conda.env"], "x"), &site(&d)).await.unwrap_err().contains("only containers"));
+        assert!(compile(json!({"requires": [], "produces": ["/abs"], "protocol": "x"}), &site(&d)).await.is_err());
+        assert!(compile(json!({"requires": [], "produces": [], "protocol": "x", "set": {}}), &site(&d)).await.is_err());
     }
 
-    #[test]
-    fn identity_follows_stat_and_commit_never_content() {
+    #[tokio::test]
+    async fn identity_follows_stat_and_commit_never_content() {
         let d = tempfile::tempdir().unwrap();
         let d = d.path().canonicalize().unwrap();
         std::fs::write(d.join("counts.tsv"), "a").unwrap();
         let a = repo(&d, "a");
-        let compiled = |protocol: &str| compile(job(&["counts.tsv", "a"], protocol), &site(&d)).unwrap();
-        let base = compiled("p");
+        macro_rules! compiled {
+            ($p:expr) => { compile(job(&["counts.tsv", "a"], $p), &site(&d)).await.unwrap() };
+        }
+        let base = compiled!("p");
         let key = |c: &Compiled| c.set.steps[0].key();
 
         // A new mtime moves a file's id and the task's key.
         let file = std::fs::File::options().write(true).open(d.join("counts.tsv")).unwrap();
         file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
-        let touched = compiled("p");
+        let touched = compiled!("p");
         assert_ne!(stage_id(&base, "counts.tsv"), stage_id(&touched, "counts.tsv"));
         assert_ne!(key(&base), key(&touched));
         assert_eq!(stage_id(&base, "a"), stage_id(&touched, "a"));
 
         // A repo is its commit: a clone elsewhere agrees, a new commit moves it, a dirty tree only warns.
         sh(&d, "git clone -q a b");
-        assert_eq!(stage_id(&base, "a"), stage_id(&compile(job(&["b"], "p"), &site(&d)).unwrap(), "b"));
+        assert_eq!(stage_id(&base, "a"), stage_id(&compile(job(&["b"], "p"), &site(&d)).await.unwrap(), "b"));
         std::fs::write(a.join("f"), "dirty").unwrap();
-        let dirty = compiled("p");
+        let dirty = compiled!("p");
         assert_eq!(stage_id(&base, "a"), stage_id(&dirty, "a"));
         assert_eq!(dirty.warnings, [format!("repo {} has uncommitted changes; a prior cached result may be reused", a.display())]);
         sh(&a, "git -c user.name=t -c user.email=t@t commit -qam c2");
-        assert_ne!(stage_id(&base, "a"), stage_id(&compiled("p"), "a"));
+        assert_ne!(stage_id(&base, "a"), stage_id(&compiled!("p"), "a"));
 
         // A type replaces stat and commit: one id at any path, and a type-only entry has no start fact.
         std::fs::create_dir(d.join("elsewhere")).unwrap();
         std::fs::write(d.join("elsewhere/other.tsv"), "bb").unwrap();
         let ty = json!({"db": "uniref50", "release": "2024_01"});
-        let typed = |req: Value| compile(json!({"requires": [req], "produces": [], "protocol": "p"}), &site(&d)).unwrap();
+        macro_rules! typed {
+            ($req:expr) => { compile(json!({"requires": [$req], "produces": [], "protocol": "p"}), &site(&d)).await.unwrap() };
+        }
         let (here, there, alone) = (
-            typed(json!({"path": "counts.tsv", "type": ty})),
-            typed(json!({"path": "elsewhere/other.tsv", "type": ty})),
-            typed(json!({"type": ty, "name": "uniref50"})),
+            typed!(json!({"path": "counts.tsv", "type": ty})),
+            typed!(json!({"path": "elsewhere/other.tsv", "type": ty})),
+            typed!(json!({"type": ty, "name": "uniref50"})),
         );
         assert_eq!(stage_id(&here, "counts.tsv"), stage_id(&there, "other.tsv"));
         assert_eq!(stage_id(&here, "counts.tsv"), stage_id(&alone, "uniref50"));
         assert_eq!(here.set.steps[0].spec["stage"]["counts.tsv"]["type"], ty);
         assert_eq!((here.set.start.len(), alone.set.start.len()), (1, 0));
-        assert_eq!(typed(json!({"type": {"b": "2", "a": "1"}})).set.steps[0].spec["stage"]["1-2"]["id"], json!(instance_id(&props([("a", "1"), ("b", "2")]))));
+        assert_eq!(typed!(json!({"type": {"b": "2", "a": "1"}})).set.steps[0].spec["stage"]["1-2"]["id"], json!(instance_id(&props([("a", "1"), ("b", "2")]))));
         // Values fold to lowercase before the id is taken, in inputs and outputs alike.
-        let upper = typed(json!({"type": {"db": "UniRef50", "release": "2024_01"}, "name": "u"}));
+        let upper = typed!(json!({"type": {"db": "UniRef50", "release": "2024_01"}, "name": "u"}));
         assert_eq!(stage_id(&upper, "u"), instance_id(&props([("db", "uniref50"), ("release", "2024_01")])));
-        let out = compile(json!({"requires": [], "produces": [{"path": "o", "type": {"db": "NR"}}], "protocol": "p"}), &site(&d)).unwrap();
+        let out = compile(json!({"requires": [], "produces": [{"path": "o", "type": {"db": "NR"}}], "protocol": "p"}), &site(&d)).await.unwrap();
         assert_eq!(out.set.steps[0].spec["typed"][0]["type"], json!({"db": "nr"}));
-        let empty = compile(json!({"requires": [{"name": "x"}], "produces": [], "protocol": "p"}), &site(&d));
+        let empty = compile(json!({"requires": [{"name": "x"}], "produces": [], "protocol": "p"}), &site(&d)).await;
         assert!(empty.unwrap_err().contains("path or a type"));
 
         // The protocol is part of a result's identity.
-        assert_ne!(base.set.steps[0].props["job"], compiled("q").set.steps[0].props["job"]);
+        assert_ne!(base.set.steps[0].props["job"], compiled!("q").set.steps[0].props["job"]);
     }
 
-    #[test]
-    fn directed_offers_typed_outputs_and_prep() {
+    /// A caller on another node: its files are read over the route to it and the set starts there.
+    #[tokio::test]
+    async fn a_remote_caller_starts_at_its_node() {
+        let d = tempfile::tempdir().unwrap();
+        let d = d.path().canonicalize().unwrap();
+        std::fs::write(d.join("in.tsv"), "a").unwrap();
+        let far = Site { node: "altair".into(), cwd: None, host: Host::default() };
+        let abs = d.join("in.tsv").to_string_lossy().into_owned();
+        let dest = d.join("out").to_string_lossy().into_owned();
+        let c = compile(json!({"requires": [abs], "produces": ["r"], "protocol": "p", "dest": dest}), &far).await.unwrap();
+        assert_eq!(c.set.start, [Fact::at_path(&stage_id(&c, "in.tsv"), "altair", &abs)]);
+        assert_eq!((c.set.steps[1].to.as_deref(), c.set.size), (Some("altair"), Some(1)));
+        for (args, err) in [
+            (json!({"requires": ["in.tsv"], "produces": [], "protocol": "p"}), "requires in.tsv: a call from altair must give an absolute path"),
+            (json!({"requires": [abs], "produces": ["r"], "protocol": "p"}), "a call from altair must give an absolute dest"),
+            (json!({"requires": [format!("{abs}.gone")], "produces": [], "protocol": "p"}), "on altair: "),
+        ] {
+            let e = compile(args, &far).await.unwrap_err();
+            assert!(e.contains(err), "{e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn directed_offers_typed_outputs_and_prep() {
         let d = tempfile::tempdir().unwrap();
         let d = d.path().canonicalize().unwrap();
         std::fs::write(d.join("e.env"), "container: docker://x/y:1\n").unwrap();
         let ty = json!({"db": "uniref50"});
 
         // A typed output stays at the provider: no place step home, the type rides in the spec.
-        let dl = compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": ty}], "protocol": "wget x", "to": "sockeye"}), &site(&d)).unwrap();
+        let dl = compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": ty}], "protocol": "wget x", "to": "sockeye"}), &site(&d)).await.unwrap();
         assert_eq!(dl.set.to.as_deref(), Some("sockeye"));
         let [task] = &dl.set.steps[..] else { panic!("task only") };
         assert_eq!(task.spec["typed"], json!([{"path": "u.dmnd", "type": ty}]));
         assert_eq!(task.spec["outputs"], json!([]));
-        let mixed = compile(json!({"requires": [], "produces": ["r.txt", {"path": "u.dmnd", "type": ty}], "protocol": "wget x"}), &site(&d)).unwrap();
+        let mixed = compile(json!({"requires": [], "produces": ["r.txt", {"path": "u.dmnd", "type": ty}], "protocol": "wget x"}), &site(&d)).await.unwrap();
         assert_eq!(mixed.set.steps.len(), 2);
         assert_eq!(mixed.set.steps[0].spec["outputs"], json!(["r.txt", "r.txt/**"]));
         assert!(mixed.set.to.is_none());
-        assert_ne!(dl.set.steps[0].props["job"], compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": {"db": "x"}}], "protocol": "wget x"}), &site(&d)).unwrap().set.steps[0].props["job"]);
+        assert_ne!(dl.set.steps[0].props["job"], compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": {"db": "x"}}], "protocol": "wget x"}), &site(&d)).await.unwrap().set.steps[0].props["job"]);
 
         // Prep is one `prep` step with no protocol, directed, carrying the env.
-        let prep = compile_prep(json!({"to": "sockeye", "requires": ["e.env", {"type": ty}]}), &site(&d)).unwrap();
+        let prep = compile_prep(json!({"to": "sockeye", "requires": ["e.env", {"type": ty}]}), &site(&d)).await.unwrap();
         let [step] = &prep.set.steps[..] else { panic!("one step") };
         assert_eq!((step.op.as_str(), prep.set.to.as_deref()), ("prep", Some("sockeye")));
         assert_eq!(step.spec["env"], json!({"stage": "e.env", "container": "docker://x/y:1"}));
         assert_eq!(step.spec["stage"]["uniref50"]["id"], json!(instance_id(&props([("db", "uniref50")]))));
-        assert!(compile_prep(json!({"requires": []}), &site(&d)).is_err());
+        assert!(compile_prep(json!({"requires": []}), &site(&d)).await.is_err());
     }
 }

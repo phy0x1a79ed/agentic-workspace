@@ -1,6 +1,6 @@
 //! Pure helpers for job kinds: shell quoting, globs, a caller's material sizes and cargo discovery.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
@@ -34,20 +34,6 @@ pub fn glob_match(pat: &str, text: &str) -> bool {
         }
     }
     go(pat.as_bytes(), text.as_bytes())
-}
-
-/// True size from filesystem metadata; a directory sums its files. Never reads bytes.
-pub fn disk_size(path: &Path) -> u64 {
-    let Ok(md) = std::fs::symlink_metadata(path) else { return 0 };
-    if md.is_dir() {
-        std::fs::read_dir(path)
-            .map(|rd| rd.flatten().map(|e| disk_size(&e.path())).sum())
-            .unwrap_or(0)
-    } else if md.is_file() {
-        md.len()
-    } else {
-        0
-    }
 }
 
 pub fn is_local_route(route: &str) -> bool {

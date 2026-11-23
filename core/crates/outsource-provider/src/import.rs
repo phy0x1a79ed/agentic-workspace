@@ -3,7 +3,7 @@
 //! `import` verb. Content is never read.
 
 use crate::index::{normalize, Entry};
-use crate::identity::{from_probe, probe};
+use crate::identity::identify;
 use crate::jobs::q;
 use crate::provider::{Instance, Provider, State};
 use anyhow::Context;
@@ -98,9 +98,8 @@ impl Provider {
             if item.ty.as_ref().is_some_and(PropSet::is_empty) {
                 return Err(format!("{} has an empty type", item.path));
             }
-            let out = host.sh(&probe(&item.path)).await.map_err(|_| format!("{} does not exist", item.path))?;
-            let (path, id) = from_probe(&out, me, &mut warnings)?;
-            let (path, id) = (PathBuf::from(path), item.ty.as_ref().map_or(id, instance_id));
+            let probed = identify(host, &item.path, me, false, &mut warnings).await.map_err(|_| format!("{} does not exist", item.path))?;
+            let (path, id) = (PathBuf::from(probed.path), item.ty.as_ref().map_or(probed.id, instance_id));
             let files = if self.inner.state.lock().unwrap().holds(&id, &path) {
                 None
             } else {

@@ -60,21 +60,30 @@ pub async fn serve(market: Market, cfg: MarketConfig) -> anyhow::Result<()> {
     }
 }
 
-/// Redials a dropped link with backoff. Nothing announces that a remote host came back, so this
-/// is a timer; links use `ssh -o BatchMode=yes`, so a failed dial never raises a 2FA prompt.
+/// Redials a dropped link forever, backing off to a minute. Nothing announces that a remote host
+/// came back, so this is a timer; links use `ssh -o BatchMode=yes`, so a failed dial never raises
+/// a 2FA prompt. A link that held for the cap counts as up, and only a change of state is logged.
 async fn keep_dialled(market: Market, cmd: String) {
-    let mut wait = Duration::from_secs(30);
+    const CAP: Duration = Duration::from_secs(60);
+    let (mut wait, mut up) = (Duration::from_secs(1), true);
     loop {
         let started = tokio::time::Instant::now();
-        match dial(&cmd) {
-            Ok(Link { tx, rx }) => market.serve(tx, rx).await,
-            Err(e) => eprintln!("outsource: dial {cmd}: {e}"),
-        }
-        if started.elapsed() > Duration::from_secs(600) {
-            wait = Duration::from_secs(30);
+        let failure = match dial(&cmd) {
+            Ok(Link { tx, rx }) => {
+                market.serve(tx, rx).await;
+                "closed at once".to_string()
+            }
+            Err(e) => e.to_string(),
+        };
+        if started.elapsed() >= CAP {
+            eprintln!("outsource: link {cmd} dropped after {}s; redialing", started.elapsed().as_secs());
+            (wait, up) = (Duration::from_secs(1), true);
+        } else if up {
+            eprintln!("outsource: link {cmd} is down ({failure}); redialing at most every {}s", CAP.as_secs());
+            up = false;
         }
         tokio::time::sleep(wait).await;
-        wait = (wait * 2).min(Duration::from_secs(1800));
+        wait = (wait * 2).min(CAP);
     }
 }
 
@@ -96,6 +105,12 @@ struct Cluster {
     slurm: SlurmConfig,
     #[serde(default)]
     imports: Vec<PathBuf>,
+}
+
+/// This host's route to provider `node`, from `~/.outsource/provider.toml`.
+pub fn route_to(node: &str) -> Option<String> {
+    let file: ProviderFile = read_toml(&outsource_dir().join("provider.toml")).ok()?;
+    file.provider.routes.get(node).cloned()
 }
 
 pub async fn provider(config: Option<PathBuf>) -> anyhow::Result<()> {
@@ -181,9 +196,9 @@ mod tests {
         let work = d.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("in.txt"), "data").unwrap();
-        let site = Site { node: "near".into(), cwd: work.clone() };
+        let site = Site { node: "near".into(), cwd: Some(work.clone()), host: Default::default() };
         let offer = json!({"requires": ["in.txt"], "produces": ["res"], "protocol": "mkdir res && cp in.txt res/copy.txt", "dest": "dest", "to": "far"});
-        let set = compile(offer, &site).unwrap().set;
+        let set = compile(offer, &site).await.unwrap().set;
 
         let client = local_client(&market, "caller");
         let mut events = client.events().unwrap();

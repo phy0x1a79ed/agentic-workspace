@@ -44,7 +44,7 @@ pub async fn run(m: ArgMatches) -> anyhow::Result<()> {
         "watch" => watch(sub).await,
         verb => {
             let client = roles::client(&caller_name()).await?;
-            match surfaces::invoke(&client, verb, surfaces::clap_args(verb, sub)?).await {
+            match surfaces::invoke(&client, verb, surfaces::clap_args(verb, sub)?, &crate::offer::Site::here()).await {
                 Ok(v) => Ok(println!("{}", serde_json::to_string_pretty(&v)?)),
                 Err(e) => {
                     eprintln!("{e}");
