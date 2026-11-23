@@ -6,12 +6,15 @@
 
 ## Current
 
-Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). T6 done 2026-11-23: nibi and trillium are providers on altair (hand-added `[[cluster]]` blocks; trillium whole_node, node_cpus 192, walltime caps 24 h); test offers settled on c474.nibi and tri0089. Masters are awm `ssh` scopes with ControlPersist no: they live until the connection drops, and `ssh connect` reopens them through the 2fa service with no human. Next: T7 (worker porting nf-baitan in metasmith/engine/outsource-executor).
+Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). T6 done 2026-11-23: nibi and trillium are providers on altair (hand-added `[[cluster]]` blocks; trillium whole_node, node_cpus 192, walltime caps 24 h); test offers settled on c474.nibi and tri0089. Masters are awm `ssh` scopes with ControlPersist no: they live until the connection drops, and `ssh connect` reopens them through the 2fa service with no human. T7 done: nf-outsource on metasmith feat/engine/outsource-executor (ba2190aa, d513332e, unpushed), stub tests green on altair (build copy ~/.cache/nf-outsource-build; JDK ~/.local/jdk/jdk-21.0.13+9; nextflow 26.04.1 in msm env). Never run live. Config: plugins nf-outsource@0.1.0, process.executor='outsource', outsource{node='altair'}, ext.outsource=[to:..]. Next: T9.
 
 Found during T4, for T14:
 - An offer `to: fir` posted on mizar got `NoBids`; the same offer on altair settles. mizar's entry may not reach altair's provider host.
 - The outsource `offer` verb's `metrics` param description still says default ["time"]; it is now time + waste.
 - The ship merge trailers must sit in the last paragraph with Co-Authored-By, or `%(trailers)` misses them.
+- nf-outsource re-implements the client `compile()` (OfferSet, stat ids, .env, task+place steps) in Groovy, because the entry accepts only `{set}`; drift breaks it silently. Fix: entry accepts the transform shape, or compile moves to a shared crate.
+- `resources` has no time field; the plugin sends task time as `spec.est`.
+- nf-outsource unverified live: status `{promise, phase}` shape, `from` routing after reconnect, dispose, a `place` to the caller's node, `-resume` session id.
 - A dead slot is requeued only for groups with no `#sbatch` line (cac78807); a slot that dies after `sbatch` ran but before echo can still double-submit. Accepted.
 
 ## Waiting on the user
@@ -46,7 +49,7 @@ Found during T4, for T14:
 
 ## Workers
 
-- T7 worker (sonnet): port nf-baitan to nf-outsource in metasmith scope engine/outsource-executor, stub-market tests green.
+None.
 
 ## Closed
 
