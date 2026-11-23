@@ -26,6 +26,7 @@ while [ $i -le ${r#0-} ]; do
   mkdir -p $D/q; echo $! > $D/q/${n}_$i
   i=$((i+1))
 done
+echo "sbatch: NOTE: Your memory request was likely submitted as 2.0G." >&2
 echo "Submitted batch job $n"
 "#;
 
