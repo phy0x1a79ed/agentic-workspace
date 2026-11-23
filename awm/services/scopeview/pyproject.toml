@@ -10,6 +10,7 @@ description = "AWM scopeview service: a scope's XGDB raw tables and the chain of
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "metasmith @ git+https://github.com/phy0x1a79ed/Metasmith@v0.25.1",
     "pyarrow",
     "pyyaml",
 ]

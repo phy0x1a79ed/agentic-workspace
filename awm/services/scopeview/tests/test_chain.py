@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from awm.scopeview import chain
+from awm.scopeview import chain, layout
 from awm.scopeview.hub_adapter import API_MANIFEST, HANDLERS
 from awm.scopeview.tree import Tree
 
@@ -52,6 +52,7 @@ def scope(tmp_path):
         "samples.tsv": b"sample_id\nS1\n",
         "tables/mags.tsv": b"bin\tcompleteness\nS1.a.001\t90\n",
         "binning/checkm2_a/S1.tsv": b"bin\tc\n",
+        "assembly/stats_a/S1.json": b'{"n50": 1200}',
         "_logs/gaps.tsv": b"product\tstem\treason\ncheckm2_a\tS2\tnot_run\n",
     })
     sh(root, "add", "-A")
@@ -71,6 +72,24 @@ def test_a_path_from_table_to_prose_checks_clean(scope):
     assert kinds["table:ds/binning/checkm2_a"] == "product"
     product = next(n for n in g["nodes"] if n["id"] == "table:ds/binning/checkm2_a")
     assert product["gaps"] == [{"product": "checkm2_a", "stem": "S2", "reason": "not_run"}]
+
+
+def test_a_nodes_provenance_lays_out_its_ancestors_and_children(scope):
+    root, _ = scope
+    q = chain.new(root, "question", ["table:ds/tables/mags.tsv"], "Q")
+    i = chain.new(root, "interpretation", [q["id"]], "I")
+    p = chain.new(root, "point", [i["id"]], "P")
+    chain.new(root, "question", ["table:ds/samples.tsv"], "unrelated")
+    geo = layout.provenance(chain.build(Tree(root)), i["id"])
+    kinds = {n["id"]: n["kind"] for n in geo["nodes"]}
+    assert kinds == {"table:ds/tables/mags.tsv": "given", q["id"]: "data", i["id"]: "data", p["id"]: "data"}
+    assert len(geo["edges"]) == 3 and all(e["d"] for e in geo["edges"])
+
+
+def test_a_non_tabular_file_previews_as_text(scope):
+    root, _ = scope
+    pv = chain.node(Tree(root), "table:ds/assembly/stats_a")["preview"]
+    assert pv["text"] == '{\n  "n50": 1200\n}'
 
 
 def test_check_reports_each_broken_rule(scope):

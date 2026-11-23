@@ -13,7 +13,7 @@ from typing import Any
 from awm.config import canonical_workspace
 from awm.gatewayclient import ServiceAdapter
 
-from awm.scopeview import chain
+from awm.scopeview import chain, layout
 from awm.scopeview.tree import Tree, git
 
 log = logging.getLogger("awm.scopeview")
@@ -31,6 +31,8 @@ API_MANIFEST: dict[str, Any] = {
          "description": "The scope's graph: raw tables from data/<dataset>/ (XGDB), chain nodes from chain/, edges, stale flags and check problems."},
         {"name": "node", "tool": "scopeview_node", "params": [P_PROJECT, P_SCOPE, P_ID, P_REF],
          "description": "One node's content: a table's columns and first rows, a figure's Plotly JSON, a text node's markdown."},
+        {"name": "layout", "tool": "scopeview_layout", "params": [P_PROJECT, P_SCOPE, P_ID, P_REF],
+         "description": "A node's provenance as metasmith DAG geometry: its ancestors down to the raw tables, and its direct children."},
         {"name": "history", "tool": "scopeview_history",
          "params": [P_PROJECT, P_SCOPE, {**P_ID, "required": False, "description": "Node id. Omit for the scope's versions (first-parent commits)."}, P_REF],
          "description": "Commits that touched a node, or the scope's versions when no id is given."},
@@ -104,6 +106,7 @@ HANDLERS = {
     "scopes": handler(lambda a: {"scopes": find_scopes()}),
     "graph": handler(lambda a: chain.build(tree(a))),
     "node": handler(lambda a: chain.node(tree(a), a["id"])),
+    "layout": handler(lambda a: layout.provenance(chain.build(tree(a)), a["id"])),
     "history": handler(lambda a: {"commits": chain.history(tree(a), a.get("id"))}),
     "new": handler(lambda a: chain.new(scope_root(a["project"], a["scope"]), a["stage"], a["from"], a["title"], a.get("id"))),
     "accept": handler(lambda a: chain.accept(scope_root(a["project"], a["scope"]), a["id"], a["note"])),

@@ -220,7 +220,29 @@ def preview_table(path: Path, name: str, rows: int = 200) -> dict:
         cols = reader[0] if reader else []
         return {"format": "tsv", "columns": [{"name": c} for c in cols],
                 "head": [{c: clip(v) for c, v in zip(cols, r)} for r in reader[1:]]}
-    return {"format": name.rsplit(".", 1)[-1], "bytes": path.stat().st_size}
+    return preview_text(path, name)
+
+
+MAX_TEXT = 256 << 10
+
+
+def preview_text(path: Path, name: str) -> dict:
+    """Any other file as text when it is small and decodes, with JSON pretty-printed."""
+    out = {"format": name.rsplit(".", 1)[-1], "bytes": path.stat().st_size}
+    if out["bytes"] > MAX_TEXT:
+        return out
+    try:
+        text = path.read_bytes().decode()
+    except UnicodeDecodeError:
+        return out
+    if name.endswith(".json"):
+        import json
+
+        try:
+            text = json.dumps(json.loads(text), indent=2)
+        except ValueError:
+            pass
+    return {**out, "text": text}
 
 
 def clip(v):
@@ -248,7 +270,7 @@ def node(tree: Tree, node_id: str) -> dict:
         if n.get("kind") == "product":
             rels = sorted(p for p in tree.pins if p.startswith(n["path"] + "/"))
             out["listing"] = [{"file": p.rsplit("/", 1)[1]} for p in rels[:500]]
-            first = next((p for p in rels if p.endswith((".tsv", ".parquet", ".csv"))), None)
+            first = next((p for p in rels if p.endswith((".tsv", ".parquet", ".csv"))), rels[0] if rels else None)
             if first:
                 out["preview"] = {"file": first.rsplit("/", 1)[1], **preview_table(tree.local(first), first, 50)}
         elif n["path"] in tree.pins:
