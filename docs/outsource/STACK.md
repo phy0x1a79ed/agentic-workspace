@@ -6,15 +6,13 @@
 
 ## Current
 
-Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress): vanilla Slurm provider + waste axis + `outsource connect` → release 5; trillium/nibi; nf-outsource POC; fleet drift; three real tests (MCP Rust build, MCP msm tests, Nextflow served by the market); fixes; simplify; docs; debrief. test-trim session is done; this session runs the msm tests (T11). Older note below.
+Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). Next: T6 (trillium/nibi; routes already in cloud `hpc_ssh` defaults; trillium needs `node_cpus` in provider.toml for `waste`).
 
-
-`deploy`: apply the decided changes and try a real job. Tony 2026-11-22: "lets deploy outsource and have the test trim as another test case". Next steps, in order:
-1. Wait for the slurm-hang worker; confirm all outsource crate tests and the plugin e2e (except the known `far` link) pass.
-2. Load the `ship` skill; merge feat/outsource to dev and run the release train.
-3. Node migration (list under `deploy` in Stack); avoid capella (never wake it); lyra is unreachable.
-4. Real job 1: metasmith solver build (`src/workflow_solver`), no `to`. Only altair can build it today (cargo+musl, apptainer); Slurm fronts can bid only with a Rust/musl `.env`.
-5. Real job 2: test-trim shards on HPC (`test-trim-hpc`).
+Found during T4, for T14:
+- An offer `to: fir` posted on mizar got `NoBids`; the same offer on altair settles. mizar's entry may not reach altair's provider host.
+- The outsource `offer` verb's `metrics` param description still says default ["time"]; it is now time + waste.
+- The ship merge trailers must sit in the last paragraph with Co-Authored-By, or `%(trailers)` misses them.
+- A dead slot is requeued only for groups with no `#sbatch` line (cac78807); a slot that dies after `sbatch` ran but before echo can still double-submit. Accepted.
 
 ## Waiting on the user
 
@@ -48,7 +46,7 @@ Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89
 
 ## Workers
 
-- T1–T3 worker (sonnet), started 2026-11-23: batched 10 s Slurm slot, `waste` axis, `outsource connect`. Commits on feat/outsource, built on altair.
+None.
 
 ## Closed
 
