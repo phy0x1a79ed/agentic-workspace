@@ -34,7 +34,7 @@ fn rig() -> Rig {
         ("sbatch", SBATCH),
         (
             "squeue",
-            "echo \"squeue $*\" >> $D/calls.log\nfor f in $D/q/*; do [ -e \"$f\" ] && kill -0 $(cat $f) 2>/dev/null && echo \"$(basename $f) RUNNING\"; done; true",
+            "echo \"squeue $*\" >> $D/calls.log\nfor f in $D/q/*; do [ -e \"$f\" ] || continue; p=$(cat $f); grep -q \"^State:.[RSD]\" /proc/$p/status 2>/dev/null && echo \"$(basename $f) RUNNING\"; done; true",
         ),
         ("sshare", "echo \"sshare $*\" >> $D/calls.log\ncat $D/share.txt"),
         ("sacct", "echo \"sacct $*\" >> $D/calls.log"),
@@ -267,8 +267,14 @@ async fn life_reports_cached_state_and_exit() {
 #[tokio::test(start_paused = true)]
 async fn vanished_task_without_exit_is_settled_as_failed() {
     let mut r = rig();
-    // The task script is killed before it can write `exit`, as Slurm does at walltime.
-    let a = r.job("lost", 1, 1024, "kill -9 $PPID");
+    // The task script is killed before it can write `exit`, as Slurm does at walltime. The job
+    // finds task.sh among its ancestors, since a `time` wrapper may sit in between.
+    let a = r.job(
+        "lost",
+        1,
+        1024,
+        "p=$PPID; until grep -aq task.sh /proc/$p/cmdline; do p=$(cut -d' ' -f4 /proc/$p/stat); done; kill -9 $p",
+    );
     let b = r.job("fine", 1, 1024, "exit 0");
     r.be.launch(a).await.unwrap();
     r.be.launch(b).await.unwrap();
