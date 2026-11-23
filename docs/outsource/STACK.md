@@ -22,6 +22,7 @@ Found during T4, for T14:
   - robust-z picker amplifies a small time spread among HPC bids (~1090 s): trillium's 92 s lead (z 1.35) beats its clamped waste penalty (-1), so trillium won re-awarded 2-cpu shards. Picker design question.
   - Offers from mizar never reach an HPC: "no source for input" (push goes only along mizar's edges, altair does not relay to its clusters).
   - `resources` without `mem_mb` is rejected (BadArgs) though the schema says it defaults.
+  - **Silent stale result**: a folder material's identity follows only its top-level stat. Adding src/metasmith/engine/msm_solver under msm/ left msm's mtime unchanged, so round 2 of T11 reused round 1's instances (same failures, no stats). Fix first: identity must cover the tree (max mtime/size over files, or a listing hash).
   - trillium breaks every container job (exit 255): compute nodes cannot write /home, and apptainer wants ~/.apptainer/cache. Fix with the /tmp one: APPTAINER_CACHEDIR and APPTAINER_TMPDIR under the provider's state dir.
   - Slurm jobs leave no `log` in the work dir (output goes to batch-*/slurm-*.out), so the 5.2 log tail is empty for HPC breaks.
   - A bid after the round window is logged ("trillium bids ...") but dropped, and a directed round (`to`, one eligible provider) then fails NoBids: 3 of 4 trillium T12 tasks. A directed round should wait for its one provider; a late bid should log as late.
