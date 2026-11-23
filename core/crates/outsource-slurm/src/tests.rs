@@ -15,6 +15,8 @@ struct Rig {
 
 const SBATCH: &str = r#"
 echo "sbatch $*" >> $D/calls.log
+# 98: once, kill the slot's own shell, as a dropped ssh would
+case "$*" in *--cpus-per-task=98\ *) [ -e $D/died ] || { touch $D/died; kill -9 $(cut -d' ' -f4 /proc/$PPID/stat); sleep 5; };; esac
 case "$*" in *--cpus-per-task=99\ *) echo "sbatch: error: invalid cpus" >&2; exit 1;; esac
 n=$(cat $D/jobid 2>/dev/null || echo 100); n=$((n+1)); echo $n > $D/jobid
 for a; do case $a in --array=*) r=${a#--array=};; esac; script=$a; done
@@ -182,6 +184,23 @@ async fn a_failed_sbatch_fails_only_its_own_jobs() {
     let error = r.be.inner.st.lock().unwrap().error.clone().unwrap();
     assert!(error.contains("invalid cpus"), "{error}");
     assert_eq!(r.done().await, ("ok".to_string(), 0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slot_that_dies_keeps_the_groups_it_submitted_and_requeues_the_rest() {
+    let mut r = rig();
+    let (a, b) = (r.job("a", 1, 1024, "exit 0"), r.job("b", 98, 1024, "exit 0"));
+    r.be.launch(a).await.unwrap();
+    r.be.launch(b).await.unwrap();
+    let mut got = HashMap::new();
+    for _ in 0..2 {
+        let (p, c) = r.done().await;
+        got.insert(p, c);
+    }
+    assert_eq!(got, HashMap::from([("a".into(), 0), ("b".into(), 0)]));
+    let sb = r.log().into_iter().filter(|l| l.starts_with("sbatch"));
+    let (first, second): (Vec<_>, Vec<_>) = sb.partition(|l| l.contains("--cpus-per-task=1 "));
+    assert_eq!((first.len(), second.len()), (1, 2), "a is not submitted twice, b is retried");
 }
 
 #[tokio::test(start_paused = true)]

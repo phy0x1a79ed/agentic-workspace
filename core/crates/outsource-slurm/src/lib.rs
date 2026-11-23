@@ -3,7 +3,6 @@
 //! batched into job arrays, and completion is read from `exit` files in the gated tick. Nothing
 //! outsource runs on the cluster but the job scripts.
 
-use anyhow::bail;
 use async_trait::async_trait;
 use outsource_proto::{PromiseId, Resources};
 use outsource_provider::backend::{Backend, DoneTx, JobSpec, RUN_LINE};
@@ -381,8 +380,8 @@ impl Inner {
             body += &format!("s=$({} -u \"$USER\") && {{ echo '#share'; echo \"$s\"; }}\n", self.cmd("sshare", &args));
         }
         let label = format!("slot {} sbatch, {} scancel, {} tracked", keyed.len(), kills.len(), sent.len());
-        let Ok(text) = self.call(label, &body).await else {
-            // The slot's outcome is unknown, so keep the jobs and retry them next slot.
+        let Some(text) = self.call(label, &body).await else {
+            // Nothing came back (the header failed): requeue and retry next slot.
             let mut st = self.st.lock().unwrap();
             st.kills.extend(kills);
             st.queues.extend(keyed.into_iter().map(|(_, q)| q));
@@ -392,8 +391,9 @@ impl Inner {
     }
 
     /// One gated call: `body` runs on the cluster from scratch, as one ssh. `label` is what
-    /// `calls` records.
-    async fn call(&self, label: String, body: &str) -> anyhow::Result<String> {
+    /// `calls` records. A script that dies midway still returns what it printed, so the groups
+    /// it submitted are not lost; `None` means it printed nothing.
+    async fn call(&self, label: String, body: &str) -> Option<String> {
         {
             let mut st = self.st.lock().unwrap();
             let now = Instant::now();
@@ -403,20 +403,17 @@ impl Inner {
         // sockeye refuses an sbatch run from /arc/home, so every call runs from scratch. No `set -e`:
         // a failing section must not skip the rest.
         let scratch = q(&self.cfg.scratch.to_string_lossy());
-        let out = self.host.sh(&format!("mkdir -p {scratch} && cd {scratch} || exit 1\n{body}exit 0\n")).await;
+        let ran = self.host.run(&format!("mkdir -p {scratch} && cd {scratch} || exit 1\n{body}exit 0\n")).await;
         let mut st = self.st.lock().unwrap();
-        match out {
-            Ok(text) => {
-                st.error = None;
-                Ok(text)
-            }
-            Err(e) => {
-                let e = format!("{label}: {e}");
-                tracing::warn!("{e}");
-                st.error = Some(e.clone());
-                bail!(e)
-            }
+        let (ok, text, err) = match ran {
+            Ok(r) => (r.ok, r.stdout, r.stderr),
+            Err(e) => (false, String::new(), e.to_string()),
+        };
+        st.error = (!ok).then(|| format!("{label}: {}", err.trim()));
+        if let Some(e) = &st.error {
+            tracing::warn!("{e}");
         }
+        (ok || !text.is_empty()).then_some(text)
     }
 
     fn settle(&self, reply: Reply, queues: Vec<(String, Queue)>, share_asked: bool) {
