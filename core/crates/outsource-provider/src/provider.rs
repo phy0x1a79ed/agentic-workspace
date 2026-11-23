@@ -865,6 +865,10 @@ impl Inner {
             "cargo" => self.compile_cargo(step)?,
             _ => self.compile_task(set, step, resolved, &workdir)?,
         };
+        if let (Some(env), Some(apptainer)) = (self.env_of(step)?, &self.apptainer) {
+            let pull = format!("set -e\n{}\n", self.pull_lines(&env, apptainer).join("\n"));
+            self.host.sh(&pull).await.map_err(|e| format!("pulling {}: {e}", env.container))?;
+        }
         let code = self.exec(promise, &workdir, script, &set.resources, step.spec.get("est").and_then(Value::as_f64)).await?;
         let stats = self.host.sh(&format!("cat {} 2>/dev/null || true", q(&workdir.join("stats").to_string_lossy()))).await;
         if let Some(run) = stats.ok().as_deref().and_then(parse_stats) {
@@ -958,21 +962,28 @@ impl Inner {
         self.work_dir.with_file_name("env").join(format!("{id}.sif"))
     }
 
-    /// Shell lines that pull the environment's image into the cache unless it is there. One pull
-    /// per image at a time, and apptainer's scratch and cache sit beside the images, never in
-    /// /tmp or $HOME (a compute node may not write there). The exports serve the later `exec` too.
-    fn pull_lines(&self, env: &Env, apptainer: &Path) -> Vec<String> {
-        let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
+    /// Exports that keep apptainer's scratch and cache beside the images, never in /tmp or $HOME
+    /// (a compute node may not write there).
+    fn apptainer_env(&self) -> Vec<String> {
         let dir = self.work_dir.with_file_name("env");
         let sub = |n: &str| q(&dir.join(n).to_string_lossy());
         vec![
             format!("mkdir -p {} {}", sub("tmp"), sub("cache")),
             format!("export APPTAINER_TMPDIR={} APPTAINER_CACHEDIR={}", sub("tmp"), sub("cache")),
-            format!(
-                "[ -f {sif} ] || ( flock 9; [ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif} || {{ rm -f {sif}.$$; exit 1; }}; }} ) 9>{sif}.lock",
-                q(&env.container)
-            ),
         ]
+    }
+
+    /// Shell lines that pull the environment's image into the cache unless it is there, one pull
+    /// per image at a time. They run on the host itself (a cluster's login node), because compute
+    /// nodes may have no route to the registry.
+    fn pull_lines(&self, env: &Env, apptainer: &Path) -> Vec<String> {
+        let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
+        let mut lines = self.apptainer_env();
+        lines.push(format!(
+            "[ -f {sif} ] || ( flock 9; [ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif} || {{ rm -f {sif}.$$; exit 1; }}; }} ) 9>{sif}.lock",
+            q(&env.container)
+        ));
+        lines
     }
 
     fn compile_task(&self, set: &OfferSet, step: &Step, resolved: &Resolved, workdir: &Path) -> Result<String, String> {
@@ -993,7 +1004,7 @@ impl Inner {
         }
         match (env, &self.apptainer) {
             (Some(env), Some(apptainer)) => {
-                lines.extend(self.pull_lines(&env, apptainer));
+                lines.extend(self.apptainer_env());
                 let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
                 lines.push(format!("{app} exec {} {sif} bash -c {}", binds.join(" "), q(script)));
             }
