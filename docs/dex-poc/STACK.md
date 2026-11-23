@@ -6,7 +6,7 @@
 
 ## Current
 
-Nothing. The stack is empty; baitan is built and live.
+`arrays`: array shape under a multi-cluster msm burst.
 
 ## Waiting on the user
 
@@ -28,10 +28,15 @@ Nothing.
 - 2026-11-12: dex is no longer relevant; take its useful ideas only.
 - 2026-11-11: "pressing issue is some compute market for awm peers."
 - Standing: one report at the end, no interim status reports.
+- 2026-11-14: Fix broken ssh rather than work around it.
+- 2026-11-14: No persistent baitan process on HPC.
 
 ## Stack
 
-None.
+- `test-cases`: after the rework, run an msm job and a Rust build live. "Want to try msm job distributed across hpc clusters, not just 1".
+- `arrays`: mock submissions (docs/dex-poc/mock-submissions.txt) show one array per (cpus, mem) profile per cluster, sized by the burst, with no cap or throttle; a second profile waits one gate; trillium's whole_node gives every task a whole node.
+- `arbutus-spot`: "we can think about offering spot general compute instances on arbutus as well". GTDB-Tk and Metabuli on-demand services exist (arbutus-infra, July 2026); only their reference volumes are live (gtdb-ref-r232, metabuli-ref-gtdb232).
+- `backend-hardening`: issues the front-stateless worker reported (bb75af6c): no timeout on a hung master freezes that cluster's scheduler; ssh dropping right after a good sbatch marks running jobs failed; a failed scancel is not retried; one extra ssh per finished job and per new import for its file listing; `awm` feature in plugins/baitan now unused.
 
 ## Workers
 
@@ -39,6 +44,9 @@ None.
 
 ## Closed
 
+- `prove-rust`, `prove-metasmith`: closed on journal evidence; both become test cases for the rework.
+- `front-stateless`: altair's provider hosts one provider per cluster over one-shot ssh; no HPC process.
+- `ssh-direct`: mizar holds its own masters to all four clusters; no altair hop.
 - `freshness`: event-driven; subscribed or disconnected.
 - `keepalive`: dropped from the design; a socket option.
 - `mvp-scope`: cache, update event, remote fill first; bidding after.

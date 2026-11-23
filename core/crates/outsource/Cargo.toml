@@ -1,6 +1,6 @@
 [package]
 name = "outsource"
-description = "outsource roles and caller surfaces: market server, provider, front, connect, CLI, MCP and HTTP."
+description = "outsource roles and caller surfaces: market server, provider, connect, CLI, MCP and HTTP."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

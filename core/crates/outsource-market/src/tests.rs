@@ -39,7 +39,7 @@ impl Peer {
     }
 
     async fn reg(&mut self, versions: [u32; 2], props: &[(&str, &str)]) {
-        let args = RegisterArgs { provider: self.id.clone(), versions, props: outsource_proto::props(props.iter().copied()) };
+        let args = RegisterArgs { provider: self.id.clone(), versions, props: outsource_proto::props(props.iter().copied()), routes: vec![] };
         assert_eq!(self.ask(Msg::Register(args)).await, ok());
     }
 
@@ -107,7 +107,7 @@ impl Peer {
     }
 
     async fn offer(&mut self, set: OfferSet) -> PromiseId {
-        match self.ask(Msg::Offer(OfferArgs { set, promise: None })).await {
+        match self.ask(Msg::Offer(OfferArgs { set, promise: None, inbound: vec![] })).await {
             Msg::Return(v) => v["promise"].as_str().unwrap().into(),
             m => panic!("{m:?}"),
         }
@@ -219,7 +219,7 @@ async fn a9_pickers() {
 
     let m = Market::new("market");
     let mut c = Peer::new(&m, "c");
-    match c.ask(Msg::Offer(OfferArgs { set: set(json!({"picker": "vibes"})), promise: None })).await {
+    match c.ask(Msg::Offer(OfferArgs { set: set(json!({"picker": "vibes"})), promise: None, inbound: vec![] })).await {
         Msg::Raise(r) => assert_eq!(r.name, raise::BAD_ARGS),
         m => panic!("{m:?}"),
     }
@@ -534,7 +534,7 @@ async fn vocabulary_guards_every_typed_material_and_output() {
     let typed = |stage: Value, outs: Value| {
         set(json!({"steps": [{"op": "task", "props": {"contract": "c"}, "spec": {"stage": {"m": {"id": "I", "type": stage}}, "typed": [{"path": "o", "type": outs}]}}]}))
     };
-    let try_offer = |s: OfferSet| Msg::Offer(OfferArgs { set: s, promise: None });
+    let try_offer = |s: OfferSet| Msg::Offer(OfferArgs { set: s, promise: None, inbound: vec![] });
     let ok_set = || typed(json!({"db": "uniref50", "organism": "rat"}), json!({"format": "fasta"}));
     assert!(raised(c.ask(try_offer(typed(json!({"dbb": "nr"}), json!({"db": "nr"})))).await).contains("\"db\""));
     assert!(raised(c.ask(try_offer(typed(json!({"db": "nr"}), json!({"organism": "humn"})))).await).contains("\"human\""));

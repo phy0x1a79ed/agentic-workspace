@@ -45,7 +45,7 @@ impl Mkt {
     }
 
     async fn bid(&mut self, to: &str, promise: &str, set: &OfferSet) -> BidArgs {
-        self.send(to, Msg::Offer(OfferArgs { set: set.clone(), promise: Some(promise.into()) }));
+        self.send(to, Msg::Offer(OfferArgs { set: set.clone(), promise: Some(promise.into()), inbound: vec![] }));
         let (to, promise) = (to.to_string(), promise.to_string());
         self.wait(move |_, m| match m {
             Msg::Bid(b) if b.provider == to && b.promise == promise => Some(b),
@@ -212,7 +212,7 @@ async fn a3_inputs_priced_from_the_nearest_place() {
     c3.routes = [("far".into(), "user@far".into())].into();
     c3.bandwidth = 1e6;
     let (p2, p3) = (Provider::local(c2), Provider::local(c3));
-    let ids = p1.import(&write_library(&d.path().join("lib"), &[("data.txt", "1", "hello")])).unwrap();
+    let ids = p1.import(&write_library(&d.path().join("lib"), &[("data.txt", "1", "hello")])).await.unwrap();
 
     let mut set = set_of(vec![task(&[("contract", "use")], "true", ids.clone())]);
     set.start = vec![Fact::at(&ids[0], "p1"), Fact::at(&ids[0], "far")];
@@ -285,7 +285,7 @@ async fn a5_imports_agree_across_providers_and_rebuilds_hit() {
     let ib = write_library(&lb, &[("db.dmnd", "2.1", "BBBBBBBB")]);
     std::fs::File::options().write(true).open(la.join("db.dmnd")).unwrap()
         .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1000)).unwrap();
-    let (ida, idb) = (a.import(&ia).unwrap(), b.import(&ib).unwrap());
+    let (ida, idb) = (a.import(&ia).await.unwrap(), b.import(&ib).await.unwrap());
     assert_eq!(ida, idb, "same declared set, same id; mtime and bytes never enter identity");
 
     let count = d.path().join("count");
@@ -375,6 +375,21 @@ async fn a11_price_follows_open_bids_and_a_loss_releases_them() {
     m.send("p", lost("1", Phase::Awarded { provider: "other".into() }));
     m.send("p", lost("2", Phase::Failed { name: raise::NO_BIDS.into(), message: String::new() }));
     assert_eq!(t(m.bid("p", "4", &one("d")).await), 20.0, "only bid 3 is still open");
+
+    // With no `est`, a multi-core job quotes less on more cpus; a single-core job quotes the same.
+    let sized = |n: u32| {
+        let c = ProviderConfig { cpus: Some(n), ..cfg(d.path(), &format!("c{n}")) };
+        Provider::local(c)
+    };
+    let mut m = Mkt::start(vec![sized(8), sized(16)]);
+    assert_eq!((t(m.bid("c8", "5", &one("e")).await), t(m.bid("c16", "5", &one("e")).await)), (10.0, 10.0));
+    for c in ["c8", "c16"] {
+        m.send(c, lost("5", Phase::Awarded { provider: "other".into() }));
+    }
+    let mut eight = one("f");
+    eight.resources.cpus = 8;
+    let (on8, on16) = (t(m.bid("c8", "6", &eight).await), t(m.bid("c16", "6", &eight).await));
+    assert!(on8 == 10.0 && on16 < on8, "{on8} {on16}");
 }
 
 #[tokio::test]
@@ -384,10 +399,11 @@ async fn a11_a19_declines() {
     nocargo.cargo = Some(d.path().join("missing-cargo"));
     let mut noapp = cfg(d.path(), "noapp");
     noapp.apptainer = Some(d.path().join("missing-apptainer"));
+    let small = ProviderConfig { cpus: Some(2), mem_mb: Some(1000), ..cfg(d.path(), "small") };
     let mut po = cfg(d.path(), "po");
     po.placement_only = true;
     po.routes = [("src".into(), "local".into()), ("dest".into(), "local".into())].into();
-    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p")), Provider::local(nocargo), Provider::local(noapp), Provider::local(po)]);
+    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p")), Provider::local(nocargo), Provider::local(noapp), Provider::local(po), Provider::local(small)]);
 
     let mut weird = task(&[], "true", vec![]);
     weird.op = "frobnicate".into();
@@ -409,6 +425,12 @@ async fn a11_a19_declines() {
     in_env.spec = json!({"script": "true", "stage": {"e.env": {"id": "e"}}, "env": {"stage": "e.env", "container": "docker://x/y:1"}});
     let b = m.bid("noapp", "5", &set_of(vec![in_env])).await;
     assert_eq!(b.reason.as_deref(), Some("no apptainer"));
+
+    let mut big = set_of(vec![task(&[], "true", vec![])]);
+    big.resources = Resources { cpus: 8, mem_mb: 500 };
+    assert_eq!(m.bid("small", "6", &big).await.reason.as_deref(), Some("needs 8 cpus, has 2"));
+    big.resources = Resources { cpus: 2, mem_mb: 4096 };
+    assert_eq!(m.bid("small", "7", &big).await.reason.as_deref(), Some("needs 4096 MB, has 1000 MB"));
 
     let b = m.bid("po", "3", &set_of(vec![task(&[], "true", vec![])])).await;
     assert!(b.values.is_none(), "placement-only declines compute");
@@ -531,7 +553,7 @@ async fn a17_one_link_hosts_two_providers() {
     seen.sort();
     assert_eq!(seen, ["a", "b"]);
     let set = set_of(vec![task(&[("contract", "x")], "true", vec![])]);
-    m.send("b", Msg::Offer(OfferArgs { set, promise: Some("p".into()) }));
+    m.send("b", Msg::Offer(OfferArgs { set, promise: Some("p".into()), inbound: vec![] }));
     let who = m.wait(|_, msg| if let Msg::Bid(b) = msg { Some(b.provider) } else { None }).await;
     assert_eq!(who, "b");
 }
@@ -576,7 +598,7 @@ async fn env_task_pulls_once_prices_the_pull_and_runs_the_protocol_inside() {
     let mut c = cfg(d.path(), "p");
     c.apptainer = Some(fake);
     let p = Provider::local(c);
-    let ids = p.import(&write_library(&d.path().join("lib"), &[("e.env", "1", "container: docker://x/y:1\n")])).unwrap();
+    let ids = p.import(&write_library(&d.path().join("lib"), &[("e.env", "1", "container: docker://x/y:1\n")])).await.unwrap();
     // A material the caller's own provider holds is named by a `start` fact alone.
     let data = d.path().join("data.txt");
     std::fs::write(&data, "mine").unwrap();
@@ -730,6 +752,6 @@ async fn a_second_prep_of_a_typed_material_waits_on_the_transfer_in_flight() {
     }
     assert!(kept_ids(&settled["one"]).contains(&id) && kept_ids(&settled["two"]) == [id]);
     let work = d.path().join("p2/work");
-    assert!(work.join("one-0/run.sh").exists() && !work.join("two-0").exists(), "the second prep ran no transfer");
+    assert!(work.join("one-0").exists() && !work.join("two-0").exists(), "the second prep ran no transfer");
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1, "one image pull");
 }

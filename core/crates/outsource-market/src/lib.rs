@@ -8,7 +8,7 @@ mod tests;
 use outsource_proto::{
     fold_type, raise, raise_msg, AwardArgs, BidArgs, DnuArgs, DisposeArgs, Envelope, Fact, Id, ImportArgs, Msg, OfferArgs, OfferSet, Outcome,
     Phase, PromiseId, PromiseRef, PromiseStatus, PropSet, PropertyAddArgs, ProviderId, ReviewArgs, SettleArgs, StartedArgs,
-    Step, TIME_AXIS,
+    Step, TransferArgs, TIME_AXIS,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -49,6 +49,7 @@ struct Prov {
     link: Option<LinkId>,
     versions: [u32; 2],
     props: PropSet,
+    routes: Vec<ProviderId>,
 }
 
 struct Watch {
@@ -191,7 +192,7 @@ impl Market {
     pub async fn serve(&self, tx: UnboundedSender<Envelope>, mut rx: UnboundedReceiver<Envelope>) {
         let link = self.attach(tx);
         while let Some(env) = rx.recv().await {
-            if env.reply_to.is_none() && matches!(env.selector.as_str(), "status" | "dispose" | "import") {
+            if env.reply_to.is_none() && matches!(env.selector.as_str(), "status" | "dispose" | "import" | "transfer") {
                 let m = self.clone();
                 tokio::spawn(async move { m.inbound(link, env).await });
             } else {
@@ -216,6 +217,7 @@ impl Market {
             Msg::Status(r) => Some(self.status(r).await),
             Msg::Dispose(a) => Some(self.dispose(a).await),
             Msg::Import(a) => Some(self.import(a).await),
+            Msg::Transfer(a) => Some(self.transfer(&env.from, a).await),
             _ => self.lock().handle(link, &env, msg.clone()),
         };
         if let Some(r) = reply {
@@ -338,6 +340,25 @@ impl Market {
     }
 }
 
+impl Market {
+    /// Asks the end of a transfer that did not ask to run it, over its own route to the asker.
+    async fn transfer(&self, asker: &str, a: &TransferArgs) -> Msg {
+        let other = match asker {
+            x if x == a.from => &a.to,
+            x if x == a.to => &a.from,
+            _ => return raise_msg(raise::BAD_ARGS, format!("{asker} is neither end of the transfer")),
+        };
+        let rx = self.lock().ask_provider(other, &Msg::Transfer(a.clone()), None);
+        match rx {
+            Some(rx) => match rx.await.ok().and_then(|e| e.msg().ok()) {
+                Some(reply @ (Msg::Return(_) | Msg::Raise(_))) => reply,
+                _ => raise_msg(UNAVAILABLE, format!("{other} did not answer")),
+            },
+            None => raise_msg(UNAVAILABLE, format!("no link to {other}")),
+        }
+    }
+}
+
 fn unknown(id: &str) -> Msg {
     raise_msg(raise::UNKNOWN_PROMISE, id)
 }
@@ -391,7 +412,7 @@ impl Inner {
     fn handle(&mut self, link: LinkId, env: &Envelope, msg: Msg) -> Option<Msg> {
         Some(match msg {
             Msg::Register(a) => {
-                self.providers.insert(a.provider, Prov { link: Some(link), versions: a.versions, props: a.props });
+                self.providers.insert(a.provider, Prov { link: Some(link), versions: a.versions, props: a.props, routes: a.routes });
                 ok()
             }
             Msg::Offer(a) => self.offer(env.v, a),
@@ -417,7 +438,7 @@ impl Inner {
                 }
             }
             Msg::Return(_) | Msg::Raise(_) | Msg::DoesNotUnderstand(_) => return None,
-            Msg::Status(_) | Msg::Dispose(_) | Msg::Import(_) | Msg::Award(_) | Msg::Event(_) => {
+            Msg::Status(_) | Msg::Dispose(_) | Msg::Import(_) | Msg::Transfer(_) | Msg::Award(_) | Msg::Event(_) => {
                 Msg::DoesNotUnderstand(DnuArgs { selector: env.selector.clone() })
             }
         })
@@ -501,7 +522,8 @@ impl Inner {
         }
         let set = self.promises[id].set.clone();
         for pid in &eligible {
-            self.to_provider(pid, Some(v), &Msg::Offer(OfferArgs { set: set.clone(), promise: Some(id.into()) }));
+            let inbound = self.providers.iter().filter(|(_, pr)| pr.routes.contains(pid)).map(|(q, _)| q.clone()).collect();
+            self.to_provider(pid, Some(v), &Msg::Offer(OfferArgs { set: set.clone(), promise: Some(id.into()), inbound }));
         }
         self.promises.get_mut(id).unwrap().eligible = eligible;
         let (me, id) = (self.me.clone(), id.to_string());

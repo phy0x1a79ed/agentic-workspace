@@ -23,20 +23,28 @@ Nothing.
 - 2026-11-22: General compute, not workflow-only.
 - 2026-11-22: Deploy once, with the rename plus every change decided in the walkthrough.
 - 2026-11-22: Offer = materials (paths, some folders) + method (a bash command) + metrics to bid against.
+- dex-poc, carried: no persistent outsource process on HPC; fix broken ssh rather than work around it.
 - 2026-11-22: Keep `prep` and `import`: "they cover real steps in the user story". After the solver build and the v26 test-trim run, debrief; Tony reviews the lift in the next session.
 
 ## Stack
 
-- `deploy`: "I just meant to now apply these changes and try it for real". Order: prep worker landed 1f763a67 → ontology + runtime stats landed 5d2de1fd (vocab in ~/.outsource/vocab.json; stats via /usr/bin/time; adding values to an open key closes it) → slurm-test-hang → docs landed (AGENTS.md line 7a81a304; skill at core/plugins/outsource/skill, installed per node by awm-deploy.sh; JOBS.md moved to docs/outsource 3ef97248) → ship → node migration → real job. First real job (Tony): "rust build for the metasmith solver" — `src/workflow_solver` (msm_solver, edition 2024, path deps on sibling crates solver_witness{,_audit}, musl target per build.sh). Requires the metasmith repo root as one material (a worktree's `.git` is a file; identity.rs uses `.exists()`, so it counts). Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
+- `deploy`: "I just meant to now apply these changes and try it for real". Shipped release dbec46b1 (2026-11-22); nodes migrated to ~/.outsource; capella refreshed by the rollout but not migrated (still ~/.baitan); lyra asleep. Live check passed. First real job (solver build, rust-musl .env, no `to`) got NoBids: only altair has apptainer and it declines "no source for input": providers pull, and no node can reach mizar. Tony chose push-along-edges (b) over authorizing keys. Release 2 = dex-poc merge + push + provider-fit, then rerun the solver build. Leftover: refresh-pins.sh exited 0 on a cargo --locked failure; market gives up redialing a link whose binary is missing during rollout; e2e `far` needs ssh in the build container.
+  - `push-edges`: when X cannot reach holder H but H reaches X, H pushes. Worker running.
+  - `provider-fit`: decline when job cpus/mem exceed the provider's; scale est-less time by cpus. deneb (2 cpus, 7 GB, 34 GB disk) stays a provider: "good for long running tasks that require high up time" — an uptime axis is deferred until a job needs it. Worker running.
 - `test-trim-hpc`: "can metasmith v26 bug test trim use outsource to run the metasmith tests in parallel on some other, prolly HPC provider". Session metasmith-v26-bugs-test-trim (altair, metasmith/engine/test-trim) is itself asking Tony how Sockeye fits (its recommendation: release tier, no docker; smoke/merge stay local). Coordinated 2026-11-22 (message sent to that session over Remote Control; read not confirmed): plan its HPC lane as outsource offers, wait for deploy, report breakage to awm/outsource. Second real job after deploy: one offer per test shard, metasmith .env container, repo as material, junit back.
-- `slurm-test-hang`: `cargo test -p outsource-slurm` hung for 3–4 h on altair in two runs (test binary `outsource_slurm-…` never exits); containers stopped 2026-11-22. Fix before ship; earlier workers skipped or misread slurm results.
-- carried from dex-poc stack (open there): `test-cases` (msm across HPC clusters), `arrays`, `arbutus-spot`, `backend-hardening`.
+- absorbed from dex-poc (session "dex compute" retired 2026-11-22; its STACK/DECISIONS/FINDINGS at docs/dex-poc/ on feat/dex-poc, merged by the push worker):
+  - `test-cases`: "Want to try msm job distributed across hpc clusters, not just 1".
+  - `arrays`: mock submissions show one array per (cpus, mem) profile per cluster, sized by the burst, no cap or throttle; a second profile waits one gate; trillium's whole_node gives each task a whole node. Open question to Tony: which go in before the live HPC test — pack tasks on trillium, submit all profiles per ssh call, cap arrays with a % throttle.
+  - `arbutus-spot`: "we can think about offering spot general compute instances on arbutus as well".
+  - `backend-hardening`: no timeout on a hung ssh master freezes that cluster's scheduler; ssh dropping right after a good sbatch marks running jobs failed; failed scancel not retried; one extra ssh per finished job and per import for its listing; unused `awm` feature in the plugin.
 
 ## Workers
 
-- slurm-hang worker (sonnet): find and fix the outsource-slurm test hang; run the plugin e2e to completion.
+- push worker: merge feat/dex-poc (stateless altair fronts bb75af6c, never shipped), then `push-edges` and `provider-fit`; commits on feat/outsource.
 
 ## Closed
+
+- `slurm-test-hang`: mock squeue counted zombies as running under the container's non-reaping init; fixed 441b291c.
 
 - `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
 - `tune`: means apply the changes and try for real; folded into `deploy`.

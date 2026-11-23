@@ -1,4 +1,4 @@
-//! outsource's wire contract, shared by the market, providers, fronts, surfaces and the Nextflow executor.
+//! outsource's wire contract, shared by the market, providers, surfaces and the Nextflow executor.
 //!
 //! Design: `docs/dex-poc/DECISIONS.md`. The envelope and reply selectors follow `envelope-mapping`,
 //! versions follow `version-policy`, offer sets and facts follow `mutation`, `storage` and
@@ -61,6 +61,7 @@ pub enum Msg {
     Bid(BidArgs),
     Started(StartedArgs),
     Settle(SettleArgs),
+    Transfer(TransferArgs),
     // Market to provider and market to watcher.
     Award(AwardArgs),
     Event(PromiseStatus),
@@ -71,7 +72,7 @@ pub enum Msg {
 }
 
 pub const SELECTORS: &[&str] = &[
-    "offer", "status", "cancel", "dispose", "import", "property_add", "properties", "review", "watch", "register", "bid", "started", "settle",
+    "offer", "status", "cancel", "dispose", "import", "property_add", "properties", "review", "watch", "register", "bid", "started", "settle", "transfer",
     "award", "event", "return", "raise", "doesNotUnderstand",
 ];
 
@@ -81,6 +82,10 @@ pub struct OfferArgs {
     pub set: OfferSet,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promise: Option<PromiseId>,
+    /// Market to provider: the providers whose registered routes reach the recipient, so a holder
+    /// it cannot reach can still push to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbound: Vec<ProviderId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,7 +159,8 @@ pub struct WatchArgs {
     pub promises: Vec<PromiseId>,
 }
 
-/// `props` describe the provider. An offer's place type must be a subset of them.
+/// `props` describe the provider. An offer's place type must be a subset of them. `routes` names
+/// the providers its rsync reaches.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegisterArgs {
@@ -162,6 +168,22 @@ pub struct RegisterArgs {
     pub versions: [u32; 2],
     #[serde(default)]
     pub props: PropSet,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<ProviderId>,
+}
+
+/// Copies `src` on provider `from` into the directory `dest` on provider `to`: under its base name,
+/// or, with `files`, each listed relative path under `src` to the same path under `dest`. One end
+/// asks the market, which asks the other end to run rsync over its own route to the asker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransferArgs {
+    pub from: ProviderId,
+    pub to: ProviderId,
+    pub src: String,
+    pub dest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 /// `values` is `None` for a decline. A hit bids `Done`; an in-flight duplicate bids `InFlight`

@@ -3,10 +3,12 @@ use outsource_provider::backend::Done;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::sleep;
 
 struct Rig {
     dir: tempfile::TempDir,
     cfg: SlurmConfig,
+    saved: PathBuf,
     be: SlurmBackend,
     rx: UnboundedReceiver<Done>,
 }
@@ -41,12 +43,12 @@ fn rig() -> Rig {
         ("scancel", "echo \"scancel $*\" >> $D/calls.log"),
     ] {
         let p = bin.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\nD={d}\n{body}\n")).unwrap();
+        // `down` stands for a dead ssh master: every call fails.
+        std::fs::write(&p, format!("#!/bin/sh\nD={d}\n[ -e $D/down ] && exit 255\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let cfg = SlurmConfig {
-        cluster: "fir".into(),
         account: "acct".into(),
         partition: Some("cpu".into()),
         walltime: "01:00:00".into(),
@@ -54,7 +56,8 @@ fn rig() -> Rig {
         bin_dir: Some(bin),
         whole_node: false,
     };
-    Rig { be: SlurmBackend::new(cfg.clone(), tx), cfg, dir, rx }
+    let saved = dir.path().join("state/jobs.json");
+    Rig { be: SlurmBackend::new(cfg.clone(), Host::default(), saved.clone(), tx), cfg, saved, dir, rx }
 }
 
 impl Rig {
@@ -70,9 +73,7 @@ impl Rig {
     }
     fn job(&self, name: &str, cpus: u32, mem_mb: u64, script: &str) -> JobSpec {
         let workdir = self.dir.path().join("work").join(name);
-        std::fs::create_dir_all(&workdir).unwrap();
-        std::fs::write(workdir.join("run.sh"), script).unwrap();
-        JobSpec { promise: name.into(), workdir, res: Resources { cpus, mem_mb } }
+        JobSpec { promise: name.into(), workdir, script: script.into(), res: Resources { cpus, mem_mb } }
     }
     async fn done(&mut self) -> Done {
         self.rx.recv().await.unwrap()
@@ -161,7 +162,7 @@ async fn every_job_reports_its_exit_code() {
     }
     assert_eq!(got, HashMap::from([("ok".into(), 0), ("bad".into(), 3), ("ok2".into(), 0)]));
     // Each job reported once.
-    sleep(EXIT_POLL * 3).await;
+    sleep(GATE * 3).await;
     assert!(r.rx.try_recv().is_err());
 }
 
@@ -248,7 +249,7 @@ async fn kill_cancels_locally_before_submit_and_via_scancel_after() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn life_reports_cached_state_and_exit() {
+async fn life_reports_cached_state() {
     let mut r = rig();
     let j = r.job("a", 1, 1024, "exit 0");
     assert_eq!(r.be.life("a").await["state"], "unknown");
@@ -288,20 +289,21 @@ async fn vanished_task_without_exit_is_settled_as_failed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn restarted_front_recovers_persisted_jobs() {
+async fn restarted_provider_recovers_persisted_jobs() {
     let r = rig();
     let x = r.job("x", 1, 1024, "sleep 1000");
     r.be.launch(x).await.unwrap();
     while r.be.life("x").await["state"] == "queued" {
         sleep(Duration::from_secs(1)).await;
     }
-    let path = r.cfg.scratch.join("fir/jobs.json");
+    let path = r.saved.clone();
     let mut saved: Vec<Saved> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].promise, "x");
 
-    // The front dies; two more tasks ended meanwhile, one with an exit file and one without.
+    // The provider dies; two more tasks ended meanwhile, one with an exit file and one without.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let again = r.job("x", 1, 1024, "sleep 1000");
     drop(r.be);
     let done = r.dir.path().join("work/done");
     let lost = r.dir.path().join("work/lost");
@@ -312,7 +314,9 @@ async fn restarted_front_recovers_persisted_jobs() {
     saved.push(Saved { key: "900_1".into(), promise: "lost".into(), workdir: lost });
     std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
 
-    let _be = SlurmBackend::new(r.cfg.clone(), tx);
+    let _be = SlurmBackend::new(r.cfg.clone(), Host::default(), path, tx);
+    // The restarted provider launches its open promise again; it is already submitted.
+    _be.launch(again).await.unwrap();
     let mut got = HashMap::new();
     for _ in 0..2 {
         let (p, c) = rx.recv().await.unwrap();
@@ -323,4 +327,93 @@ async fn restarted_front_recovers_persisted_jobs() {
     sleep(GATE * 3).await;
     assert!(rx.try_recv().is_err());
     assert_eq!(_be.life("x").await["state"], "RUNNING");
+    let log = std::fs::read_to_string(r.dir.path().join("calls.log")).unwrap();
+    assert_eq!(log.lines().filter(|l| l.starts_with("sbatch")).count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dead_master_fails_calls_at_the_gate_and_shows_in_life() {
+    let mut r = rig();
+    std::fs::write(r.dir.path().join("down"), "").unwrap();
+    r.be.start_eta(&Resources::default()).await;
+    until(|| r.be.calls().len() >= 3).await;
+    assert_gated(&r.be.calls());
+    let j = r.job("a", 1, 1024, "exit 0");
+    r.be.launch(j).await.unwrap();
+    assert!(r.be.life("a").await["error"].as_str().is_some_and(|e| !e.is_empty()));
+    std::fs::remove_file(r.dir.path().join("down")).unwrap();
+    assert_eq!(r.done().await, ("a".to_string(), 0));
+    assert!(r.be.life("a").await["state"] == "unknown");
+    assert_gated(&r.be.calls());
+}
+
+/// Prints what each cluster would be sent for a metasmith-shaped burst, through a fake `ssh`
+/// that records every script and answers sbatch. No real host is reached.
+/// `cargo test -p outsource-slurm mock_submissions -- --ignored --nocapture`
+#[tokio::test(start_paused = true)]
+#[ignore]
+async fn mock_submissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("ssh");
+    std::fs::create_dir(&log).unwrap();
+    let fake = dir.path().join("ssh-bin");
+    std::fs::create_dir(&fake).unwrap();
+    let ssh = fake.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nL={}\nn=$(ls $L | wc -l); f=$L/$(printf %03d $n)-$3.sh\necho \"# argv: $*\" > $f; cat >> $f\ngrep -q sbatch $f && echo \"Submitted batch job $((9000+n))\"\ntrue\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("PATH", format!("{}:{}", fake.display(), std::env::var("PATH").unwrap()));
+
+    let clusters = [
+        ("fir", "def-shallam", false),
+        ("nibi", "def-shallam", false),
+        ("trillium", "def-shallam", true),
+        ("sockeye", "st-shallam-1", false),
+    ];
+    let mut backends = Vec::new();
+    for (name, account, whole_node) in clusters {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let cfg = SlurmConfig {
+            account: account.into(),
+            partition: None,
+            walltime: "02:00:00".into(),
+            scratch: format!("/scratch/outsource/{name}").into(),
+            bin_dir: None,
+            whole_node,
+        };
+        let saved = dir.path().join(format!("{name}/jobs.json"));
+        backends.push((name, SlurmBackend::new(cfg, Host::new(Some(name.into())), saved, tx), _rx));
+    }
+    // One msm run split across the four: prodigal per genome (2 cpu, 4 GiB) and a DIAMOND
+    // search per protein set (16 cpu, 64 GiB).
+    for (c, (name, be, _)) in backends.iter().enumerate() {
+        for g in 0..3 {
+            let w = format!("/scratch/outsource/{name}/work/prodigal-g{}", c * 3 + g);
+            let script = format!("prodigal -i genome_{}.fna -a proteins.faa\n", c * 3 + g);
+            be.launch(JobSpec { promise: format!("prodigal-{c}-{g}"), workdir: w.into(), script, res: Resources { cpus: 2, mem_mb: 4096 } })
+                .await
+                .unwrap();
+        }
+        let w = format!("/scratch/outsource/{name}/work/diamond-{c}");
+        let script = "diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16\n".to_string();
+        be.launch(JobSpec { promise: format!("diamond-{c}"), workdir: w.into(), script, res: Resources { cpus: 16, mem_mb: 65536 } })
+            .await
+            .unwrap();
+    }
+    // Paused time races ahead of the real ssh subprocesses, so step both clocks together.
+    for _ in 0..300 {
+        sleep(Duration::from_secs(1)).await;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut files: Vec<_> = std::fs::read_dir(&log).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    for f in files {
+        println!("===== {}\n{}", f.file_name().unwrap().to_string_lossy(), std::fs::read_to_string(&f).unwrap());
+    }
 }
