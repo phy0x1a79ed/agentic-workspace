@@ -32,6 +32,7 @@ Found during T4, for T14:
 
 ## Waiting on the user
 
+- `picker-waste` (paged 2026-11-23): robust-z lets trillium's small time lead beat its waste penalty. (a) ratio/log time scoring, recommended; (b) waste weight ~2; (c) decline waste > 0.9 unless directed.
 - `deneb-entry` (paged 2026-11-23): deneb carries board/relay/genai drift from other scopes, and a provider there breaks fleet R79 (public box calls out to nothing; tree test pins its plugin set). Options: drop, do anyway (amend R79 + test), defer. Recommended drop or defer.
 
 ## Preferences
@@ -62,7 +63,12 @@ Found during T4, for T14:
 
 ## Workers
 
-None.
+T14 triage (2026-11-23). Fix now, one sonnet worker each on branch t14-<name> off feat/outsource:
+- `ident`: folder identity covers the tree (listing hash); dirty repo id includes its dirt; `resources` fields default (mem_mb).
+- `prov`: one apptainer pull per image under a lock, APPTAINER_CACHEDIR/TMPDIR under the provider root (trillium /home); one stage per material; Slurm tasks write `<workdir>/log` so breaks carry a tail; instance size counts produces only (if cheap).
+- `round`: a directed round waits for its one provider (ceiling, reason names it); late bids log as late.
+- `linkdrop`: diagnosis only, first large material after market start drops every link.
+Stacked: picker vs waste (paged Tony, options a/b/c, recommended ratio scoring); mizar offers cannot reach HPCs (relay design); nibi run stats; nf-outsource compile duplication and unverified items.
 
 ## Closed
 
