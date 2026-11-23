@@ -682,9 +682,12 @@ async fn prep_stages_and_pulls_the_image_without_running_anything() {
     // `import` registers what p1 already holds: by type, or by identity; a missing path is an error.
     let db = d.path().join("u.dmnd");
     std::fs::write(&db, "DB").unwrap();
+    let folder = d.path().join("held");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("f"), "F").unwrap();
     let import = |items: Value| Msg::Import(serde_json::from_value(json!({"to": "p1", "materials": items})).unwrap());
-    let Msg::Return(r) = m.ask("p1", import(json!([{"path": db, "type": {"db": "uniref50", "release": "1"}}, {"path": d.path()}]))).await else { panic!("imports") };
-    let plain = crate::identify(&crate::Host::default(), &d.path().to_string_lossy(), "p1", false, &mut vec![]).await.unwrap().id;
+    let Msg::Return(r) = m.ask("p1", import(json!([{"path": db, "type": {"db": "uniref50", "release": "1"}}, {"path": folder}]))).await else { panic!("imports") };
+    let plain = crate::identify(&crate::Host::default(), &folder.to_string_lossy(), "p1", false).await.unwrap().id;
     assert_eq!(r["ids"], json!([instance_id(&ty(&[("db", "uniref50"), ("release", "1")])), plain]));
     let facts: Vec<Fact> = serde_json::from_value(r["facts"].clone()).unwrap();
     assert_eq!(facts[0].path(), Some(db.to_str().unwrap()));
