@@ -1,5 +1,5 @@
-# The baitan core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/baitan.
+# The outsource core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/outsource.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=baitan-e208f3094550
-file=awm-plugin-baitan-e208f3094550-linux-x86_64-musl
-sha256=5103b233e428aa7b0b3fb91d09f0967eb757bdb90826dda2e9815f749b770491
+version=outsource-6bba56307ad6
+file=awm-plugin-outsource-6bba56307ad6-linux-x86_64-musl
+sha256=d984a25e8433b06eeb6489c091c05cfef4e95bebcc5e98e7484e0e742996de44

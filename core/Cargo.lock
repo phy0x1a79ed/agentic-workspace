@@ -5755,6 +5755,8 @@ dependencies = [
  "outsource-slurm",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "tempfile",
  "tokio",
  "toml",
  "tracing-subscriber",
@@ -5776,6 +5778,7 @@ name = "outsource-market"
 version = "0.1.0"
 dependencies = [
  "outsource-proto",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
