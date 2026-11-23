@@ -430,7 +430,7 @@ async fn a14_a15_a16_caller_verbs() {
     let id = award_to(&mut p, &mut c, 1.0).await;
     p.settle(&id, Outcome::Broken { message: "boom".into() }).await;
     let st = c.status(&id).await;
-    assert_eq!(failed_name(&st), raise::NO_BIDS);
+    assert_eq!(st.phase, Phase::Failed { name: raise::NO_BIDS.into(), message: "no eligible provider; earlier: p broke: boom".into() });
 }
 
 #[tokio::test(start_paused = true)]

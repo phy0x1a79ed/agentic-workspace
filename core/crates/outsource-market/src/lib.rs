@@ -66,7 +66,8 @@ struct Promise {
     round: u32,
     eligible: BTreeSet<ProviderId>,
     bids: BTreeMap<ProviderId, Option<Values>>,
-    broken_by: BTreeSet<ProviderId>,
+    /// Each provider that broke this promise, with its reason, in order.
+    broken_by: Vec<(ProviderId, String)>,
     award: Option<AwardInfo>,
 }
 
@@ -460,6 +461,13 @@ impl Inner {
         self.set_phase(id, Phase::Failed { name: name.into(), message: message.into() });
     }
 
+    /// Fails with `NoBids`, naming each award that broke before.
+    fn no_bids(&mut self, id: &str, why: &str) {
+        let earlier: Vec<String> = self.promises[id].broken_by.iter().map(|(p, m)| format!("{p} broke: {m}")).collect();
+        let message = if earlier.is_empty() { why.to_string() } else { format!("{why}; earlier: {}", earlier.join("; ")) };
+        self.fail(id, raise::NO_BIDS, &message);
+    }
+
     fn offer(&mut self, v: u32, a: OfferArgs) -> Msg {
         if !picker::PICKERS.contains(&a.set.picker.as_str()) {
             return raise_msg(raise::BAD_ARGS, format!("unknown picker {}", a.set.picker));
@@ -489,7 +497,7 @@ impl Inner {
                 round: 0,
                 eligible: BTreeSet::new(),
                 bids: BTreeMap::new(),
-                broken_by: BTreeSet::new(),
+                broken_by: vec![],
                 award: None,
             },
         );
@@ -511,14 +519,14 @@ impl Inner {
                 pr.link.is_some()
                     && pr.versions[0] <= v
                     && v <= pr.versions[1]
-                    && !p.broken_by.contains(*pid)
+                    && !p.broken_by.iter().any(|(b, _)| b == *pid)
                     && p.set.to.as_ref().is_none_or(|to| to == *pid)
                     && p.set.place.as_ref().is_none_or(|pl| pl.iter().all(|(k, val)| pr.props.get(k) == Some(val)))
             })
             .map(|(pid, _)| pid.clone())
             .collect();
         if eligible.is_empty() {
-            return self.fail(id, raise::NO_BIDS, "no eligible provider");
+            return self.no_bids(id, "no eligible provider");
         }
         let set = self.promises[id].set.clone();
         for pid in &eligible {
@@ -569,7 +577,7 @@ impl Inner {
             .map(|(pid, raw)| (pid.clone(), raw.clone(), self.corrected(pid, &p.contract, raw)))
             .collect();
         if live.is_empty() {
-            return self.fail(id, raise::NO_BIDS, "no bids");
+            return self.no_bids(id, "no bids");
         }
         let scored: Vec<Values> = live.iter().map(|l| l.2.clone()).collect();
         let win = picker::pick(&p.set.picker, &p.set.axes, &scored);
@@ -640,9 +648,10 @@ impl Inner {
                 }
                 self.set_phase(id, Phase::Settled { provider: provider.into(), facts, sizes, listing, stats: run });
             }
-            Outcome::Broken { .. } => {
+            Outcome::Broken { message } => {
+                tracing::info!("{provider} broke {id}: {message}");
                 stats.broken += 1;
-                p.broken_by.insert(provider.into());
+                p.broken_by.push((provider.into(), message));
                 p.award = None;
                 self.set_phase(id, Phase::Open);
                 self.start_round(id);
