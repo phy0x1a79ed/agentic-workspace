@@ -23,6 +23,7 @@ Nothing.
 - 2026-11-22: General compute, not workflow-only.
 - 2026-11-22: Deploy once, with the rename plus every change decided in the walkthrough.
 - 2026-11-22: Offer = materials (paths, some folders) + method (a bash command) + metrics to bid against.
+- 2026-11-22: Keep `prep` and `import`: "they cover real steps in the user story". After the solver build and the v26 test-trim run, debrief; Tony reviews the lift in the next session.
 
 ## Stack
 
