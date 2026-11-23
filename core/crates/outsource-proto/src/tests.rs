@@ -54,8 +54,11 @@ fn every_msg_round_trips() {
                 facts: vec![Fact::at("i1", "capella")],
                 sizes: [("i1".into(), 42)].into(),
                 listing: [("i1".into(), vec!["a.faa".into()])].into(),
+                stats: Some(RunStats { max_rss_kb: Some(2048), cpu_s: Some(1.5), wall_s: None }),
             },
         }),
+        Msg::PropertyAdd(PropertyAddArgs { name: "db".into(), description: "database".into(), values: Some(vec!["nr".into()]) }),
+        Msg::Properties(PropertiesArgs {}),
         Msg::Settle(SettleArgs { promise: "p1".into(), provider: "capella".into(), outcome: Outcome::Broken { message: "exit 1".into() } }),
         Msg::Award(AwardArgs { promise: "p1".into(), set }),
         Msg::Event(PromiseStatus { promise: "p1".into(), phase: Phase::Awarded { provider: "capella".into() }, life: None }),
@@ -157,7 +160,7 @@ fn at_fact() {
 #[test]
 fn catalog_keeps_watch_off_mcp_and_http() {
     let names: Vec<_> = CALLER_VERBS.iter().map(|v| v.name).collect();
-    assert_eq!(names, ["offer", "prep", "import", "status", "cancel", "dispose", "review", "watch"]);
+    assert_eq!(names, ["offer", "prep", "import", "property_add", "properties", "status", "cancel", "dispose", "review", "watch"]);
     assert!(CALLER_VERBS.iter().all(|v| v.cli_only == (v.name == "watch")));
     for v in CALLER_VERBS {
         serde_json::from_str::<Value>(v.schema).unwrap();

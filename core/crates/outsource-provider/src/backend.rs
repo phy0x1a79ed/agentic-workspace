@@ -3,7 +3,7 @@
 //! as job-array tasks.
 
 use async_trait::async_trait;
-use outsource_proto::{PromiseId, Resources};
+use outsource_proto::{PromiseId, Resources, RunStats};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -21,6 +21,23 @@ pub struct JobSpec {
 /// built with, once per launched job.
 pub type Done = (PromiseId, i32);
 pub type DoneTx = mpsc::UnboundedSender<Done>;
+
+/// The shell line a backend runs for a job in its work dir. Where GNU `time` exists it leaves
+/// `stats` (`maxrss_kb user_s sys_s wall_s`) beside `exit`; elsewhere the job runs unmeasured.
+pub const RUN_LINE: &str =
+    "if [ -x /usr/bin/time ]; then /usr/bin/time -f '%M %U %S %e' -o stats sh ./run.sh; else sh ./run.sh; fi";
+
+/// The stats a job left in `workdir`, or `None` when it ran unmeasured.
+pub fn read_stats(workdir: &Path) -> Option<RunStats> {
+    let text = std::fs::read_to_string(workdir.join("stats")).ok()?;
+    let f: Vec<&str> = text.lines().last()?.split_whitespace().collect();
+    let [rss, user, sys, wall] = f[..] else { return None };
+    Some(RunStats {
+        max_rss_kb: rss.parse().ok(),
+        cpu_s: user.parse::<f64>().ok().zip(sys.parse::<f64>().ok()).map(|(u, s)| u + s),
+        wall_s: wall.parse().ok(),
+    })
+}
 
 /// Writes `value` as JSON through a temp file and a rename, so a crash never leaves half a file.
 pub fn write_json(path: &Path, value: &impl serde::Serialize) -> std::io::Result<()> {
@@ -43,4 +60,22 @@ pub trait Backend: Send + Sync {
     async fn life(&self, promise: &str) -> Value;
     /// Stops the job. No `Done` follows.
     async fn kill(&self, promise: &str);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stats_file_parses_to_run_stats_and_absence_is_none() {
+        let d = std::env::temp_dir().join(format!("stats-{}", outsource_proto::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(read_stats(&d), None);
+        // GNU time puts a note on a failing command before the figures.
+        std::fs::write(d.join("stats"), "Command exited with non-zero status 1\n2048 1.25 0.25 3.5\n").unwrap();
+        assert_eq!(read_stats(&d), Some(RunStats { max_rss_kb: Some(2048), cpu_s: Some(1.5), wall_s: Some(3.5) }));
+        std::fs::write(d.join("stats"), "garbage").unwrap();
+        assert_eq!(read_stats(&d), None);
+        std::fs::remove_dir_all(d).unwrap();
+    }
 }

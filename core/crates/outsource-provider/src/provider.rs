@@ -1,7 +1,7 @@
 //! The provider: prices offer sets against its cache and queue, runs awarded sets through its
 //! backend, and keeps promises, instances and reviews on disk so a restart recovers.
 
-use crate::backend::{Backend, Done, JobSpec};
+use crate::backend::{read_stats, Backend, Done, JobSpec};
 use crate::config::ProviderConfig;
 use crate::index::{normalize, Entry, Flight, Found, Index, Pair};
 use crate::jobs::{disk_size, find_cargo, find_on_path, glob_match, is_local_route, q, remove_path, walk_files};
@@ -75,6 +75,8 @@ pub(crate) struct State {
     tasks: HashMap<PromiseId, tokio::task::AbortHandle>,
     /// One per running entry; dropping the sender wakes everyone waiting on it.
     waiters: HashMap<u64, watch::Sender<()>>,
+    /// What the run steps of each live promise measured, folded as they finish.
+    run_stats: HashMap<PromiseId, RunStats>,
 }
 
 pub(crate) struct Inner {
@@ -576,11 +578,12 @@ impl Inner {
             Err(message) => Outcome::Broken { message },
         };
         let phase = match &outcome {
-            Outcome::Kept { facts, sizes, listing } => Phase::Settled {
+            Outcome::Kept { facts, sizes, listing, stats } => Phase::Settled {
                 provider: self.cfg.id.clone(),
                 facts: facts.clone(),
                 sizes: sizes.clone(),
                 listing: listing.clone(),
+                stats: stats.clone(),
             },
             Outcome::Broken { message } => {
                 Phase::Failed { name: raise::BROKEN_PROMISE.into(), message: message.clone() }
@@ -621,7 +624,8 @@ impl Inner {
                 other => return Err(format!("unknown op {other}")),
             }
         }
-        let st = self.state.lock().unwrap();
+        let mut st = self.state.lock().unwrap();
+        let stats = st.run_stats.remove(promise);
         let mut sizes = BTreeMap::new();
         let mut listing = BTreeMap::new();
         for id in &here {
@@ -638,7 +642,7 @@ impl Inner {
                 }
             }
         }
-        Ok(Outcome::Kept { facts, sizes, listing })
+        Ok(Outcome::Kept { facts, sizes, listing, stats })
     }
 
     async fn cargo_version(&self) -> Result<String, String> {
@@ -755,6 +759,9 @@ impl Inner {
             std::fs::write(workdir.join("run.sh"), script).map_err(|e| e.to_string())?;
         }
         let code = self.exec(&*self.backend, promise, &workdir, &set.resources).await?;
+        if let Some(run) = read_stats(&workdir) {
+            self.state.lock().unwrap().run_stats.entry(promise.to_string()).or_default().merge(&run);
+        }
         if code != 0 {
             return Err(format!("{} exited {code}", step.op));
         }
@@ -770,7 +777,7 @@ impl Inner {
             }
             _ => {
                 let globs: Vec<&str> = step.spec["outputs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                const BOOKKEEPING: [&str; 5] = ["run.sh", "exit", "exit.tmp", "pid", "log"];
+                const BOOKKEEPING: [&str; 6] = ["run.sh", "exit", "exit.tmp", "pid", "log", "stats"];
                 let listing: Vec<String> = walk_files(&workdir)
                     .into_iter()
                     .filter(|f| !BOOKKEEPING.contains(&f.as_str()) && globs.iter().any(|g| glob_match(g, f)))

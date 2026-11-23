@@ -3,7 +3,7 @@
 //! `prep` compiles the same materials into one `prep` step. A material's id comes from its type
 //! when it has one, else from its stat or git commit; content is never read.
 
-use outsource_proto::{instance_id, props, slot_id, Axis, Fact, OfferSet, PropSet, Resources, Step, TIME_AXIS};
+use outsource_proto::{fold_type, instance_id, props, slot_id, Axis, Fact, OfferSet, PropSet, Resources, Step, TIME_AXIS};
 use outsource_provider::material_id;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -162,7 +162,7 @@ pub fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
     for out in &t.produces {
         let (path, ty) = match out {
             Out::Path(p) => (p.trim_end_matches('/'), None),
-            Out::Typed(o) => (o.path.trim_end_matches('/'), Some(&o.ty)),
+            Out::Typed(o) => (o.path.trim_end_matches('/'), Some(fold_type(&o.ty))),
         };
         if path.is_empty() || path.starts_with('/') || Path::new(path).components().any(|c| c.as_os_str() == "..") {
             return Err(format!("produces path {path:?} must be relative to the work dir"));
@@ -258,7 +258,7 @@ fn container_of(env: &Path) -> Result<String, String> {
 fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<Material, String> {
     let (raw, ty, name) = match req {
         Req::Path(p) => (Some(p.as_str()), None, None),
-        Req::Material(m) => (m.path.as_deref(), m.ty.clone(), m.name.clone()),
+        Req::Material(m) => (m.path.as_deref(), m.ty.as_ref().map(fold_type), m.name.clone()),
     };
     if raw.is_none() && ty.is_none() {
         return Err("a requires entry needs a path or a type".into());
@@ -387,6 +387,11 @@ mod tests {
         assert_eq!(here.set.steps[0].spec["stage"]["counts.tsv"]["type"], ty);
         assert_eq!((here.set.start.len(), alone.set.start.len()), (1, 0));
         assert_eq!(typed(json!({"type": {"b": "2", "a": "1"}})).set.steps[0].spec["stage"]["1-2"]["id"], json!(instance_id(&props([("a", "1"), ("b", "2")]))));
+        // Values fold to lowercase before the id is taken, in inputs and outputs alike.
+        let upper = typed(json!({"type": {"db": "UniRef50", "release": "2024_01"}, "name": "u"}));
+        assert_eq!(stage_id(&upper, "u"), instance_id(&props([("db", "uniref50"), ("release", "2024_01")])));
+        let out = compile(json!({"requires": [], "produces": [{"path": "o", "type": {"db": "NR"}}], "protocol": "p"}), &site(&d)).unwrap();
+        assert_eq!(out.set.steps[0].spec["typed"][0]["type"], json!({"db": "nr"}));
         let empty = compile(json!({"requires": [{"name": "x"}], "produces": [], "protocol": "p"}), &site(&d));
         assert!(empty.unwrap_err().contains("path or a type"));
 

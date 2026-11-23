@@ -51,6 +51,9 @@ pub enum Msg {
     Cancel(PromiseRef),
     Dispose(DisposeArgs),
     Import(ImportArgs),
+    #[serde(rename = "property_add")]
+    PropertyAdd(PropertyAddArgs),
+    Properties(PropertiesArgs),
     Review(ReviewArgs),
     Watch(WatchArgs),
     // Provider verbs.
@@ -68,7 +71,7 @@ pub enum Msg {
 }
 
 pub const SELECTORS: &[&str] = &[
-    "offer", "status", "cancel", "dispose", "import", "review", "watch", "register", "bid", "started", "settle",
+    "offer", "status", "cancel", "dispose", "import", "property_add", "properties", "review", "watch", "register", "bid", "started", "settle",
     "award", "event", "return", "raise", "doesNotUnderstand",
 ];
 
@@ -112,6 +115,28 @@ pub struct ImportItem {
     pub path: String,
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub ty: Option<PropSet>,
+}
+
+/// Adds a key to the market's property vocabulary, or extends an existing one: the description is
+/// replaced, and `values` are added to its allowed list (a key with no list accepts any value;
+/// naming values on such a key closes it to them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropertyAddArgs {
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// Reads the property vocabulary: each key with its description and allowed values, if listed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropertiesArgs {}
+
+/// A type's values are case-folded before its id is taken; keys are exact.
+pub fn fold_type(ty: &PropSet) -> PropSet {
+    ty.iter().map(|(k, v)| (k.clone(), v.to_lowercase())).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,9 +201,41 @@ pub struct SettleArgs {
     pub outcome: Outcome,
 }
 
+/// What running a promise's protocol cost, as the provider measured it. Every field is `None`
+/// when the backend could not measure it; a result that was reused rather than run has no stats.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunStats {
+    /// Peak resident memory of the protocol and its children, in KiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rss_kb: Option<u64>,
+    /// User plus system CPU seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_s: Option<f64>,
+    /// Wall seconds of the protocol alone, queue wait excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_s: Option<f64>,
+}
+
+impl RunStats {
+    /// Folds the stats of a later run step in: peak memory is the larger, times add.
+    pub fn merge(&mut self, o: &RunStats) {
+        self.max_rss_kb = self.max_rss_kb.max(o.max_rss_kb);
+        self.cpu_s = sum(self.cpu_s, o.cpu_s);
+        self.wall_s = sum(self.wall_s, o.wall_s);
+    }
+}
+
+fn sum(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
+    }
+}
+
 /// `Kept` carries the facts made true, `(id, at, provider)`, each id's true size in bytes, and,
-/// for an instance that is a directory, the relative paths of its files. `Broken` creates no
-/// instance.
+/// for an instance that is a directory, the relative paths of its files, and the run's stats.
+/// `Broken` creates no instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Outcome {
@@ -187,6 +244,8 @@ pub enum Outcome {
         sizes: BTreeMap<Id, u64>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         listing: BTreeMap<Id, Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stats: Option<RunStats>,
     },
     Broken { message: String },
 }
@@ -236,6 +295,8 @@ pub enum Phase {
         sizes: BTreeMap<Id, u64>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         listing: BTreeMap<Id, Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stats: Option<RunStats>,
     },
     Failed { name: String, message: String },
 }
@@ -511,6 +572,7 @@ pub struct VerbSpec {
 const OFFER_SUMMARY: &str = "Post one job to the compute market; returns a promise id at once (poll `status`). \
 `requires`: a path on this node (absolute or relative to the cwd; file or folder) that appears in the work dir under its base name, or an object `{path?, type?, name?}`. \
 `type` is a property set (string to string) that is the material's identity in place of its stat or commit: every copy of it, at any path on any provider, has one id, and a provider that holds it fetches nothing. \
+Each key must be in the market's vocabulary (list it with `properties`, extend it with `property_add`) and each value in its key's list if it has one; values are lower-cased. A bad key or value is refused with the closest known ones. \
 An entry with a `type` and no `path` names material that already sits at a provider (the market finds the holder); it appears under `name`, default the type's values joined by `-`. \
 `protocol`: one bash command run in the work dir. `produces`: a path relative to the work dir, copied back into `dest` (default the cwd) under the same relative path, or `{path, type}`: the output stays at the provider and is held under that type for later offers to require. \
 `to`: a provider id; only that provider is asked to bid. \
@@ -530,11 +592,20 @@ The provider fetches each material it lacks (rsync) and pulls a `.env` image int
 const PREP_SCHEMA: &str = r#"{"type":"object","properties":{"requires":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"object","additionalProperties":{"type":"string"}},"name":{"type":"string"}},"additionalProperties":false}]},"description":"Materials to stage, as in `offer`."},"to":{"type":"string","description":"Provider id that stages them."}},"required":["requires","to"],"additionalProperties":false}"#;
 
 const IMPORT_SUMMARY: &str = "Register material that already sits at a provider; it checks, where `prep` moves. Goes straight to that provider with no bid round. \
-Each path (absolute, on the provider) must exist, else the call fails. A material with a `type` is held under that property set, so later offers can require it by type; one without is held under its stat or commit identity. \
+Each path (absolute, on the provider) must exist, else the call fails. A material with a `type` is held under that property set (keys and values are checked against `properties`), so later offers can require it by type; one without is held under its stat or commit identity. \
 Returns the ids and the holder facts. Example: \
 {\"to\":\"sockeye\",\"materials\":[{\"path\":\"/scratch/db/uniref50.dmnd\",\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"}}]}";
 
 const IMPORT_SCHEMA: &str = r#"{"type":"object","properties":{"to":{"type":"string","description":"Provider id that holds the paths."},"materials":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"type":{"type":"object","additionalProperties":{"type":"string"}}},"required":["path"],"additionalProperties":false}}},"required":["to","materials"],"additionalProperties":false}"#;
+
+const PROPERTY_ADD_SUMMARY: &str = "Add a key to the market's property vocabulary, or extend one; the vocabulary decides which `type` keys and values `offer`, `prep` and `import` accept. \
+Check `properties` first: reuse a key before adding a near twin. `values` is the allowed list (omit it to accept any value); naming values on an existing key adds them to its list. Values are lower-cased. Example: \
+{\"name\":\"organism\",\"description\":\"source organism of a reference set\",\"values\":[\"human\",\"mouse\"]}";
+
+const PROPERTY_ADD_SCHEMA: &str = r#"{"type":"object","properties":{"name":{"type":"string","description":"The property key."},"description":{"type":"string","description":"What the key means, so the next agent reuses it."},"values":{"type":"array","items":{"type":"string"},"description":"Allowed values; omit to accept any."}},"required":["name","description"],"additionalProperties":false}"#;
+
+const PROPERTIES_SUMMARY: &str = "List the property vocabulary for typed materials and outputs: each key with its description and, when it has one, its allowed values. Read it before typing a material. Example reply: \
+{\"properties\":{\"db\":{\"description\":\"reference database name\"},\"format\":{\"description\":\"file format\",\"values\":[\"fasta\",\"tsv\"]}}}";
 
 /// The single catalog the CLI, MCP and HTTP surfaces are generated from. Provider verbs are absent.
 pub const CALLER_VERBS: &[VerbSpec] = &[
@@ -557,8 +628,20 @@ pub const CALLER_VERBS: &[VerbSpec] = &[
         schema: IMPORT_SCHEMA,
     },
     VerbSpec {
+        name: "property_add",
+        summary: PROPERTY_ADD_SUMMARY,
+        cli_only: false,
+        schema: PROPERTY_ADD_SCHEMA,
+    },
+    VerbSpec {
+        name: "properties",
+        summary: PROPERTIES_SUMMARY,
+        cli_only: false,
+        schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+    },
+    VerbSpec {
         name: "status",
-        summary: "A promise's phase; once settled, its facts and true sizes.",
+        summary: "A promise's phase; once settled, its facts, true sizes and run stats (`stats`: max_rss_kb, cpu_s user+sys, wall_s of the protocol; a field is absent when the backend could not measure it, and a reused result has none).",
         cli_only: false,
         schema: r#"{"type":"object","properties":{"promise":{"type":"string"}},"required":["promise"],"additionalProperties":false}"#,
     },

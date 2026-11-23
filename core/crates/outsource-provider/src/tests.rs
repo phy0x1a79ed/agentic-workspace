@@ -116,7 +116,14 @@ fn runs(count: &Path) -> usize {
 
 fn kept(o: &Outcome) -> (&Vec<Fact>, &std::collections::BTreeMap<Id, u64>, &std::collections::BTreeMap<Id, Vec<String>>) {
     match o {
-        Outcome::Kept { facts, sizes, listing } => (facts, sizes, listing),
+        Outcome::Kept { facts, sizes, listing, .. } => (facts, sizes, listing),
+        Outcome::Broken { message } => panic!("broken: {message}"),
+    }
+}
+
+fn stats_of(o: &Outcome) -> Option<&RunStats> {
+    match o {
+        Outcome::Kept { stats, .. } => stats.as_ref(),
         Outcome::Broken { message } => panic!("broken: {message}"),
     }
 }
@@ -158,14 +165,15 @@ fn write_library(root: &Path, files: &[(&str, &str, &str)]) -> PathBuf {
     index
 }
 
-/// An apptainer that logs its arguments, makes `pull` write the image and runs `exec` plainly.
+/// An apptainer that logs its arguments, makes `pull` wait while `<dir>/hold` exists then write the image, and runs `exec` plainly.
 fn fake_apptainer(dir: &Path) -> (PathBuf, PathBuf) {
     let (log, fake) = (dir.join("apptainer.log"), dir.join("apptainer"));
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\necho \"$@\" >> {}\ncase \"$1\" in pull) shift; [ \"$1\" = --force ] && shift; echo sif > \"$1\";; exec) shift; while [ \"$1\" = --bind ]; do shift 2; done; shift; exec \"$@\";; esac\n",
-            log.display()
+            "#!/bin/sh\necho \"$@\" >> {log}\ncase \"$1\" in pull) while [ -e {hold} ]; do sleep 0.05; done; shift; [ \"$1\" = --force ] && shift; echo sif > \"$1\";; exec) shift; while [ \"$1\" = --bind ]; do shift 2; done; shift; exec \"$@\";; esac\n",
+            log = log.display(),
+            hold = dir.join("hold").display()
         ),
     )
     .unwrap();
@@ -243,6 +251,12 @@ async fn a4_build_then_place_end_to_end() {
     assert!(held_at("alpha").unwrap().join("out.txt").exists());
     assert!(sizes[&out] > 0);
     assert_eq!(listing[&out], vec!["out.txt".to_string()]);
+    // A run is measured where GNU time exists and reports nothing elsewhere; a reused result has no run.
+    match (Path::new("/usr/bin/time").exists(), stats_of(&o)) {
+        (true, Some(s)) => assert!(s.max_rss_kb > Some(0) && s.cpu_s.is_some() && s.wall_s.is_some(), "{s:?}"),
+        (false, None) => {}
+        (time, s) => panic!("time {time} but stats {s:?}"),
+    }
     let placed: Vec<_> = std::fs::read_dir(&dest).unwrap().flatten().collect();
     assert!(placed.len() == 1 && placed[0].path() == held_at("beta").unwrap() && placed[0].path().join("out.txt").exists());
 
@@ -257,7 +271,8 @@ async fn a4_build_then_place_end_to_end() {
     let flat_dest = d.path().join("beta-files");
     let mut flat = set.clone();
     flat.steps[1].spec = json!({"path": flat_dest, "files": true});
-    m.run("alpha", "r", &flat).await;
+    let reused = m.run("alpha", "r", &flat).await;
+    assert!(stats_of(&reused).is_none());
     assert!(flat_dest.join("out.txt").exists() && !flat_dest.join("skip.dat").exists());
 }
 
@@ -672,4 +687,49 @@ async fn prep_stages_and_pulls_the_image_without_running_anything() {
     let log = std::fs::read_to_string(&log).unwrap();
     assert!(log.lines().count() == 1 && log.starts_with("pull"), "one pull, no exec: {log}");
     assert_eq!(m.bid("p2", "warm", &set).await.hit, Some(Hit::Done));
+}
+
+#[tokio::test]
+async fn a_second_prep_of_a_typed_material_waits_on_the_transfer_in_flight() {
+    let d = tempfile::tempdir().unwrap();
+    let (log, fake) = fake_apptainer(d.path());
+    let mut c2 = cfg(d.path(), "p2");
+    c2.routes = [("p1".into(), "local".into())].into();
+    c2.apptainer = Some(fake);
+    let mut m = Mkt::start(vec![Provider::local(cfg(d.path(), "p1")), Provider::local(c2)]);
+
+    // The first prep copies the material, then stalls pulling the image: the transfer is in flight.
+    let db = d.path().join("u.dmnd");
+    std::fs::write(&db, "DB").unwrap();
+    let t = [("db", "uniref50"), ("release", "1")];
+    let (mut first, id) = prep_of(&t, vec![Fact::at_path(&instance_id(&ty(&t)), "p1", &db.to_string_lossy())]);
+    first.steps[0].spec["stage"]["e.env"] = json!({"id": "env1"});
+    first.steps[0].spec["env"] = json!({"stage": "e.env", "container": "docker://x/y:1"});
+    first.steps[0].inputs.push("env1".into());
+    first.start.push(Fact::at_path("env1", "p1", &db.to_string_lossy()));
+    std::fs::write(d.path().join("hold"), "").unwrap();
+    m.bid("p2", "one", &first).await;
+    m.award("p2", "one", &first);
+    until(&log).await;
+
+    // A second prep of the same type, with no source to fetch from, bids done at T and starts nothing.
+    let (second, _) = prep_of(&t, vec![]);
+    let bid = m.bid("p2", "two", &second).await;
+    assert_eq!(bid.hit, Some(Hit::InFlight));
+    m.award("p2", "two", &second);
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    let mut settled = std::collections::BTreeMap::new();
+    while settled.len() < 2 {
+        let (p, o) = m
+            .wait(|_, msg| match msg {
+                Msg::Settle(s) => Some((s.promise, s.outcome)),
+                _ => None,
+            })
+            .await;
+        settled.insert(p, o);
+    }
+    assert!(kept_ids(&settled["one"]).contains(&id) && kept_ids(&settled["two"]) == [id]);
+    let work = d.path().join("p2/work");
+    assert!(work.join("one-0/run.sh").exists() && !work.join("two-0").exists(), "the second prep ran no transfer");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1, "one image pull");
 }

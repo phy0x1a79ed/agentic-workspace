@@ -1,5 +1,5 @@
 use super::*;
-use outsource_proto::{Axis, Hit, ImportItem, RegisterArgs, WatchArgs};
+use outsource_proto::{Axis, Hit, ImportItem, PropertiesArgs, RegisterArgs, RunStats, WatchArgs};
 use std::collections::VecDeque;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -139,8 +139,12 @@ fn t(x: f64) -> Values {
     vals(&[("time", x)])
 }
 
+fn run_stats() -> RunStats {
+    RunStats { max_rss_kb: Some(2048), cpu_s: Some(1.5), wall_s: Some(2.0) }
+}
+
 fn kept(id: &str, provider: &str, size: u64) -> Outcome {
-    Outcome::Kept { facts: vec![Fact::at(id, provider)], sizes: [(id.to_string(), size)].into(), listing: BTreeMap::new() }
+    Outcome::Kept { facts: vec![Fact::at(id, provider)], sizes: [(id.to_string(), size)].into(), listing: BTreeMap::new(), stats: Some(run_stats()) }
 }
 
 fn failed_name(ps: &PromiseStatus) -> &str {
@@ -258,6 +262,7 @@ async fn a7_a8_a10_a12_round_lifecycle() {
         facts: vec![Fact::at("out", "p1")],
         sizes: [("out".to_string(), 1234)].into(),
         listing: BTreeMap::new(),
+        stats: Some(run_stats()),
     };
     assert_eq!(c.event().await.phase, want);
     assert_eq!(c.status(&id).await.phase, want);
@@ -449,7 +454,7 @@ async fn a20_dropped_link_and_reregister() {
         let e = p2.next_env().await;
         let Msg::Status(r) = e.msg().unwrap() else { panic!("expected status ask") };
         let answer = if r.promise == ida {
-            let phase = Phase::Settled { provider: "p".into(), facts: vec![Fact::at("o", "p")], sizes: [("o".to_string(), 7)].into(), listing: BTreeMap::new() };
+            let phase = Phase::Settled { provider: "p".into(), facts: vec![Fact::at("o", "p")], sizes: [("o".to_string(), 7)].into(), listing: BTreeMap::new(), stats: None };
             Msg::Return(serde_json::to_value(PromiseStatus { promise: ida.clone(), phase, life: None }).unwrap())
         } else {
             raise_msg(raise::UNKNOWN_PROMISE, "gone")
@@ -480,7 +485,7 @@ async fn holder_records_fill_start_and_import_goes_straight_to_its_provider() {
     let held = Fact::at_path("T", "p", "/db/T");
     let id = award_to(&mut p, &mut c, 1.0).await;
     p.started(&id).await;
-    p.settle(&id, Outcome::Kept { facts: vec![held.clone()], sizes: BTreeMap::new(), listing: BTreeMap::new() }).await;
+    p.settle(&id, Outcome::Kept { facts: vec![held.clone()], sizes: BTreeMap::new(), listing: BTreeMap::new(), stats: None }).await;
     c.offer(by_input("T")).await;
     assert_eq!(start_of(p.next().await), [held]);
 
@@ -497,4 +502,69 @@ async fn holder_records_fill_start_and_import_goes_straight_to_its_provider() {
     assert_eq!(start_of(p.next().await), [Fact::at_path("X", "p", "/x")]);
     let nobody = ImportArgs { to: "nobody".into(), ..args };
     assert!(matches!(c.ask(Msg::Import(nobody)).await, Msg::Raise(r) if r.name == UNAVAILABLE));
+}
+
+#[tokio::test]
+async fn vocabulary_guards_every_typed_material_and_output() {
+    let m = Market::new("market");
+    let (mut c, mut p) = (Peer::new(&m, "c"), Peer::new(&m, "p"));
+    p.reg([1, 1], &[]).await;
+    let raised = |msg: Msg| match msg {
+        Msg::Raise(r) if r.name == raise::BAD_ARGS => r.message,
+        m => panic!("expected BadArgs, got {m:?}"),
+    };
+    let add = |name: &str, values: Option<&[&str]>| {
+        Msg::PropertyAdd(PropertyAddArgs {
+            name: name.into(),
+            description: format!("the {name}"),
+            values: values.map(|v| v.iter().map(|s| s.to_string()).collect()),
+        })
+    };
+
+    // The seed answers `properties`; `property_add` adds a closed key, folds its values and extends it later.
+    let Msg::Return(v) = c.ask(Msg::Properties(PropertiesArgs {})).await else { panic!("properties") };
+    assert!(v["properties"]["db"]["description"].is_string() && v["properties"]["db"].get("values").is_none());
+    assert_eq!(c.ask(add("organism", Some(&["Human", "mouse"]))).await, ok());
+    assert_eq!(c.ask(add("organism", Some(&["rat"]))).await, ok());
+    let Msg::Return(v) = c.ask(Msg::Properties(PropertiesArgs {})).await else { panic!("properties") };
+    assert_eq!(v["properties"]["organism"], json!({"description": "the organism", "values": ["human", "mouse", "rat"]}));
+    assert!(raised(c.ask(add("two words", None)).await).contains("one word"));
+
+    // An offer is checked in its staged materials and its typed outputs alike.
+    let typed = |stage: Value, outs: Value| {
+        set(json!({"steps": [{"op": "task", "props": {"contract": "c"}, "spec": {"stage": {"m": {"id": "I", "type": stage}}, "typed": [{"path": "o", "type": outs}]}}]}))
+    };
+    let try_offer = |s: OfferSet| Msg::Offer(OfferArgs { set: s, promise: None });
+    let ok_set = || typed(json!({"db": "uniref50", "organism": "rat"}), json!({"format": "fasta"}));
+    assert!(raised(c.ask(try_offer(typed(json!({"dbb": "nr"}), json!({"db": "nr"})))).await).contains("\"db\""));
+    assert!(raised(c.ask(try_offer(typed(json!({"db": "nr"}), json!({"organism": "humn"})))).await).contains("\"human\""));
+    assert!(raised(c.ask(try_offer(typed(json!({"db": "NR"}), json!({})))).await).contains("lowercase"));
+    let Msg::Return(r) = c.ask(try_offer(ok_set())).await else { panic!("a valid offer") };
+    assert_eq!(p.expect_offer().await, r["promise"].as_str().unwrap(), "refused offers reach no provider");
+
+    // `import` folds values, then checks them, before it asks the provider.
+    let item = |ty: Value| ImportItem { path: "/x".into(), ty: serde_json::from_value(ty).unwrap() };
+    let bad = ImportArgs { to: "p".into(), materials: vec![item(json!({"organism": "cat"}))] };
+    assert!(raised(c.ask(Msg::Import(bad)).await).contains("\"mouse\""));
+    let good = ImportArgs { to: "p".into(), materials: vec![item(json!({"db": "NR"}))] };
+    let folded = ImportArgs { to: "p".into(), materials: vec![item(json!({"db": "nr"}))] };
+    let (r, ()) = tokio::join!(c.ask(Msg::Import(good)), async {
+        let e = p.next_env().await;
+        assert_eq!(e.msg().unwrap(), Msg::Import(folded));
+        p.reply(&e, Msg::Return(json!({"ids": [], "facts": []}))).await;
+    });
+    assert!(matches!(r, Msg::Return(_)));
+
+    // A kept vocabulary reloads over the seed in a new market.
+    let file = std::env::temp_dir().join(format!("vocab-{}.json", outsource_proto::new_id()));
+    let kept = Market::new("a");
+    kept.keep_vocab(file.clone()).unwrap();
+    let mut c2 = Peer::new(&kept, "c");
+    assert_eq!(c2.ask(add("organism", Some(&["Human"]))).await, ok());
+    let again = Market::new("b");
+    again.keep_vocab(file.clone()).unwrap();
+    let Msg::Return(v) = Peer::new(&again, "c").ask(Msg::Properties(PropertiesArgs {})).await else { panic!("properties") };
+    assert_eq!(v["properties"]["organism"]["values"], json!(["human"]));
+    assert!(v["properties"]["db"].is_object());
+    std::fs::remove_file(file).unwrap();
 }

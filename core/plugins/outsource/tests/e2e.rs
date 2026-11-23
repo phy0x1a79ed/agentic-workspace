@@ -114,6 +114,12 @@ fn serve_dials_providers_and_callers_offer_through_the_socket() {
         assert_eq!(listing[0], &json!(["out.txt"]));
     }
 
+    // The vocabulary rides the same socket and is kept under HOME.
+    assert!(outsource(home, &["properties"])["properties"]["db"].is_object());
+    outsource(home, &["property_add", "--name", "organism", "--description", "source organism", "--values", "Human"]);
+    assert_eq!(outsource(home, &["properties"])["properties"]["organism"]["values"], json!(["human"]));
+    assert!(home.join(".outsource/vocab.json").exists());
+
     let mut mcp = Reap(Command::new(BIN).arg("mcp").env("HOME", home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
     let mcp = &mut mcp.0;
     let mut stdin = mcp.stdin.take().unwrap();
@@ -126,5 +132,5 @@ fn serve_dials_providers_and_callers_offer_through_the_socket() {
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(names, ["offer", "prep", "import", "status", "cancel", "dispose", "review"]);
+    assert_eq!(names, ["offer", "prep", "import", "property_add", "properties", "status", "cancel", "dispose", "review"]);
 }

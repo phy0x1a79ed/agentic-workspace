@@ -1,12 +1,14 @@
 //! The outsource market: runs bid rounds, awards one provider per promise and keeps promise state in memory.
 
 mod picker;
+mod vocab;
 #[cfg(test)]
 mod tests;
 
 use outsource_proto::{
-    raise, raise_msg, AwardArgs, BidArgs, DnuArgs, DisposeArgs, Envelope, Fact, Id, ImportArgs, Msg, OfferArgs, OfferSet, Outcome,
-    Phase, PromiseId, PromiseRef, PromiseStatus, PropSet, ProviderId, ReviewArgs, SettleArgs, StartedArgs, TIME_AXIS,
+    fold_type, raise, raise_msg, AwardArgs, BidArgs, DnuArgs, DisposeArgs, Envelope, Fact, Id, ImportArgs, Msg, OfferArgs, OfferSet, Outcome,
+    Phase, PromiseId, PromiseRef, PromiseStatus, PropSet, PropertyAddArgs, ProviderId, ReviewArgs, SettleArgs, StartedArgs,
+    Step, TIME_AXIS,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -14,6 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::time::{Duration, Instant};
+use vocab::Vocab;
 
 pub type LinkId = u64;
 type Values = BTreeMap<String, f64>;
@@ -37,6 +40,7 @@ struct Inner {
     /// The `at` fact of the latest settle or import that named each id.
     holders: HashMap<Id, Fact>,
     stats: HashMap<(ProviderId, String), Stats>,
+    vocab: Vocab,
     watchers: Vec<Watch>,
     pending: HashMap<String, (LinkId, oneshot::Sender<Envelope>)>,
 }
@@ -119,6 +123,13 @@ fn contract_of(set: &OfferSet) -> String {
     step.props.get("contract").cloned().unwrap_or_else(|| step.op.clone())
 }
 
+/// The property sets a step types its materials and outputs by.
+fn types_of(step: &Step) -> Vec<PropSet> {
+    let staged = step.spec["stage"].as_object().into_iter().flat_map(|m| m.values());
+    let typed = step.spec["typed"].as_array().into_iter().flatten();
+    staged.chain(typed).filter_map(|item| serde_json::from_value(item["type"].clone()).ok()).collect()
+}
+
 impl Market {
     pub fn new(name: &str) -> Market {
         let inner = Arc::new(Mutex::new(Inner {
@@ -130,6 +141,7 @@ impl Market {
             promises: HashMap::new(),
             holders: HashMap::new(),
             stats: HashMap::new(),
+            vocab: Vocab::seeded(),
             watchers: Vec::new(),
             pending: HashMap::new(),
         }));
@@ -139,6 +151,11 @@ impl Market {
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap()
+    }
+
+    /// Loads the property vocabulary from `file` over the seed and saves every later `property_add` there.
+    pub fn keep_vocab(&self, file: std::path::PathBuf) -> std::io::Result<()> {
+        self.lock().vocab.keep(file)
     }
 
     pub fn attach(&self, tx: UnboundedSender<Envelope>) -> LinkId {
@@ -288,7 +305,19 @@ impl Market {
 impl Market {
     /// Sends the paths to the named provider and records the holder facts it returns.
     async fn import(&self, a: &ImportArgs) -> Msg {
-        let rx = self.lock().ask_provider(&a.to, &Msg::Import(a.clone()), None);
+        let mut a = a.clone();
+        let rx = {
+            let mut g = self.lock();
+            for item in &mut a.materials {
+                if let Some(ty) = item.ty.as_mut() {
+                    *ty = fold_type(ty);
+                    if let Err(e) = g.vocab.check(ty) {
+                        return raise_msg(raise::BAD_ARGS, e);
+                    }
+                }
+            }
+            g.ask_provider(&a.to, &Msg::Import(a.clone()), None)
+        };
         match rx {
             Some(rx) => match rx.await.ok().and_then(|e| e.msg().ok()) {
                 Some(Msg::Return(v)) => {
@@ -366,6 +395,11 @@ impl Inner {
                 ok()
             }
             Msg::Offer(a) => self.offer(env.v, a),
+            Msg::PropertyAdd(PropertyAddArgs { name, description, values }) => match self.vocab.add(&name, &description, values.as_deref()) {
+                Ok(()) => ok(),
+                Err(e) => raise_msg(raise::BAD_ARGS, e),
+            },
+            Msg::Properties(_) => Msg::Return(self.vocab.list()),
             Msg::Cancel(r) => self.cancel(&r.promise),
             Msg::Review(a) => self.review(a),
             Msg::Watch(a) => {
@@ -411,6 +445,9 @@ impl Inner {
         }
         if a.set.steps.is_empty() {
             return raise_msg(raise::BAD_ARGS, "offer has no steps");
+        }
+        if let Some(e) = a.set.steps.iter().flat_map(types_of).find_map(|ty| self.vocab.check(&ty).err()) {
+            return raise_msg(raise::BAD_ARGS, e);
         }
         let id = outsource_proto::new_id();
         let mut set = a.set;
@@ -553,8 +590,8 @@ impl Inner {
 
     fn apply_status(&mut self, id: &str, provider: &str, phase: &Phase) {
         match phase {
-            Phase::Settled { facts, sizes, listing, .. } => {
-                let outcome = Outcome::Kept { facts: facts.clone(), sizes: sizes.clone(), listing: listing.clone() };
+            Phase::Settled { facts, sizes, listing, stats, .. } => {
+                let outcome = Outcome::Kept { facts: facts.clone(), sizes: sizes.clone(), listing: listing.clone(), stats: stats.clone() };
                 self.settle(id, provider, outcome)
             }
             Phase::Failed { message, .. } => self.settle(id, provider, Outcome::Broken { message: message.clone() }),
@@ -571,7 +608,7 @@ impl Inner {
         let time_bid = award.bid.get(TIME_AXIS).copied().unwrap_or(0.0);
         let stats = self.stats.entry((provider.to_string(), p.contract.clone())).or_default();
         match outcome {
-            Outcome::Kept { facts, sizes, listing } => {
+            Outcome::Kept { facts, sizes, listing, stats: run } => {
                 stats.kept += 1;
                 stats.add_err(TIME_AXIS, elapsed, time_bid);
                 for f in &facts {
@@ -579,7 +616,7 @@ impl Inner {
                         self.holders.insert(fid.to_string(), f.clone());
                     }
                 }
-                self.set_phase(id, Phase::Settled { provider: provider.into(), facts, sizes, listing });
+                self.set_phase(id, Phase::Settled { provider: provider.into(), facts, sizes, listing, stats: run });
             }
             Outcome::Broken { .. } => {
                 stats.broken += 1;

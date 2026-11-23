@@ -48,6 +48,7 @@ impl MarketConfig {
 /// Runs the market: listens on the socket and keeps every configured link dialled.
 pub async fn serve(market: Market, cfg: MarketConfig) -> anyhow::Result<()> {
     let socket = cfg.socket.clone().unwrap_or_else(default_socket);
+    market.keep_vocab(outsource_dir().join("vocab.json"))?;
     let listener = unix_listen(&socket)?;
     for cmd in cfg.links {
         tokio::spawn(keep_dialled(market.clone(), cmd));

@@ -4,7 +4,7 @@
 use anyhow::bail;
 use async_trait::async_trait;
 use outsource_proto::{PromiseId, Resources};
-use outsource_provider::backend::{Backend, DoneTx, JobSpec};
+use outsource_provider::backend::{Backend, DoneTx, JobSpec, RUN_LINE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -302,8 +302,9 @@ impl Inner {
         let list: String = q.jobs.iter().map(|j| format!("{}\n", j.workdir.display())).collect();
         let list_path = dir.join("workdirs");
         let script = format!(
-            "#!/bin/sh\nd=$(sed -n \"$((SLURM_ARRAY_TASK_ID + 1))p\" '{}')\ncd \"$d\" || exit 1\nsh run.sh\necho $? > exit.tmp && mv exit.tmp exit\n",
-            list_path.display()
+            "#!/bin/sh\nd=$(sed -n \"$((SLURM_ARRAY_TASK_ID + 1))p\" '{}')\ncd \"$d\" || exit 1\n{}\necho $? > exit.tmp && mv exit.tmp exit\n",
+            list_path.display(),
+            RUN_LINE
         );
         let script_path = dir.join("task.sh");
         let written = async {
