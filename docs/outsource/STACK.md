@@ -30,7 +30,8 @@ Nothing.
 
 - `deploy`: "I just meant to now apply these changes and try it for real". Shipped release dbec46b1 (2026-11-22); nodes migrated to ~/.outsource; capella refreshed by the rollout but not migrated (still ~/.baitan); lyra asleep. Live check passed. First real job (solver build, rust-musl .env, no `to`) got NoBids: only altair has apptainer and it declines "no source for input": providers pull, and no node can reach mizar. Tony chose push-along-edges (b) over authorizing keys. Release 2 = dex-poc merge + push + provider-fit, then rerun the solver build. Leftover: refresh-pins.sh exited 0 on a cargo --locked failure; market gives up redialing a link whose binary is missing during rollout; e2e `far` needs ssh in the build container.
   Release 2 d45d926d (dex-poc merge e2aba1b1, push 7c56bf47, fit 04445929). Real job 1 SETTLED 2026-11-22 20:59: altair won (49 s bid vs capella 169 s; 4 nodes declined on cpus), wall 60 s, cpu 81 s, rss 412 MB, binary back on mizar. First attempt broke: protocol built inside the staged repo (skill now says outputs go in the work dir, ee1c3d94). altair now hosts fir + sockeye ([[cluster]], routes); nibi/trillium need a Duo master. mizar has no cluster masters. Open: capella bids when awake — Tony to decide whether it stays a provider. Instance size reported 107 MB for one 1.3 MB file (whole target dir?).
-  - `caller-site` (release 3, worker running): the plugin takes the caller's node and cwd from its own process (mizar), so altair callers (test-trim) are read on mizar; use the gateway `_caller_*` stamp and probe identity on the caller node. Bundled: status keeps broken-award reasons (NoBids hid "made none of its outputs"); market redials links forever; refresh-pins exit code.
+  - `topology` (release 4, worker running): see DECISIONS `topology`. Found 2026-11-23: altair has no edge to mizar, so altair agents could not reach the single mizar market.
+  - closed `caller-site` (release 3 898fc1a4, superseded in part by `topology`): the plugin takes the caller's node and cwd from its own process (mizar), so altair callers (test-trim) are read on mizar; use the gateway `_caller_*` stamp and probe identity on the caller node. Bundled: status keeps broken-award reasons (NoBids hid "made none of its outputs"); market redials links forever; refresh-pins exit code.
   - closed `push-edges`, `provider-fit` (deneb stays a provider: "good for long running tasks that require high up time"; uptime axis deferred).
 - `test-trim-hpc`: "can metasmith v26 bug test trim use outsource to run the metasmith tests in parallel on some other, prolly HPC provider". Session metasmith-v26-bugs-test-trim (altair, metasmith/engine/test-trim) is itself asking Tony how Sockeye fits (its recommendation: release tier, no docker; smoke/merge stay local). Coordinated 2026-11-22 (message sent to that session over Remote Control; read not confirmed): plan its HPC lane as outsource offers, wait for deploy, report breakage to awm/outsource. Second real job after deploy: one offer per test shard, metasmith .env container, repo as material, junit back.
 - absorbed from dex-poc (session "dex compute" retired 2026-11-22; its STACK/DECISIONS/FINDINGS at docs/dex-poc/ on feat/dex-poc, merged by the push worker):
@@ -41,7 +42,7 @@ Nothing.
 
 ## Workers
 
-- caller-site worker: release 3 (caller site from gateway, status reasons, redial, refresh-pins exit).
+- topology worker: release 4 — an entry per node, one provider service per node behind a socket, reach by edges, vocab synced through providers.
 
 ## Closed
 
