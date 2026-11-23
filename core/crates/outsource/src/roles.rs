@@ -151,15 +151,21 @@ async fn providers() -> anyhow::Result<Hosted> {
 }
 
 /// Bridges this process's stdio to a socket, so `ssh <node> outsource attach` is a link to that node's providers.
+/// Exits the process when either side closes: tokio's blocking stdin read would otherwise hold the
+/// runtime open until the far end next writes, and that end would see a live link to a dead socket.
 pub async fn bridge(socket: PathBuf) -> anyhow::Result<()> {
     let stream = tokio::net::UnixStream::connect(&socket).await?;
     let (mut r, mut w) = stream.into_split();
     let (mut i, mut o) = (tokio::io::stdin(), tokio::io::stdout());
-    tokio::select! {
-        res = tokio::io::copy(&mut i, &mut w) => { res?; }
-        res = tokio::io::copy(&mut r, &mut o) => { res?; }
+    let res = tokio::select! {
+        res = tokio::io::copy(&mut i, &mut w) => res,
+        res = tokio::io::copy(&mut r, &mut o) => res,
+    };
+    if let Err(e) = res {
+        eprintln!("bridge to {}: {e}", socket.display());
+        std::process::exit(1);
     }
-    Ok(())
+    std::process::exit(0)
 }
 
 /// A caller's link to this node's entry.
