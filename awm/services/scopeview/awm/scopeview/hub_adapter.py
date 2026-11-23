@@ -32,7 +32,7 @@ API_MANIFEST: dict[str, Any] = {
         {"name": "node", "tool": "scopeview_node", "params": [P_PROJECT, P_SCOPE, P_ID, P_REF],
          "description": "One node's content: a table's columns and first rows, a figure's Plotly JSON, a text node's markdown."},
         {"name": "history", "tool": "scopeview_history",
-         "params": [P_PROJECT, P_SCOPE, {**P_ID, "required": False, "description": "Node id. Omit for the scope's versions (first-parent commits)."}],
+         "params": [P_PROJECT, P_SCOPE, {**P_ID, "required": False, "description": "Node id. Omit for the scope's versions (first-parent commits)."}, P_REF],
          "description": "Commits that touched a node, or the scope's versions when no id is given."},
         {"name": "new", "tool": "scopeview_new",
          "params": [P_PROJECT, P_SCOPE,

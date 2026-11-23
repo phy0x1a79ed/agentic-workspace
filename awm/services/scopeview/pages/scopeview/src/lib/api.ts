@@ -101,8 +101,7 @@ export const scopes = (peer: string) =>
   scopeview.call<{ scopes: ScopeInfo[] }>('scopes', {}, opts({ peer })).then((r) => r.scopes);
 export const graph = (c: Ctx) => scopeview.call<Graph>('graph', at(c), opts(c));
 export const node = (c: Ctx, id: string) => scopeview.call<NodeDetail>('node', { ...at(c), id }, opts(c));
-/** `history` takes no ref: it always walks back from the worktree's HEAD. */
 export const history = (c: Ctx, id?: string) =>
   scopeview
-    .call<{ commits: Commit[] }>('history', { project: c.project, scope: c.scope, ...(id ? { id } : {}) }, opts(c))
+    .call<{ commits: Commit[] }>('history', { ...at(c), ...(id ? { id } : {}) }, opts(c))
     .then((r) => r.commits);
