@@ -143,4 +143,14 @@ Child of `node-prep`, which closes with it.
 - Shared market state is the same at every entry. Holdings and caches live at the providers. The vocabulary syncs through the providers by union.
 - Replaces the single mizar market that started providers over ssh (dex-poc).
 
-**Landed.** Built on `feat/outsource` 2026-11-23, release 4, pending deploy. The entry's reach comes from the user edges in `edges.yml`. A call with `peer=<node>` reads its paths on that node.
+**Landed.** Release 4 dfa5a2b9, live 2026-11-23. An altair-entry offer ran on fir and returned. Placement: outsource joined the `core` package in cloud `homelab/inventory/group_vars/all/plugins.yml` (cloud dev a8455a5). The entry's reach comes from the user edges in `edges.yml`. A call with `peer=<node>` reads its paths on that node.
+
+## capella-provider — 2026-11-23
+
+**Question.** Should capella stay a provider when it is awake?
+
+**User's words.** "capella is an opportunistic provider, yes"
+
+**Design.** capella runs an entry and a provider like any agent host. It bids only while it is awake. Nothing wakes it for a job. It gets the service from the `core` package the next time its awm config is applied.
+
+**Landed.** No code. Cloud dev a8455a5 places it.
