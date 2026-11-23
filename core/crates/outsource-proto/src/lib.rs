@@ -463,7 +463,7 @@ pub struct Axis {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct Resources {
     pub cpus: u32,
     pub mem_mb: u64,
@@ -615,8 +615,8 @@ An entry with a `type` and no `path` names material that already sits at a provi
 `protocol`: one bash command run in the work dir. `produces`: a path relative to the work dir, copied back into `dest` (default the cwd) under the same relative path, or `{path, type}`: the output stays at the provider and is held under that type for later offers to require. \
 `to`: a provider id; only that provider is asked to bid. \
 A `.env` file in `requires` (YAML with `container: docker://...`) is the environment: the protocol runs inside it with apptainer; at most one. \
-Pass each git repo as its own `requires` path. A result is reused when the protocol and every material are unchanged (a file by mtime, a repo by HEAD commit, any other folder by its own mtime); \
-a repo with uncommitted changes still counts as its commit and the reply warns. Example: \
+Pass each git repo as its own `requires` path. A result is reused when the protocol and every material are unchanged (a file by mtime, any other folder by a hash of every file's name, size and mtime beneath it, a repo by HEAD commit plus a hash of its uncommitted files); \
+Example: \
 {\"requires\":[\"/data/iphop.env\",\"/data/counts.tsv\",{\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"},\"name\":\"uniref50\"}],\"produces\":[\"out/fit.rds\"],\"protocol\":\"mkdir out && Rscript fit.R counts.tsv uniref50 out/fit.rds\",\"to\":\"sockeye\",\"resources\":{\"cpus\":8,\"mem_mb\":32000}}. \
 A remote download is the same verb with a typed output: {\"requires\":[],\"produces\":[{\"path\":\"uniref50.dmnd\",\"type\":{\"db\":\"uniref50\",\"release\":\"2024_01\"}}],\"protocol\":\"wget -q https://example.org/uniref50.fa.gz && diamond makedb --in uniref50.fa.gz -d uniref50\",\"to\":\"sockeye\"}";
 
