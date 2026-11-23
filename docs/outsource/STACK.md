@@ -20,7 +20,7 @@ Nothing.
 
 ## Stack
 
-- `node-prep`: (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
+- `node-prep`: State: prep is just an offer, biddable placement, posted explicitly by the caller (option a); no own verb; offers stage their own data. Pending: confirm protocol-less offer + `count` semantics. (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
 - `discovery`: agents can't find outsource (no AGENTS.md or skill; describe example now in catalog). Agents must pass absolute paths (plugin has no per-call cwd).
 - `tune`: "I want to tune the Baitan service."
 - `deploy`: try a real job live after deploy ("need to try for real"). Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
