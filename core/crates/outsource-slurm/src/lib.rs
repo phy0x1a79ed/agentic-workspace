@@ -420,7 +420,7 @@ impl Inner {
         let now = Instant::now();
         let mut st = self.st.lock().unwrap();
         for (key, queue) in queues {
-            let id = reply.sbatch.get(&key).and_then(|a| a.strip_prefix("Submitted batch job ")).and_then(|t| t.trim().parse::<u64>().ok());
+            let id = reply.sbatch.get(&key).and_then(|a| a.split("Submitted batch job ").nth(1)).and_then(|t| t.split_whitespace().next()?.parse::<u64>().ok());
             let Some(id) = id else {
                 match reply.sbatch.get(&key) {
                     // Slurm answered with an error: the group's jobs fail with its text.
