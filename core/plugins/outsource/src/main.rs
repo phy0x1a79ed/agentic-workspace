@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(feature = "awm")]
 mod awm {
     use awm_plugin_sdk::{Call, Service, VerbError};
-    use outsource::{roles, surfaces};
+    use outsource::{offer, roles, surfaces};
     use outsource_proto::{Msg, WatchArgs};
     use serde_json::{json, Value};
     use std::sync::Arc;
@@ -58,7 +58,8 @@ mod awm {
             svc = svc.verb("outsource", v.name, v.summary, params(v.schema), move |call: Call| {
                 let client = client.clone();
                 async move {
-                    surfaces::invoke(&client, verb, outsource_args(&call)).await.map_err(|e| {
+                    let site = offer::Site::of_caller(call.peer_node());
+                    surfaces::invoke(&client, verb, outsource_args(&call), &site).await.map_err(|e| {
                         let name = e["args"]["name"].as_str().unwrap_or("doesNotUnderstand").to_string();
                         VerbError::new(name, e.to_string())
                     })

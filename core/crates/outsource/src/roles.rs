@@ -98,6 +98,12 @@ struct Cluster {
     imports: Vec<PathBuf>,
 }
 
+/// This host's route to provider `node`, from `~/.outsource/provider.toml`.
+pub fn route_to(node: &str) -> Option<String> {
+    let file: ProviderFile = read_toml(&outsource_dir().join("provider.toml")).ok()?;
+    file.provider.routes.get(node).cloned()
+}
+
 pub async fn provider(config: Option<PathBuf>) -> anyhow::Result<()> {
     let file: ProviderFile = read_toml(&config.unwrap_or_else(|| outsource_dir().join("provider.toml")))?;
     let mut cfg = file.provider;
@@ -181,9 +187,9 @@ mod tests {
         let work = d.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("in.txt"), "data").unwrap();
-        let site = Site { node: "near".into(), cwd: work.clone() };
+        let site = Site { node: "near".into(), cwd: Some(work.clone()), host: Default::default() };
         let offer = json!({"requires": ["in.txt"], "produces": ["res"], "protocol": "mkdir res && cp in.txt res/copy.txt", "dest": "dest", "to": "far"});
-        let set = compile(offer, &site).unwrap().set;
+        let set = compile(offer, &site).await.unwrap().set;
 
         let client = local_client(&market, "caller");
         let mut events = client.events().unwrap();
