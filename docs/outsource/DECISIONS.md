@@ -1,4 +1,4 @@
-# baitan-tune: Decisions
+# outsource: Decisions
 
 One section per closed topic, in closing order.
 
@@ -38,3 +38,21 @@ Child of `call-walkthrough`; absorbs `cache-default`.
 **Consequence.** Without props, one reference database at different paths on two providers has two ids. Prepping references on nodes moves to `node-prep`.
 
 **Landed.** Build worker (see STACK).
+
+## resources-model (2026-11-22)
+
+Child of `call-walkthrough`, which closes with it.
+
+**Question.** How should a job declare CPUs and memory, given that memory may grow with cores and not every job speeds up with more cores?
+
+**User's words.** "I feel like the memory and the memory per CPU are runtime statistics. Those should be gathered to inform future choices, but I think fixed size today actually is the best outcome."
+
+**Decided.**
+- Keep `resources {cpus, mem_mb}` as a fixed size, as today. The provider meets it or declines.
+- Peak memory and CPU use are runtime statistics. Each settle records them, for future choices. Learning from them stays deferred.
+
+**Landed.** Stats recording goes with the deploy build.
+
+## naming (2026-11-22)
+
+The scope moved from `awm/baitan-tune` to `awm/outsource` (branch `feat/outsource`); these docs moved from `docs/baitan-tune` to `docs/outsource`. The session is `outsource-tune`.
