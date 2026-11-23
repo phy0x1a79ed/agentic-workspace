@@ -39,10 +39,12 @@ fn from_probe(out: &str, origin: &str) -> Result<Probed, String> {
     let (file, size) = (kind == "file", size.parse().unwrap_or(0));
     let id = if stamp == "git" {
         let head = lines.next().unwrap_or_default();
-        match lines.next().unwrap_or_default() {
-            "" => instance_id(&props([("git", head), ("origin", origin)])),
-            dirty => instance_id(&props([("git", head), ("dirty", dirty), ("origin", origin)])),
+        let mut kv = vec![("git", head), ("origin", origin)];
+        let dirty = lines.next().unwrap_or_default();
+        if !dirty.is_empty() {
+            kv.push(("dirty", dirty));
         }
+        instance_id(&props(kv))
     } else {
         instance_id(&props([("path", path), ("mtime_ns", stamp), ("origin", origin)]))
     };

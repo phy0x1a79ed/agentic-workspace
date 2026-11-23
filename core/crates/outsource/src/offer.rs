@@ -88,11 +88,6 @@ impl Site {
     }
 }
 
-#[derive(Debug)]
-pub struct Compiled {
-    pub set: OfferSet,
-}
-
 struct Material {
     name: String,
     path: Option<PathBuf>,
@@ -161,7 +156,7 @@ fn new_set(steps: Vec<Step>, mats: &Materials, site: &Site, to: Option<String>) 
     set
 }
 
-pub async fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
+pub async fn compile(args: Value, site: &Site) -> Result<OfferSet, String> {
     let t: Transform = serde_json::from_value(args).map_err(|e| e.to_string())?;
     let mats = Materials::gather(&t.requires, site).await?;
 
@@ -228,11 +223,11 @@ pub async fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
     let mut set = new_set(steps, &mats, site, t.to);
     set.axes = axes.into_iter().map(|name| Axis { name, weight: 1.0, higher_better: false }).collect();
     set.resources = t.resources.unwrap_or_default();
-    Ok(Compiled { set })
+    Ok(set)
 }
 
 /// A directed offer with no protocol: one `prep` step that stages the materials at `to`.
-pub async fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> {
+pub async fn compile_prep(args: Value, site: &Site) -> Result<OfferSet, String> {
     let p: Prep = serde_json::from_value(args).map_err(|e| e.to_string())?;
     let mats = Materials::gather(&p.requires, site).await?;
     let mut spec = json!({"stage": mats.stage()});
@@ -247,7 +242,7 @@ pub async fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> 
         spec,
         to: None,
     };
-    Ok(Compiled { set: new_set(vec![step], &mats, site, Some(p.to)) })
+    Ok(new_set(vec![step], &mats, site, Some(p.to)))
 }
 
 async fn container_of(env: &Path, site: &Site) -> Result<String, String> {
@@ -320,8 +315,8 @@ mod tests {
         json!({"requires": requires, "produces": ["out/fit.rds", "plots/"], "protocol": protocol})
     }
 
-    fn stage_id(c: &Compiled, name: &str) -> String {
-        c.set.steps[0].spec["stage"][name]["id"].as_str().unwrap().to_string()
+    fn stage_id(c: &OfferSet, name: &str) -> String {
+        c.steps[0].spec["stage"][name]["id"].as_str().unwrap().to_string()
     }
 
     #[tokio::test]
@@ -333,7 +328,7 @@ mod tests {
         std::fs::create_dir(d.join("plain")).unwrap();
         repo(&d, "analysis");
         let c = compile(job(&["iphop.env", "counts.tsv", "analysis", "plain"], "Rscript analysis/fit.R"), &site(&d)).await.unwrap();
-        let [task, place] = &c.set.steps[..] else { panic!("two steps") };
+        let [task, place] = &c.steps[..] else { panic!("two steps") };
         assert_eq!((task.op.as_str(), place.op.as_str()), ("task", "place"));
         assert_eq!(task.spec["script"], "Rscript analysis/fit.R");
         assert_eq!(task.spec["env"], json!({"stage": "iphop.env", "container": "docker://x/iphop:1"}));
@@ -342,9 +337,9 @@ mod tests {
         assert_eq!(task.inputs.len(), 4);
         assert_eq!((place.to.as_deref(), &place.spec), (Some("mine"), &json!({"path": d.to_string_lossy(), "files": true})));
         assert_eq!(place.inputs, [slot_id(&task.key(), "out")]);
-        assert_eq!(c.set.start.len(), 4);
+        assert_eq!(c.start.len(), 4);
         let counts = d.join("counts.tsv");
-        assert!(c.set.start.contains(&Fact::at_path(&stage_id(&c, "counts.tsv"), "mine", &counts.to_string_lossy())));
+        assert!(c.start.contains(&Fact::at_path(&stage_id(&c, "counts.tsv"), "mine", &counts.to_string_lossy())));
 
         let two = {
             std::fs::write(d.join("b.env"), "container: docker://y\n").unwrap();
@@ -367,7 +362,7 @@ mod tests {
             ($p:expr) => { compile(job(&["counts.tsv", "a"], $p), &site(&d)).await.unwrap() };
         }
         let base = compiled!("p");
-        let key = |c: &Compiled| c.set.steps[0].key();
+        let key = |c: &OfferSet| c.steps[0].key();
 
         // A new mtime moves a file's id and the task's key.
         let file = std::fs::File::options().write(true).open(d.join("counts.tsv")).unwrap();
@@ -411,19 +406,19 @@ mod tests {
         );
         assert_eq!(stage_id(&here, "counts.tsv"), stage_id(&there, "other.tsv"));
         assert_eq!(stage_id(&here, "counts.tsv"), stage_id(&alone, "uniref50"));
-        assert_eq!(here.set.steps[0].spec["stage"]["counts.tsv"]["type"], ty);
-        assert_eq!((here.set.start.len(), alone.set.start.len()), (1, 0));
-        assert_eq!(typed!(json!({"type": {"b": "2", "a": "1"}})).set.steps[0].spec["stage"]["1-2"]["id"], json!(instance_id(&props([("a", "1"), ("b", "2")]))));
+        assert_eq!(here.steps[0].spec["stage"]["counts.tsv"]["type"], ty);
+        assert_eq!((here.start.len(), alone.start.len()), (1, 0));
+        assert_eq!(typed!(json!({"type": {"b": "2", "a": "1"}})).steps[0].spec["stage"]["1-2"]["id"], json!(instance_id(&props([("a", "1"), ("b", "2")]))));
         // Values fold to lowercase before the id is taken, in inputs and outputs alike.
         let upper = typed!(json!({"type": {"db": "UniRef50", "release": "2024_01"}, "name": "u"}));
         assert_eq!(stage_id(&upper, "u"), instance_id(&props([("db", "uniref50"), ("release", "2024_01")])));
         let out = compile(json!({"requires": [], "produces": [{"path": "o", "type": {"db": "NR"}}], "protocol": "p"}), &site(&d)).await.unwrap();
-        assert_eq!(out.set.steps[0].spec["typed"][0]["type"], json!({"db": "nr"}));
+        assert_eq!(out.steps[0].spec["typed"][0]["type"], json!({"db": "nr"}));
         let empty = compile(json!({"requires": [{"name": "x"}], "produces": [], "protocol": "p"}), &site(&d)).await;
         assert!(empty.unwrap_err().contains("path or a type"));
 
         // The protocol is part of a result's identity.
-        assert_ne!(base.set.steps[0].props["job"], compiled!("q").set.steps[0].props["job"]);
+        assert_ne!(base.steps[0].props["job"], compiled!("q").steps[0].props["job"]);
     }
 
     #[tokio::test]
@@ -435,20 +430,20 @@ mod tests {
 
         // A typed output stays at the provider: no place step home, the type rides in the spec.
         let dl = compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": ty}], "protocol": "wget x", "to": "sockeye"}), &site(&d)).await.unwrap();
-        assert_eq!(dl.set.to.as_deref(), Some("sockeye"));
-        let [task] = &dl.set.steps[..] else { panic!("task only") };
+        assert_eq!(dl.to.as_deref(), Some("sockeye"));
+        let [task] = &dl.steps[..] else { panic!("task only") };
         assert_eq!(task.spec["typed"], json!([{"path": "u.dmnd", "type": ty}]));
         assert_eq!(task.spec["outputs"], json!([]));
         let mixed = compile(json!({"requires": [], "produces": ["r.txt", {"path": "u.dmnd", "type": ty}], "protocol": "wget x"}), &site(&d)).await.unwrap();
-        assert_eq!(mixed.set.steps.len(), 2);
-        assert_eq!(mixed.set.steps[0].spec["outputs"], json!(["r.txt", "r.txt/**"]));
-        assert!(mixed.set.to.is_none());
-        assert_ne!(dl.set.steps[0].props["job"], compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": {"db": "x"}}], "protocol": "wget x"}), &site(&d)).await.unwrap().set.steps[0].props["job"]);
+        assert_eq!(mixed.steps.len(), 2);
+        assert_eq!(mixed.steps[0].spec["outputs"], json!(["r.txt", "r.txt/**"]));
+        assert!(mixed.to.is_none());
+        assert_ne!(dl.steps[0].props["job"], compile(json!({"requires": [], "produces": [{"path": "u.dmnd", "type": {"db": "x"}}], "protocol": "wget x"}), &site(&d)).await.unwrap().steps[0].props["job"]);
 
         // Prep is one `prep` step with no protocol, directed, carrying the env.
         let prep = compile_prep(json!({"to": "sockeye", "requires": ["e.env", {"type": ty}]}), &site(&d)).await.unwrap();
-        let [step] = &prep.set.steps[..] else { panic!("one step") };
-        assert_eq!((step.op.as_str(), prep.set.to.as_deref()), ("prep", Some("sockeye")));
+        let [step] = &prep.steps[..] else { panic!("one step") };
+        assert_eq!((step.op.as_str(), prep.to.as_deref()), ("prep", Some("sockeye")));
         assert_eq!(step.spec["env"], json!({"stage": "e.env", "container": "docker://x/y:1"}));
         assert_eq!(step.spec["stage"]["uniref50"]["id"], json!(instance_id(&props([("db", "uniref50")]))));
         assert!(compile_prep(json!({"requires": []}), &site(&d)).await.is_err());

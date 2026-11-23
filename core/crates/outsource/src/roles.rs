@@ -151,21 +151,16 @@ async fn providers() -> anyhow::Result<Hosted> {
 }
 
 /// Bridges this process's stdio to a socket, so `ssh <node> outsource attach` is a link to that node's providers.
-/// Exits the process when either side closes: tokio's blocking stdin read would otherwise hold the
-/// runtime open until the far end next writes, and that end would see a live link to a dead socket.
+/// Returns when either side closes; main abandons the blocking stdin read so the process ends.
 pub async fn bridge(socket: PathBuf) -> anyhow::Result<()> {
     let stream = tokio::net::UnixStream::connect(&socket).await?;
     let (mut r, mut w) = stream.into_split();
     let (mut i, mut o) = (tokio::io::stdin(), tokio::io::stdout());
-    let res = tokio::select! {
-        res = tokio::io::copy(&mut i, &mut w) => res,
-        res = tokio::io::copy(&mut r, &mut o) => res,
+    tokio::select! {
+        res = tokio::io::copy(&mut i, &mut w) => res?,
+        res = tokio::io::copy(&mut r, &mut o) => res?,
     };
-    if let Err(e) = res {
-        eprintln!("bridge to {}: {e}", socket.display());
-        std::process::exit(1);
-    }
-    std::process::exit(0)
+    Ok(())
 }
 
 /// A caller's link to this node's entry.
@@ -258,7 +253,7 @@ mod tests {
         std::fs::write(work.join("in.txt"), "data").unwrap();
         let site = Site { node: "near".into(), cwd: Some(work.clone()) };
         let offer = json!({"requires": ["in.txt"], "produces": ["res"], "protocol": "mkdir res && cp in.txt res/copy.txt", "dest": "dest", "to": "far"});
-        let set = compile(offer, &site).await.unwrap().set;
+        let set = compile(offer, &site).await.unwrap();
         let (client, mut events) = watching(&market).await;
         let phase = settle(&client, &mut events, set).await;
         assert!(settled_at(&phase, "far"), "{phase:?}");

@@ -26,10 +26,10 @@ pub struct JobSpec {
 pub type Done = (PromiseId, i32);
 pub type DoneTx = mpsc::UnboundedSender<Done>;
 
-/// The shell line a backend runs for a job in its work dir. Where GNU `time` exists it leaves
-/// `stats` (`maxrss_kb user_s sys_s wall_s`) beside `exit`; elsewhere the job runs unmeasured.
-pub const RUN_LINE: &str =
-    "if [ -x /usr/bin/time ]; then /usr/bin/time -f '%M %U %S %e' -o stats sh ./run.sh; else sh ./run.sh; fi";
+/// The shell line a backend runs for a job in its work dir: the job into `log`, then its exit code
+/// into `exit`, written atomically. Where GNU `time` exists it leaves `stats`
+/// (`maxrss_kb user_s sys_s wall_s`) beside `exit`; elsewhere the job runs unmeasured.
+pub const RUN_JOB: &str = "{ if [ -x /usr/bin/time ]; then /usr/bin/time -f '%M %U %S %e' -o stats sh ./run.sh; else sh ./run.sh; fi; } >log 2>&1; echo $? > exit.tmp && mv exit.tmp exit";
 
 /// The run stats in the text of a `stats` file; `None` when it holds no figures.
 pub fn parse_stats(text: &str) -> Option<RunStats> {

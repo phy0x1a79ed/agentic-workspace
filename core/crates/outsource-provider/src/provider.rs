@@ -5,7 +5,7 @@ use crate::backend::{parse_stats, Backend, Done, JobSpec};
 use crate::config::ProviderConfig;
 use crate::host::Host;
 use crate::index::{normalize, Entry, Flight, Found, Index, Pair};
-use crate::jobs::{find_cargo, find_on_path, glob_match, is_local_route, q};
+use crate::jobs::{find_cargo, find_on_path, glob_match, is_local_route, once, q};
 use crate::local::LocalBackend;
 use outsource_proto::*;
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,8 @@ pub(crate) struct State {
     waiters: HashMap<u64, watch::Sender<()>>,
     /// What the run steps of each live promise measured, folded as they finish.
     run_stats: HashMap<PromiseId, RunStats>,
+    /// Environment ids this process has pulled on the host, so a job skips the call.
+    pulled: HashSet<String>,
 }
 
 pub(crate) struct Inner {
@@ -155,6 +157,10 @@ fn request_pairs(step: &Step, inputs: &[Id]) -> Vec<Pair> {
 
 const OUT: &str = "out";
 const TRANSFER_FAILED: &str = "TransferFailed";
+
+fn declared_est(step: &Step) -> Option<f64> {
+    step.spec.get("est").and_then(Value::as_f64)
+}
 
 /// The shell line that copies `src` into the directory `dest`: both on this host over a local
 /// route, else from this host to `route` (`push`) or from `route` to this host. With `list`, a
@@ -425,7 +431,7 @@ impl Inner {
     /// A step's `est`, else `default_secs` scaled by Amdahl's law with a serial share of 1/cpus:
     /// the declared size takes `default_secs`, more provider cpus take less, one cpu is the same everywhere.
     fn est(&self, step: &Step, res: &Resources) -> f64 {
-        if let Some(e) = step.spec.get("est").and_then(Value::as_f64) {
+        if let Some(e) = declared_est(step) {
             return e;
         }
         let job = res.cpus.max(1) as f64;
@@ -866,17 +872,21 @@ impl Inner {
             _ => self.compile_task(set, step, resolved, &workdir)?,
         };
         if let (Some(env), Some(apptainer)) = (self.env_of(step)?, &self.apptainer) {
-            let pull = format!("set -e\n{}\n", self.pull_lines(&env, apptainer).join("\n"));
-            self.host.sh(&pull).await.map_err(|e| format!("pulling {}: {e}", env.container))?;
+            if !self.state.lock().unwrap().pulled.contains(&env.id) {
+                let pull = format!("set -e\n{}\n", self.pull_lines(&env, apptainer).join("\n"));
+                self.host.sh(&pull).await.map_err(|e| format!("pulling {}: {e}", env.container))?;
+                self.state.lock().unwrap().pulled.insert(env.id);
+            }
         }
-        let code = self.exec(promise, &workdir, script, &set.resources, step.spec.get("est").and_then(Value::as_f64)).await?;
-        let stats = self.host.sh(&format!("cat {} 2>/dev/null || true", q(&workdir.join("stats").to_string_lossy()))).await;
-        if let Some(run) = stats.ok().as_deref().and_then(parse_stats) {
+        let code = self.exec(promise, &workdir, script, &set.resources, declared_est(step)).await?;
+        let (stats, log) = (q(&workdir.join("stats").to_string_lossy()), q(&workdir.join("log").to_string_lossy()));
+        let out = self.host.sh(&format!("cat {stats} 2>/dev/null; echo '#log'; tail -n 5 {log} 2>/dev/null; true")).await.unwrap_or_default();
+        let (stats, tail) = out.split_once("#log\n").unwrap_or((&out, ""));
+        if let Some(run) = parse_stats(stats) {
             self.state.lock().unwrap().run_stats.entry(promise.to_string()).or_default().merge(&run);
         }
         if code != 0 {
-            let tail = self.host.sh(&format!("tail -n 5 {} 2>/dev/null || true", q(&workdir.join("log").to_string_lossy()))).await;
-            return Err(format!("{} exited {code}: {}", step.op, tail.unwrap_or_default().trim()));
+            return Err(format!("{} exited {code}: {}", step.op, tail.trim()));
         }
         let slots = step.slot_ids();
         if step.op == "cargo" {
@@ -962,15 +972,12 @@ impl Inner {
         self.work_dir.with_file_name("env").join(format!("{id}.sif"))
     }
 
-    /// Exports that keep apptainer's scratch and cache beside the images, never in /tmp or $HOME
+    /// Export that keeps apptainer's scratch and cache beside the images, never in /tmp or $HOME
     /// (a compute node may not write there).
-    fn apptainer_env(&self) -> Vec<String> {
+    fn apptainer_env(&self) -> String {
         let dir = self.work_dir.with_file_name("env");
         let sub = |n: &str| q(&dir.join(n).to_string_lossy());
-        vec![
-            format!("mkdir -p {} {}", sub("tmp"), sub("cache")),
-            format!("export APPTAINER_TMPDIR={} APPTAINER_CACHEDIR={}", sub("tmp"), sub("cache")),
-        ]
+        format!("export APPTAINER_TMPDIR={} APPTAINER_CACHEDIR={}", sub("tmp"), sub("cache"))
     }
 
     /// Shell lines that pull the environment's image into the cache unless it is there, one pull
@@ -978,12 +985,11 @@ impl Inner {
     /// nodes may have no route to the registry.
     fn pull_lines(&self, env: &Env, apptainer: &Path) -> Vec<String> {
         let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
-        let mut lines = self.apptainer_env();
-        lines.push(format!(
-            "[ -f {sif} ] || ( flock 9; [ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif} || {{ rm -f {sif}.$$; exit 1; }}; }} ) 9>{sif}.lock",
-            q(&env.container)
-        ));
-        lines
+        vec![
+            self.apptainer_env(),
+            "mkdir -p \"$APPTAINER_TMPDIR\" \"$APPTAINER_CACHEDIR\"".into(),
+            once(&sif, &format!("{app} pull --force \"$t\" {}", q(&env.container))),
+        ]
     }
 
     fn compile_task(&self, set: &OfferSet, step: &Step, resolved: &Resolved, workdir: &Path) -> Result<String, String> {
@@ -1004,7 +1010,7 @@ impl Inner {
         }
         match (env, &self.apptainer) {
             (Some(env), Some(apptainer)) => {
-                lines.extend(self.apptainer_env());
+                lines.push(self.apptainer_env());
                 let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
                 lines.push(format!("{app} exec {} {sif} bash -c {}", binds.join(" "), q(script)));
             }
@@ -1095,13 +1101,12 @@ impl Inner {
                 let dir = self.held_dir(id);
                 lines.push(format!("mkdir -p {}", q(&self.work_dir.with_file_name("held").to_string_lossy())));
                 let d = q(&dir.to_string_lossy());
-                let tmp = format!("{d}.$$");
                 let copy = if is_local_route(route) {
-                    format!("cp -a {} {tmp}/", q(src))
+                    format!("cp -a {} \"$t\"/", q(src))
                 } else {
-                    format!("rsync -a {} {tmp}/", q(&format!("{route}:{src}")))
+                    format!("rsync -a {} \"$t\"/", q(&format!("{route}:{src}")))
                 };
-                lines.push(format!("( flock 9; [ -d {d} ] || {{ rm -rf {tmp} && mkdir -p {tmp} && {copy} && mv {tmp} {d}; }} ) 9>{d}.lock"));
+                lines.push(once(&d, &format!("mkdir -p \"$t\" && {copy}")));
                 let base = Path::new(src.trim_end_matches('/')).file_name().ok_or_else(|| format!("{src} has no base name"))?;
                 let pairs = stage_pairs(item, id);
                 let flight = Some(Flight { since: Instant::now(), est: self.est(step, &set.resources), owner: promise.into() });

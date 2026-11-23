@@ -168,4 +168,31 @@ Child of `node-prep`, which closes with it.
 - Walltime is about 2× the job's estimate, capped at the cluster setting.
 - Whole-node clusters stay open to every job. Each bid carries a `waste` axis (share of allocated cores left idle), and the default axes score it, so waste loses bids instead of being refused. Packing is out.
 
-**Landed.** Plan T1–T4 (plan file abstract-munching-magpie), pending.
+**Landed.** Release 5.1 98c26809 (2026-11-23). T14 (releases 5.3 8fa50dde, 5.4 64f6f4ec) added: a Slurm task writes `<workdir>/log` like a local one, a task's image is pulled on the login node before the job (trillium's compute nodes cannot reach a registry), and a directed round waits up to 300 s for its provider. Live: trillium, nibi, fir and sockeye served one Nextflow run together.
+
+## waste-axis — 2026-11-23
+
+**Question.** How does the market keep small jobs off whole-node clusters without refusing them?
+
+**User's words.** "5 should be a soft limit -> it misses bids on efficiency rather than straight reject. use the market system"
+
+**Design.**
+- Every bid carries `waste` = 1 − requested cpus ÷ allocated cpus. It is 0 for a provider that allocates what was asked. A cluster with `whole_node = true` allocates `node_cpus`.
+- The default axes are `time` (weight 1) and `waste` (weight 0.5, lower is better). An offer that names its own `metrics` keeps them.
+- Open: the robust-z picker scales each axis by the bids' spread, so among slow HPC bids a small time lead still beats a near-total waste. Tony was paged with three options (score time as a ratio to the best bid, raise the waste weight, or decline waste above 0.9 unless directed).
+
+**Landed.** Release 5.1 98c26809. In T11, trillium bid waste 0.99 on 2-cpu shards and lost to altair.
+
+## nextflow-executor — 2026-11-23
+
+**Question.** Can one Nextflow workflow run its tasks across several HPCs and altair at once through the market?
+
+**User's words.** "Can we also POC an outsource executor for nextflow? -> to prove that nextflow can use the market system and be served by multiple HPCs + dedicate compute nodes like altair simulatneously for a single workflow?"
+
+**Design.**
+- The `nf-outsource` plugin lives in metasmith (`feat/engine/outsource-executor`, ported from nf-baitan). It sets `process.executor = 'outsource'` and talks to the node's entry through `outsource connect`.
+- Each task becomes one offer. Its inputs go as materials, and its outputs come back into the task work dir, so no shared filesystem is needed.
+- `ext.outsource = [to: <provider>]`, or a closure over the task, steers a process. With no hint the market picks.
+- The plugin builds the offer set itself, because the entry accepts only `{set}`. That copy of the client compile can drift silently (stacked).
+
+**Landed.** metasmith ba2190aa, d513332e (unpushed). T12 on release 5.4: unhinted, 20 tasks spread over altair, nibi and fir in 1 min 2 s. Hinted over five providers, 4 tasks each on altair, fir, nibi, sockeye and trillium in about 1 min.

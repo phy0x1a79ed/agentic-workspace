@@ -6,6 +6,14 @@ pub fn q(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Shell that makes the quoted path `target` once: under a lock, unless it exists, `build` writes
+/// `"$t"` (a temp beside it) and the temp is moved into place; a failed build removes the temp and exits 1.
+pub fn once(target: &str, build: &str) -> String {
+    format!(
+        "[ -e {target} ] || ( flock 9; [ -e {target} ] || {{ t={target}.$$; rm -rf \"$t\"; {{ {build}; }} && mv \"$t\" {target} || {{ rm -rf \"$t\"; exit 1; }}; }} ) 9>{target}.lock"
+    )
+}
+
 /// `cargo` from PATH, else `~/.cargo/bin`.
 pub fn find_cargo() -> Option<PathBuf> {
     find_on_path("cargo", &[format!("{}/.cargo/bin", std::env::var("HOME").unwrap_or_default())])
