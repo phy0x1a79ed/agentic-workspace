@@ -116,3 +116,16 @@ Child of `node-prep`, which closes with it.
 - Values are case-folded to lowercase before identity.
 
 **Landed.** Build after the prep worker (both touch outsource-proto and the market).
+
+## discovery (2026-11-22)
+
+**Question.** What tells agents to use outsource, and when?
+
+**User's words.** "brief section, maybe 1 sentence in workspace.md? where the other awm protocols live? + an outsource skill / not c"
+
+**Decided.**
+- One sentence in the workspace `AGENTS.md`, in the MCP tools list of tools that change how you work: use `outsource` for heavy compute (over about 10 minutes or 4 cores) and load the `outsource` skill.
+- An `outsource` skill holds the how: absolute paths, each repo as its own material, the `.env` material, typed materials and the vocabulary, `prep` before a batch, `import` after a self-run transfer, `to`, and worked examples.
+- No hook.
+
+**Landed.** Written at the end, with the deploy, once the verbs settle. The skill must reach every node agents run on (altair included).
