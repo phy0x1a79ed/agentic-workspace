@@ -871,7 +871,8 @@ impl Inner {
             self.state.lock().unwrap().run_stats.entry(promise.to_string()).or_default().merge(&run);
         }
         if code != 0 {
-            return Err(format!("{} exited {code}", step.op));
+            let tail = self.host.sh(&format!("tail -n 5 {} 2>/dev/null || true", q(&workdir.join("log").to_string_lossy()))).await;
+            return Err(format!("{} exited {code}: {}", step.op, tail.unwrap_or_default().trim()));
         }
         let slots = step.slot_ids();
         if step.op == "cargo" {

@@ -98,6 +98,10 @@ impl Backend for LocalBackend {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // The job is the caller's command, not plugin traffic: the gateway's egress proxy is not its.
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"] {
+            cmd.env_remove(key);
+        }
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
