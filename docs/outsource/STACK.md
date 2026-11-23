@@ -6,7 +6,7 @@
 
 ## Current
 
-Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). Next: T6 (trillium/nibi; routes already in cloud `hpc_ssh` defaults; trillium needs `node_cpus` in provider.toml for `waste`).
+Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). T6 done 2026-11-23: nibi and trillium are providers on altair (hand-added `[[cluster]]` blocks; trillium whole_node, node_cpus 192, walltime caps 24 h); test offers settled on c474.nibi and tri0089. Masters are awm `ssh` scopes with ControlPersist no: they live until the connection drops, and `ssh connect` reopens them through the 2fa service with no human. Next: T7 (worker porting nf-baitan in metasmith/engine/outsource-executor).
 
 Found during T4, for T14:
 - An offer `to: fir` posted on mizar got `NoBids`; the same offer on altair settles. mizar's entry may not reach altair's provider host.
@@ -16,7 +16,7 @@ Found during T4, for T14:
 
 ## Waiting on the user
 
-- T6: Duo approvals for trillium and nibi masters on altair.
+- None.
 
 ## Preferences
 
@@ -46,7 +46,7 @@ Found during T4, for T14:
 
 ## Workers
 
-None.
+- T7 worker (sonnet): port nf-baitan to nf-outsource in metasmith scope engine/outsource-executor, stub-market tests green.
 
 ## Closed
 
