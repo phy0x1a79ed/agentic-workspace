@@ -6,7 +6,7 @@
 
 ## Current
 
-`node-prep`: prep other nodes so bids don't stick on a greedy optimum.
+`remote-fetch`: download a typed material at the provider.
 
 ## Waiting on the user
 
@@ -20,7 +20,7 @@ Nothing.
 
 ## Stack
 
-- `node-prep`: State: prep is just an offer, biddable placement, posted explicitly by the caller (option a); no own verb; offers stage their own data. Revised 2026-11-22: "we probably do need a prep verb"; offers can be given explicitly to a specific provider; prep = the data-transfer version of that; no count; requires use the type system so sessions don't duplicate a uniref50 transfer. Pending: confirm typed materials (reverses no-props at material level) and `to` semantics. (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
+- `node-prep`: Core closed as `prep-verb` (prep verb, `to`, typed materials). (also: with props gone, a reference DB at different paths on two providers has two ids, so no cross-provider hit; prepping nodes with references lands here) "how other nodes can be prepped so that bids dont get stuck on a greedy optimum."
   - `remote-fetch`: "for something like uniref50, we'd want to be able to run the download remotely as well." A typed material whose source is a download run at the provider, not an rsync from the caller.
   - `globus`: "we need to consider things like globus transfer..." Transfer method between providers (clusters) other than rsync over ssh. "if globus is a provider, then providers are not linked to a box, since globus can initiate transfer between 2 compute providers like sockeye and fir". Choices: globus as a third-party transfer provider bidding on moves between two others (needs per-step bids, deferred in dex-poc) vs. globus as a method inside the destination provider's bid.
 - `discovery`: agents can't find outsource (no AGENTS.md or skill; describe example now in catalog). Agents must pass absolute paths (plugin has no per-call cwd).
@@ -35,6 +35,7 @@ None.
 ## Closed
 
 - `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
+- `prep-verb`: prep verb = directed transfer offer; `to` runs a one-provider round; materials may carry a `type`.
 - `call-walkthrough`: closed through its children.
 - `resources-model`: fixed size as today; peak memory and CPU use are runtime statistics to gather.
 - `offer-shape` (absorbs `cache-default`): transform-shaped, keyless requires/produces, protocol, .env material, stat/commit identity, no props.

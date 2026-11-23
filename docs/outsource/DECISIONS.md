@@ -30,7 +30,7 @@ Child of `call-walkthrough`; absorbs `cache-default`.
   - `metrics`: what bids are scored on, default `[time]`.
   - `resources`: open, see `resources-model`.
 - The environment is a material: a metasmith-style `.env` file (`container: docker://…`). The provider materialises it once, caches it under the file's id, and runs the protocol inside it.
-- No props, at job or material level.
+- No props, at job or material level. Revised by `prep-verb`: a material may carry an optional `type`.
 - Identity follows metasmith, never content: a file is `{path, mtime, origin}`; a plain folder uses its top-level stat and accepts the risk of a nested edit; a folder holding `.git` is its commit hash. A dirty repo keeps its commit-hash id and returns a warning; a false hit on uncommitted changes is accepted. Agent instructions ask for each repo as its own material. DVC pins need no rule.
 - A result's id hashes the protocol and the material ids.
 - Dependencies move as today: the winning provider rsyncs each material it lacks and prices the move into its bid; the plugin compiles the offer into the existing `task` plus `place` steps.
@@ -56,3 +56,19 @@ Child of `call-walkthrough`, which closes with it.
 ## naming (2026-11-22)
 
 The scope moved from `awm/baitan-tune` to `awm/outsource` (branch `feat/outsource`); these docs moved from `docs/baitan-tune` to `docs/outsource`. The session is `outsource-tune`.
+
+## prep-verb (2026-11-22)
+
+Child of `node-prep`.
+
+**Question.** How do other nodes get prepared, so bids do not stay on the one provider that already holds the data (the greedy optimum)?
+
+**User's words.** "I thought we could have prep be a biddable job itself." "we should have offers that ... can be explicitly given to a specific provider, and then a prep would just do the data transfer version of that offer. We don't want count. For the requires version, I think we want to use the type system so that different agent sessions would not duplicate the transfer or something like uniref50." "typed materials and to makes sense".
+
+**Decided.**
+- Prep is posted explicitly by the caller (an agent before a batch). The market does not prep on its own yet.
+- Any offer may name `to: <provider>`. A directed offer still runs a one-provider bid round: the provider bids an ETA or declines with a reason.
+- `prep {requires, to}` is the data-transfer form of a directed offer: no protocol, the provider stages the materials and pulls any `.env` image. No `count`.
+- A material may carry a `type`, a property set that replaces its stat or commit identity, e.g. `{path, type: {db=uniref50, release=2024_01}}`. Every copy of it, on any provider and at any path, has one id, so a holder bids "done" and an in-flight transfer bids "done at T"; two sessions never move it twice. This revises `offer-shape`'s "no props" at the material level only.
+
+**Landed.** Pending build, with `remote-fetch` and `globus`.
