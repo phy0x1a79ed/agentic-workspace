@@ -15,6 +15,7 @@ struct Rig {
 
 const SBATCH: &str = r#"
 echo "sbatch $*" >> $D/calls.log
+case "$*" in *--cpus-per-task=99\ *) echo "sbatch: error: invalid cpus" >&2; exit 1;; esac
 n=$(cat $D/jobid 2>/dev/null || echo 100); n=$((n+1)); echo $n > $D/jobid
 for a; do case $a in --array=*) r=${a#--array=};; esac; script=$a; done
 i=0
@@ -51,10 +52,11 @@ fn rig() -> Rig {
     let cfg = SlurmConfig {
         account: "acct".into(),
         partition: Some("cpu".into()),
-        walltime: "01:00:00".into(),
+        walltime: "05:00:00".into(),
         scratch: dir.path().join("scratch"),
         bin_dir: Some(bin),
         whole_node: false,
+        node_cpus: None,
     };
     let saved = dir.path().join("state/jobs.json");
     Rig { be: SlurmBackend::new(cfg.clone(), Host::default(), saved.clone(), tx), cfg, saved, dir, rx }
@@ -73,7 +75,7 @@ impl Rig {
     }
     fn job(&self, name: &str, cpus: u32, mem_mb: u64, script: &str) -> JobSpec {
         let workdir = self.dir.path().join("work").join(name);
-        JobSpec { promise: name.into(), workdir, script: script.into(), res: Resources { cpus, mem_mb } }
+        JobSpec { promise: name.into(), workdir, script: script.into(), res: Resources { cpus, mem_mb }, est_s: None }
     }
     async fn done(&mut self) -> Done {
         self.rx.recv().await.unwrap()
@@ -99,7 +101,7 @@ fn assert_gated(calls: &[(Instant, String)]) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn burst_makes_at_most_one_call_per_minute() {
+async fn burst_makes_one_call_per_slot() {
     let mut r = rig();
     for i in 0..6 {
         let j = r.job(&format!("j{i}"), 1 + (i % 3) as u32, 1024, "exit 0");
@@ -110,7 +112,9 @@ async fn burst_makes_at_most_one_call_per_minute() {
     for _ in 0..6 {
         r.done().await;
     }
-    assert!(r.count("sbatch") == 3);
+    assert_eq!(r.count("sbatch"), 3);
+    let slots: Vec<_> = r.be.calls().into_iter().filter(|c| c.1.starts_with("slot 3 sbatch")).collect();
+    assert_eq!(slots.len(), 1, "{:?}", r.be.calls());
     assert_gated(&r.be.calls());
 }
 
@@ -126,13 +130,13 @@ async fn five_same_profile_launches_make_one_array() {
     }
     let sb: Vec<_> = r.log().into_iter().filter(|l| l.starts_with("sbatch")).collect();
     assert_eq!(sb.len(), 1, "{sb:?}");
-    for flag in ["--array=0-4", "--nodes=1", "--cpus-per-task=2", "--mem=1024M", "--account=acct", "--partition=cpu", "--time=01:00:00"] {
+    for flag in ["--array=0-4", "--nodes=1", "--cpus-per-task=2", "--mem=1024M", "--account=acct", "--partition=cpu", "--time=05:00:00"] {
         assert!(sb[0].contains(flag), "{flag} missing in {}", sb[0]);
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn two_profiles_make_two_sbatches_a_minute_apart() {
+async fn two_profiles_make_two_sbatches_in_one_call() {
     let mut r = rig();
     for (i, (c, m)) in [(1, 512), (1, 512), (4, 8192)].into_iter().enumerate() {
         let j = r.job(&format!("j{i}"), c, m, "exit 0");
@@ -141,11 +145,58 @@ async fn two_profiles_make_two_sbatches_a_minute_apart() {
     for _ in 0..3 {
         r.done().await;
     }
-    let sb: Vec<_> = r.be.calls().into_iter().filter(|c| c.1.starts_with("sbatch")).collect();
+    let sb: Vec<_> = r.log().into_iter().filter(|l| l.starts_with("sbatch")).collect();
     assert_eq!(sb.len(), 2);
-    assert!(sb[1].0 - sb[0].0 >= GATE);
-    assert!(sb[0].1.contains("--array=0-1") && sb[1].1.contains("--array=0-0"));
-    assert!(sb[1].1.contains("--cpus-per-task=4") && sb[1].1.contains("--mem=8192M"));
+    assert!(sb[0].contains("--array=0-1") && sb[1].contains("--array=0-0"));
+    assert!(sb[1].contains("--cpus-per-task=4") && sb[1].contains("--mem=8192M"));
+    assert_eq!(r.be.calls().iter().filter(|c| c.1.starts_with("slot 2 sbatch")).count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn walltime_is_twice_the_estimate_in_whole_hours_capped_at_the_cluster() {
+    let mut r = rig();
+    let w = |e| r.be.inner.walltime(e);
+    assert_eq!((w(Some(1000.0)), w(Some(5000.0)), w(Some(20000.0)), w(None)), ("1:00:00".into(), "3:00:00".into(), "05:00:00".into(), "05:00:00".into()));
+    // Different walltimes cannot share an array.
+    for (name, est) in [("short", 100.0), ("long", 5000.0), ("short2", 200.0)] {
+        let j = JobSpec { est_s: Some(est), ..r.job(name, 1, 1024, "exit 0") };
+        r.be.launch(j).await.unwrap();
+    }
+    for _ in 0..3 {
+        r.done().await;
+    }
+    let sb: Vec<_> = r.log().into_iter().filter(|l| l.starts_with("sbatch")).collect();
+    assert_eq!(sb.len(), 2, "{sb:?}");
+    assert!(sb[0].contains("--array=0-1") && sb[0].contains("--time=1:00:00"));
+    assert!(sb[1].contains("--array=0-0") && sb[1].contains("--time=3:00:00"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_sbatch_fails_only_its_own_jobs() {
+    let mut r = rig();
+    let (bad, ok) = (r.job("bad", 99, 1024, "exit 0"), r.job("ok", 1, 1024, "exit 0"));
+    r.be.launch(bad).await.unwrap();
+    r.be.launch(ok).await.unwrap();
+    // The first answer is the failed group's, in the slot that submitted both.
+    assert_eq!(r.done().await, ("bad".to_string(), -1));
+    let error = r.be.inner.st.lock().unwrap().error.clone().unwrap();
+    assert!(error.contains("invalid cpus"), "{error}");
+    assert_eq!(r.done().await, ("ok".to_string(), 0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn whole_node_bids_waste_the_idle_cores() {
+    let r = rig();
+    let whole = |node_cpus| {
+        let cfg = SlurmConfig { whole_node: true, node_cpus, ..r.cfg.clone() };
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        SlurmBackend::new(cfg, Host::default(), r.dir.path().join("w.json"), tx)
+    };
+    let res = Resources { cpus: 48, mem_mb: 1024 };
+    assert_eq!(whole(Some(192)).waste(&res), 0.75);
+    assert_eq!(whole(Some(192)).waste(&Resources { cpus: 192, mem_mb: 1 }), 0.0);
+    assert_eq!(whole(None).waste(&res), 0.0);
+    assert_eq!(r.be.waste(&res), 0.0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -168,21 +219,12 @@ async fn every_job_reports_its_exit_code() {
 
 #[tokio::test(start_paused = true)]
 async fn eta_rises_with_worse_fair_share_and_includes_batching_wait() {
-    let mut r = rig();
+    let r = rig();
     let res = Resources { cpus: 1, mem_mb: 1024 };
     let share = |r: &Rig, v: &str| std::fs::write(r.dir.path().join("share.txt"), v).unwrap();
 
-    // Batching wait: two other profiles queued ahead add two gate periods.
-    let empty = r.be.start_eta(&res).await;
-    for (i, c) in [2u32, 3].into_iter().enumerate() {
-        let j = r.job(&format!("q{i}"), c, 1024, "exit 0");
-        r.be.launch(j).await.unwrap();
-    }
-    let loaded = r.be.start_eta(&res).await;
-    assert_eq!(loaded - empty, 2.0 * GATE.as_secs_f64());
-    for _ in 0..2 {
-        r.done().await;
-    }
+    // Batching wait: the hold, before any share is known.
+    assert_eq!(r.be.start_eta(&res).await, MAX_QUEUE_WAIT * 0.25 + HOLD.as_secs_f64());
 
     // Fair-share: a worse factor, once the cache refreshes, gives a longer ETA.
     share(&r, "0.9\n");
@@ -334,14 +376,15 @@ async fn restarted_provider_recovers_persisted_jobs() {
 #[tokio::test(start_paused = true)]
 async fn a_dead_master_fails_calls_at_the_gate_and_shows_in_life() {
     let mut r = rig();
-    std::fs::write(r.dir.path().join("down"), "").unwrap();
+    // A file where the scratch dir belongs fails every call's `mkdir`, as a dead ssh master would.
+    std::fs::write(&r.cfg.scratch, "").unwrap();
     r.be.start_eta(&Resources::default()).await;
     until(|| r.be.calls().len() >= 3).await;
     assert_gated(&r.be.calls());
     let j = r.job("a", 1, 1024, "exit 0");
     r.be.launch(j).await.unwrap();
     assert!(r.be.life("a").await["error"].as_str().is_some_and(|e| !e.is_empty()));
-    std::fs::remove_file(r.dir.path().join("down")).unwrap();
+    std::fs::remove_file(&r.cfg.scratch).unwrap();
     assert_eq!(r.done().await, ("a".to_string(), 0));
     assert!(r.be.life("a").await["state"] == "unknown");
     assert_gated(&r.be.calls());
@@ -362,7 +405,7 @@ async fn mock_submissions() {
     std::fs::write(
         &ssh,
         format!(
-            "#!/bin/sh\nL={}\nn=$(ls $L | wc -l); f=$L/$(printf %03d $n)-$3.sh\necho \"# argv: $*\" > $f; cat >> $f\ngrep -q sbatch $f && echo \"Submitted batch job $((9000+n))\"\ntrue\n",
+            "#!/bin/sh\nL={}\nn=$(ls $L | wc -l); f=$L/$(printf %03d $n)-$3.sh\necho \"# argv: $*\" > $f; cat >> $f\ngrep -o '#sbatch g[0-9]*' $f | while read h k; do echo \"#sbatch $k Submitted batch job $((9000+n))\"; done\ntrue\n",
             log.display()
         ),
     )
@@ -386,6 +429,7 @@ async fn mock_submissions() {
             scratch: format!("/scratch/outsource/{name}").into(),
             bin_dir: None,
             whole_node,
+            node_cpus: whole_node.then_some(192),
         };
         let saved = dir.path().join(format!("{name}/jobs.json"));
         backends.push((name, SlurmBackend::new(cfg, Host::new(Some(name.into())), saved, tx), _rx));
@@ -396,13 +440,13 @@ async fn mock_submissions() {
         for g in 0..3 {
             let w = format!("/scratch/outsource/{name}/work/prodigal-g{}", c * 3 + g);
             let script = format!("prodigal -i genome_{}.fna -a proteins.faa\n", c * 3 + g);
-            be.launch(JobSpec { promise: format!("prodigal-{c}-{g}"), workdir: w.into(), script, res: Resources { cpus: 2, mem_mb: 4096 } })
+            be.launch(JobSpec { promise: format!("prodigal-{c}-{g}"), workdir: w.into(), script, res: Resources { cpus: 2, mem_mb: 4096 }, est_s: Some(600.0) })
                 .await
                 .unwrap();
         }
         let w = format!("/scratch/outsource/{name}/work/diamond-{c}");
         let script = "diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16\n".to_string();
-        be.launch(JobSpec { promise: format!("diamond-{c}"), workdir: w.into(), script, res: Resources { cpus: 16, mem_mb: 65536 } })
+        be.launch(JobSpec { promise: format!("diamond-{c}"), workdir: w.into(), script, res: Resources { cpus: 16, mem_mb: 65536 }, est_s: Some(5400.0) })
             .await
             .unwrap();
     }

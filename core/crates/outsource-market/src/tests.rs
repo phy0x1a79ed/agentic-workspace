@@ -213,6 +213,14 @@ async fn a9_pickers() {
     assert_eq!(picker::pick("robust-z", &axes, &[cached.clone(), better.clone(), third.clone()]), 1);
     assert_eq!(picker::pick("ratio", &axes, &[cached, better, third]), 1);
 
+    // The default axes add `waste`; a column of zeros is neutral in both pickers.
+    let default: Vec<Axis> = serde_json::from_value(json!([{"name": "time", "weight": 1.0}, {"name": "waste", "weight": 0.5}])).unwrap();
+    let tw = |time, waste| vals(&[("time", time), ("waste", waste)]);
+    for picker_name in ["robust-z", "ratio"] {
+        assert_eq!(picker::pick(picker_name, &default, &[tw(12.0, 0.0), tw(10.0, 0.0), tw(50.0, 0.0)]), 1);
+        assert_eq!(picker::pick(picker_name, &default, &[tw(10.0, 0.75), tw(11.0, 0.0), tw(50.0, 0.0)]), 1);
+    }
+
     let time_only = &axes[..1];
     assert_eq!(picker::pick("robust-z", time_only, &[t(12.0), t(10.0), t(50.0)]), 1);
     assert_eq!(picker::pick("robust-z", time_only, &[t(7.0)]), 0);

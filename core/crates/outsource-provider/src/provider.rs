@@ -636,6 +636,7 @@ impl Inner {
                 let eta = if work > 0.0 { self.backend.start_eta(&a.set.resources).await } else { 0.0 };
                 let mut values: BTreeMap<String, f64> = a.set.axes.iter().map(|x| (x.name.clone(), 0.0)).collect();
                 values.insert(TIME_AXIS.into(), time + eta);
+                values.insert(WASTE_AXIS.into(), self.backend.waste(&a.set.resources));
                 BidArgs { promise, provider: self.cfg.id.clone(), values: Some(values), hit, reason: None }
             }
             Err(reason) => {
@@ -864,7 +865,7 @@ impl Inner {
             "cargo" => self.compile_cargo(step)?,
             _ => self.compile_task(set, step, resolved, &workdir)?,
         };
-        let code = self.exec(promise, &workdir, script, &set.resources).await?;
+        let code = self.exec(promise, &workdir, script, &set.resources, step.spec.get("est").and_then(Value::as_f64)).await?;
         let stats = self.host.sh(&format!("cat {} 2>/dev/null || true", q(&workdir.join("stats").to_string_lossy()))).await;
         if let Some(run) = stats.ok().as_deref().and_then(parse_stats) {
             self.state.lock().unwrap().run_stats.entry(promise.to_string()).or_default().merge(&run);
@@ -897,10 +898,10 @@ impl Inner {
 
     /// Hands `script` to the backend as `workdir/run.sh` and returns its exit code. Backends
     /// report a work dir that already holds `exit` (a job from before a restart) without rerunning it.
-    async fn exec(&self, promise: &str, workdir: &Path, script: String, res: &Resources) -> Result<i32, String> {
+    async fn exec(&self, promise: &str, workdir: &Path, script: String, res: &Resources, est_s: Option<f64>) -> Result<i32, String> {
         let (tx, rx) = oneshot::channel();
         self.jobs.lock().unwrap().insert(promise.to_string(), tx);
-        let spec = JobSpec { promise: promise.to_string(), workdir: workdir.to_path_buf(), script, res: res.clone() };
+        let spec = JobSpec { promise: promise.to_string(), workdir: workdir.to_path_buf(), script, res: res.clone(), est_s };
         if let Err(e) = self.backend.launch(spec).await {
             self.jobs.lock().unwrap().remove(promise);
             return Err(format!("launch failed: {e}"));

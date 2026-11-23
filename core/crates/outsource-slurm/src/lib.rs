@@ -18,8 +18,8 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, Instant};
 
-/// Minimum spacing between calls to one cluster, sbatch included.
-const GATE: Duration = Duration::from_secs(60);
+/// Minimum spacing between calls to one cluster. Each call does everything that is due.
+const GATE: Duration = Duration::from_secs(10);
 /// A queue waits this long after its first job so a burst of launches lands in one array.
 const HOLD: Duration = Duration::from_secs(2);
 /// How long a task may stay unlisted by `squeue` with no `exit` before it counts as failed.
@@ -30,13 +30,15 @@ const MAX_QUEUE_WAIT: f64 = 3600.0;
 const PER_PENDING: f64 = 5.0;
 /// Fair-share factor assumed before the first `sshare` answer.
 const DEFAULT_SHARE: f64 = 0.5;
+/// Share of the cap a job's walltime may reach: twice its estimate.
+const WALLTIME_FACTOR: f64 = 2.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlurmConfig {
     pub account: String,
     #[serde(default)]
     pub partition: Option<String>,
-    /// `--time` for every array, e.g. `02:00:00`.
+    /// Longest `--time` an array gets, e.g. `02:00:00`; also the walltime of a job with no estimate.
     pub walltime: String,
     /// On the cluster: holds each batch's list file and task script, and every call runs from it.
     pub scratch: PathBuf,
@@ -46,13 +48,13 @@ pub struct SlurmConfig {
     /// The cluster schedules whole nodes and refuses `--mem` (trillium), so arrays name no CPU or memory.
     #[serde(default)]
     pub whole_node: bool,
+    /// Cores of a whole node: what a job is allocated there, for the `waste` bid axis.
+    #[serde(default)]
+    pub node_cpus: Option<u32>,
 }
 
-type Profile = (u32, u64);
-
-fn profile(r: &Resources) -> Profile {
-    (r.cpus, r.mem_mb)
-}
+/// What one array shares: cpus, memory and `--time`.
+type Profile = (u32, u64, String);
 
 enum Slot {
     Queued,
@@ -102,15 +104,6 @@ struct Inner {
     wake: Notify,
 }
 
-enum Plan {
-    Submit(usize),
-    Kill,
-    Tick,
-    Sshare,
-    At(Instant),
-    Idle,
-}
-
 pub struct SlurmBackend {
     inner: Arc<Inner>,
     tasks: Vec<JoinHandle<()>>,
@@ -140,8 +133,25 @@ impl Drop for SlurmBackend {
     }
 }
 
+fn due_at(fetched: Option<Instant>, now: Instant) -> Instant {
+    fetched.map_or(now, |t| t + GATE)
+}
+
 fn stale(fetched: Option<Instant>, now: Instant) -> bool {
-    fetched.is_none_or(|t| now >= t + GATE)
+    due_at(fetched, now) <= now
+}
+
+/// Seconds in a Slurm time limit: `[d-]h:m:s`, `m:s` or minutes.
+fn limit_secs(t: &str) -> Option<u64> {
+    let (days, rest) = t.split_once('-').map_or((0, t), |(d, r)| (d.parse().unwrap_or(0), r));
+    let f: Vec<u64> = rest.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let secs = match f[..] {
+        [m] => m * 60,
+        [m, s] => m * 60 + s,
+        [h, m, s] => h * 3600 + m * 60 + s,
+        _ => return None,
+    };
+    Some(days * 86400 + secs)
 }
 
 impl State {
@@ -156,32 +166,20 @@ impl State {
         self.jobs.values().any(|(_, s)| matches!(s, Slot::Sent(_)))
     }
 
-    fn plan(&self, now: Instant) -> Plan {
-        let due = self.queues.iter().position(|q| q.since + HOLD <= now);
-        // Outstanding tasks keep the squeue cache fresh: that is how a vanished task is noticed.
-        let sq = (self.wanted || self.has_sent()) && stale(self.squeue.as_ref().map(|c| c.0), now);
-        let sh = self.wanted && stale(self.share.as_ref().map(|c| c.0), now);
-        let action = if let Some(i) = due {
-            Plan::Submit(i)
-        } else if !self.kills.is_empty() {
-            Plan::Kill
-        } else if sq {
-            Plan::Tick
-        } else if sh {
-            Plan::Sshare
-        } else {
-            let next_ok = self.next_ok.unwrap_or(now);
-            let hold = self.queues.iter().map(|q| q.since + HOLD).min();
-            let refresh = self.squeue.as_ref().filter(|_| self.has_sent()).map(|c| c.0 + GATE);
-            return match hold.into_iter().chain(refresh).min() {
-                Some(t) => Plan::At(t.max(next_ok)),
-                None => Plan::Idle,
-            };
-        };
-        match self.next_ok {
-            Some(t) if t > now => Plan::At(t),
-            _ => action,
-        }
+    /// The `squeue` listing is due: outstanding tasks keep it fresh, which is how a vanished task
+    /// is noticed.
+    fn want_squeue(&self) -> bool {
+        self.wanted || self.has_sent()
+    }
+
+    /// When the next slot is worth taking, `None` if nothing is due ever.
+    fn next_slot(&self, now: Instant) -> Option<Instant> {
+        let kills = (!self.kills.is_empty()).then_some(now);
+        let holds = self.queues.iter().map(|q| q.since + HOLD).min();
+        let squeue = self.want_squeue().then(|| due_at(self.squeue.as_ref().map(|c| c.0), now));
+        let share = self.wanted.then(|| due_at(self.share.as_ref().map(|c| c.0), now));
+        let t = [kills, holds, squeue, share].into_iter().flatten().min()?;
+        Some(t.max(self.next_ok.unwrap_or(now)))
     }
 }
 
@@ -189,16 +187,61 @@ impl State {
 /// nothing else can reach the cluster.
 async fn schedule(inner: Arc<Inner>) {
     loop {
-        let plan = inner.st.lock().unwrap().plan(Instant::now());
-        match plan {
-            Plan::Submit(i) => inner.submit(i).await,
-            Plan::Kill => inner.cancel().await,
-            Plan::Tick => inner.tick().await,
-            Plan::Sshare => inner.refresh_share().await,
-            Plan::At(t) => tokio::select! { _ = sleep_until(t) => {}, _ = inner.wake.notified() => {} },
-            Plan::Idle => inner.wake.notified().await,
+        let next = inner.st.lock().unwrap().next_slot(Instant::now());
+        match next {
+            Some(t) if t <= Instant::now() => inner.slot().await,
+            Some(t) => tokio::select! { _ = sleep_until(t) => {}, _ = inner.wake.notified() => {} },
+            None => inner.wake.notified().await,
         }
     }
+}
+
+/// What came back from one slot script, split by its marker lines.
+#[derive(Default)]
+struct Reply {
+    /// `sbatch` answer per group key: the job id or Slurm's error text.
+    sbatch: HashMap<String, String>,
+    /// `<jobid>_<index> <state>`; `None` when `squeue` itself failed.
+    queue: Option<HashMap<String, String>>,
+    exits: HashMap<String, i32>,
+    share: Option<f64>,
+}
+
+fn parse_reply(text: &str) -> Reply {
+    let mut r = Reply::default();
+    let mut section = "";
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("#sbatch ") {
+            if let Some((key, ans)) = rest.split_once(' ') {
+                r.sbatch.insert(key.into(), ans.trim().into());
+            }
+        } else if let Some(name) = line.strip_prefix('#') {
+            section = match name {
+                "queue" => {
+                    r.queue = Some(HashMap::new());
+                    "queue"
+                }
+                "exits" => "exits",
+                "share" => "share",
+                _ => "",
+            };
+        } else if let Some((k, v)) = line.split_once(' ').map(|(k, v)| (k.trim(), v.trim())) {
+            match (section, r.queue.as_mut()) {
+                ("queue", Some(m)) => {
+                    m.insert(k.into(), v.into());
+                }
+                ("exits", _) => {
+                    if let Ok(c) = v.parse() {
+                        r.exits.insert(k.into(), c);
+                    }
+                }
+                _ => {}
+            }
+        } else if section == "share" {
+            r.share = line.trim().parse().ok().or(r.share);
+        }
+    }
+    r
 }
 
 impl Inner {
@@ -217,7 +260,7 @@ impl Inner {
         }
     }
 
-    /// Reloads persisted tasks; the next tick settles them.
+    /// Reloads persisted tasks; the next slot settles them.
     fn recover(&self) {
         let Ok(bytes) = std::fs::read(&self.saved) else { return };
         let Ok(saved) = serde_json::from_slice::<Vec<Saved>>(&bytes) else { return };
@@ -236,44 +279,26 @@ impl Inner {
         std::iter::once(q(&prog)).chain(args.iter().map(|a| q(a))).collect::<Vec<_>>().join(" ")
     }
 
-    /// One gated call: `body` runs on the cluster from scratch, as one ssh. `label` is what
-    /// `calls` records.
-    async fn call(&self, label: String, body: &str) -> anyhow::Result<String> {
-        {
-            let mut st = self.st.lock().unwrap();
-            let now = Instant::now();
-            st.next_ok = Some(now + GATE);
-            st.calls.push((now, label.clone()));
-        }
-        // sockeye refuses an sbatch run from /arc/home, so every call runs from scratch.
-        let scratch = q(&self.cfg.scratch.to_string_lossy());
-        let out = self.host.sh(&format!("set -e\nmkdir -p {scratch} && cd {scratch}\n{body}")).await;
-        let mut st = self.st.lock().unwrap();
-        match out {
-            Ok(text) => {
-                st.error = None;
-                Ok(text)
+    /// `--time` for a job: twice its estimate rounded up to whole hours, never past the cluster
+    /// cap; the cap itself when there is no estimate.
+    fn walltime(&self, est_s: Option<f64>) -> String {
+        let cap = limit_secs(&self.cfg.walltime);
+        match (est_s.filter(|e| *e > 0.0), cap) {
+            (Some(e), Some(cap)) => {
+                let hours = (WALLTIME_FACTOR * e / 3600.0).ceil().max(1.0) as u64;
+                if hours * 3600 < cap { format!("{hours}:00:00") } else { self.cfg.walltime.clone() }
             }
-            Err(e) => {
-                let e = format!("{label}: {e}");
-                tracing::warn!("{e}");
-                st.error = Some(e.clone());
-                bail!(e)
-            }
+            _ => self.cfg.walltime.clone(),
         }
     }
 
-    fn fail(&self, jobs: Vec<JobSpec>) {
-        let mut st = self.st.lock().unwrap();
-        for j in jobs {
-            if st.jobs.remove(&j.promise).is_some() {
-                let _ = self.done.send((j.promise, -1));
-            }
-        }
+    fn profile(&self, job: &JobSpec) -> Profile {
+        let (cpus, mem) = if self.cfg.whole_node { (0, 0) } else { (job.res.cpus, job.res.mem_mb) };
+        (cpus, mem, self.walltime(job.est_s))
     }
 
-    async fn submit(&self, idx: usize) {
-        let queue = self.st.lock().unwrap().queues.remove(idx);
+    /// The script for one array: its files, then one `sbatch` answering `#sbatch <key> <answer>`.
+    fn batch(&self, key: &str, queue: &Queue) -> String {
         let dir = self.cfg.scratch.join(format!("batch-{}", outsource_proto::new_id()));
         let list: String = queue.jobs.iter().map(|j| format!("{}\n", j.workdir.display())).collect();
         let list_path = dir.join("workdirs");
@@ -293,13 +318,14 @@ impl Inner {
         }
         body += &write(&list_path, &list);
         body += &write(&script_path, &task);
+        let (cpus, mem, time) = &queue.profile;
         let mut args = vec![format!("--array=0-{}", queue.jobs.len() - 1), "--nodes=1".into()];
         if !self.cfg.whole_node {
-            args.extend([format!("--cpus-per-task={}", queue.profile.0), format!("--mem={}M", queue.profile.1)]);
+            args.extend([format!("--cpus-per-task={cpus}"), format!("--mem={mem}M")]);
         }
         args.extend([
             format!("--account={}", self.cfg.account),
-            format!("--time={}", self.cfg.walltime),
+            format!("--time={time}"),
             "--job-name=outsource".into(),
             format!("--output={}/slurm-%A_%a.out", dir.display()),
         ]);
@@ -307,66 +333,133 @@ impl Inner {
             args.push(format!("--partition={p}"));
         }
         args.push(script_path.display().to_string());
-        body += &self.cmd("sbatch", &args);
-        let out = self.call(format!("sbatch {}", args.join(" ")), &body).await;
-        let id = out.ok().and_then(|o| o.split_whitespace().last().and_then(|t| t.parse::<u64>().ok()));
-        let Some(id) = id else { return self.fail(queue.jobs) };
-        {
+        body + &format!("r=$({} 2>&1 | tr '\\n' ' ')\necho \"#sbatch {key} $r\"\n", self.cmd("sbatch", &args))
+    }
+
+    /// One slot: everything due, as one script in one ssh. Sections run in order and none stops
+    /// the others: pending `scancel`, one `sbatch` per due group, the `squeue` and exit-file
+    /// listing, `sshare` when stale. Slurm gives a login node no completion event and
+    /// compute-node writes on a parallel filesystem raise no inotify event, so the listing is
+    /// also the completion check.
+    async fn slot(&self) {
+        let now = Instant::now();
+        let (kills, queues, sent, share) = {
             let mut st = self.st.lock().unwrap();
-            for (i, j) in queue.jobs.iter().enumerate() {
-                let key = format!("{id}_{i}");
-                match st.jobs.get_mut(&j.promise) {
-                    Some(e) => e.1 = Slot::Sent(key),
-                    None => st.kills.push(key), // killed while sbatch was running
-                }
-            }
-            self.persist(&st);
-        }
-    }
-
-    async fn cancel(&self) {
-        let keys = std::mem::take(&mut self.st.lock().unwrap().kills);
-        let _ = self.call(format!("scancel {}", keys.join(" ")), &self.cmd("scancel", &keys)).await;
-    }
-
-    /// One call that runs `squeue`, then reads the `exit` file of every submitted task: a task
-    /// with an `exit` is done. Slurm gives a login node no completion event and compute-node
-    /// writes on a parallel filesystem raise no inotify event, so this is the completion check.
-    async fn tick(&self) {
-        let sent: Vec<(String, PathBuf)> = {
-            let st = self.st.lock().unwrap();
-            st.jobs
+            let due: Vec<Queue> = {
+                let (due, rest) = std::mem::take(&mut st.queues).into_iter().partition(|q| q.since + HOLD <= now);
+                st.queues = rest;
+                due
+            };
+            let sent: Vec<(String, PathBuf)> = st
+                .jobs
                 .values()
                 .filter_map(|(w, s)| match s {
                     Slot::Sent(k) => Some((k.clone(), w.join("exit"))),
                     Slot::Queued => None,
                 })
-                .collect()
+                .collect();
+            let share = st.wanted && stale(st.share.as_ref().map(|c| c.0), now);
+            (std::mem::take(&mut st.kills), due, sent, share)
         };
-        let mut body = self.cmd("squeue", &["-h", "-r", "--me", "-o", "%i %T"].map(String::from)) + "\necho '#exits'\n";
+        let mut body = String::new();
+        if !kills.is_empty() {
+            body += &(self.cmd("scancel", &kills) + "\n");
+        }
+        let keyed: Vec<(String, Queue)> = queues.into_iter().enumerate().map(|(i, q)| (format!("g{i}"), q)).collect();
+        for (key, queue) in &keyed {
+            body += &self.batch(key, queue);
+        }
+        let squeue = self.cmd("squeue", &["-h", "-r", "--me", "-o", "%i %T"].map(String::from));
+        body += &format!("l=$({squeue}) && {{ echo '#queue'; echo \"$l\"; }}\necho '#exits'\n");
         for (key, exit) in &sent {
             let e = q(&exit.to_string_lossy());
             body += &format!("[ -f {e} ] && echo \"{key} $(cat {e})\"\n");
         }
-        body += "exit 0\n";
-        let Ok(text) = self.call("squeue -h -r --me -o %i %T".into(), &body).await else { return };
-        let (queue, exits) = text.split_once("#exits\n").unwrap_or((&text, ""));
-        let map: HashMap<String, String> = queue
-            .lines()
-            .filter_map(|l| l.split_once(' '))
-            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-            .collect();
-        let exits: HashMap<&str, i32> =
-            exits.lines().filter_map(|l| l.split_once(' ')).filter_map(|(k, c)| Some((k, c.trim().parse().ok()?))).collect();
+        if share {
+            // `$USER` expands on the cluster, where the account name differs from this host's.
+            let args = ["-h", "-P", "-A", &self.cfg.account, "-o", "FairShare"].map(String::from);
+            body += &format!("s=$({} -u \"$USER\") && {{ echo '#share'; echo \"$s\"; }}\n", self.cmd("sshare", &args));
+        }
+        let label = format!("slot {} sbatch, {} scancel, {} tracked", keyed.len(), kills.len(), sent.len());
+        let Ok(text) = self.call(label, &body).await else {
+            // The slot's outcome is unknown, so keep the jobs and retry them next slot.
+            let mut st = self.st.lock().unwrap();
+            st.kills.extend(kills);
+            st.queues.extend(keyed.into_iter().map(|(_, q)| q));
+            return;
+        };
+        self.settle(parse_reply(&text), keyed, share);
+    }
+
+    /// One gated call: `body` runs on the cluster from scratch, as one ssh. `label` is what
+    /// `calls` records.
+    async fn call(&self, label: String, body: &str) -> anyhow::Result<String> {
+        {
+            let mut st = self.st.lock().unwrap();
+            let now = Instant::now();
+            st.next_ok = Some(now + GATE);
+            st.calls.push((now, label.clone()));
+        }
+        // sockeye refuses an sbatch run from /arc/home, so every call runs from scratch. No `set -e`:
+        // a failing section must not skip the rest.
+        let scratch = q(&self.cfg.scratch.to_string_lossy());
+        let out = self.host.sh(&format!("mkdir -p {scratch} && cd {scratch} || exit 1\n{body}exit 0\n")).await;
+        let mut st = self.st.lock().unwrap();
+        match out {
+            Ok(text) => {
+                st.error = None;
+                Ok(text)
+            }
+            Err(e) => {
+                let e = format!("{label}: {e}");
+                tracing::warn!("{e}");
+                st.error = Some(e.clone());
+                bail!(e)
+            }
+        }
+    }
+
+    fn settle(&self, reply: Reply, queues: Vec<(String, Queue)>, share_asked: bool) {
         let now = Instant::now();
         let mut st = self.st.lock().unwrap();
+        for (key, queue) in queues {
+            let id = reply.sbatch.get(&key).and_then(|a| a.strip_prefix("Submitted batch job ")).and_then(|t| t.trim().parse::<u64>().ok());
+            let Some(id) = id else {
+                match reply.sbatch.get(&key) {
+                    // Slurm answered with an error: the group's jobs fail with its text.
+                    Some(err) => {
+                        tracing::warn!("sbatch: {err}");
+                        st.error = Some(format!("sbatch: {err}"));
+                        for j in &queue.jobs {
+                            if st.jobs.remove(&j.promise).is_some() {
+                                let _ = self.done.send((j.promise.clone(), -1));
+                            }
+                        }
+                    }
+                    // No answer at all: the script ended before it; try the group again.
+                    None => st.queues.push(queue),
+                }
+                continue;
+            };
+            for (i, j) in queue.jobs.iter().enumerate() {
+                let task = format!("{id}_{i}");
+                match st.jobs.get_mut(&j.promise) {
+                    Some(e) => e.1 = Slot::Sent(task),
+                    None => st.kills.push(task), // killed while sbatch was running
+                }
+            }
+        }
+        if share_asked {
+            let f = reply.share.unwrap_or(DEFAULT_SHARE).clamp(0.0, 1.0);
+            st.share = Some((now, f));
+        }
         let mut ended: Vec<(PromiseId, i32)> = vec![];
         let mut missing = HashMap::new();
         for (promise, (_, slot)) in &st.jobs {
             let Slot::Sent(key) = slot else { continue };
-            if let Some(&code) = exits.get(key.as_str()) {
+            if let Some(&code) = reply.exits.get(key.as_str()) {
                 ended.push((promise.clone(), code));
-            } else if !map.contains_key(key) {
+            } else if reply.queue.as_ref().is_some_and(|m| !m.contains_key(key)) {
                 // Unlisted with no `exit`: walltime, OOM or node loss. squeue can omit a task just
                 // submitted, and a compute node's `exit` reaches the login node late on a shared
                 // filesystem, so a task fails only once it stays missing past the grace.
@@ -378,30 +471,18 @@ impl Inner {
                 }
             }
         }
-        if !ended.is_empty() {
-            for (promise, code) in ended {
-                st.jobs.remove(&promise);
-                let _ = self.done.send((promise, code));
-            }
-            self.persist(&st);
+        for (promise, _) in &ended {
+            st.jobs.remove(promise);
         }
-        st.squeue = Some((now, map));
-        st.missing = missing;
-        st.wanted &= stale(st.share.as_ref().map(|c| c.0), now);
-    }
-
-    async fn refresh_share(&self) {
-        // `$USER` expands on the cluster, where the account name differs from this host's.
-        let args = ["-h", "-P", "-A", &self.cfg.account, "-o", "FairShare"].map(String::from);
-        let body = format!("{} -u \"$USER\"", self.cmd("sshare", &args));
-        let out = self.call(format!("sshare {}", args.join(" ")), &body).await;
-        let mut st = self.st.lock().unwrap();
-        if let Ok(text) = out {
-            let f = text.lines().rev().find_map(|l| l.trim().parse::<f64>().ok());
-            st.share = Some((Instant::now(), f.unwrap_or(DEFAULT_SHARE).clamp(0.0, 1.0)));
+        for end in ended {
+            let _ = self.done.send(end);
         }
-        let now = Instant::now();
-        st.wanted &= stale(st.squeue.as_ref().map(|c| c.0), now) || stale(st.share.as_ref().map(|c| c.0), now);
+        if let Some(map) = reply.queue {
+            st.squeue = Some((now, map));
+            st.missing = missing;
+        }
+        st.wanted = false;
+        self.persist(&st);
     }
 }
 
@@ -409,9 +490,8 @@ impl Inner {
 impl Backend for SlurmBackend {
     /// Queue wait plus batching wait, from the caches only. Queue wait is
     /// `MAX_QUEUE_WAIT * (1 - fair-share)^2` plus `PER_PENDING` per own pending task. Batching
-    /// wait is the time to this profile's sbatch slot: the hold, the gate, and one gate period
-    /// for every other profile queued ahead.
-    async fn start_eta(&self, res: &Resources) -> f64 {
+    /// wait is the time to the next slot: the hold of the oldest queued launch, or the gate.
+    async fn start_eta(&self, _res: &Resources) -> f64 {
         let now = Instant::now();
         let (queue_wait, batch_wait, want) = {
             let mut st = self.inner.st.lock().unwrap();
@@ -422,17 +502,9 @@ impl Backend for SlurmBackend {
                 .as_ref()
                 .map_or(0, |c| c.1.values().filter(|s| *s == "PENDING").count());
             let queue_wait = MAX_QUEUE_WAIT * (1.0 - share).powi(2) + PER_PENDING * pending as f64;
-            let me = profile(res);
-            let ready = st
-                .queues
-                .iter()
-                .find(|q| q.profile == me)
-                .map_or(now, |q| q.since)
-                + HOLD;
+            let ready = st.queues.iter().map(|q| q.since).min().unwrap_or(now) + HOLD;
             let slot = ready.max(st.next_ok.unwrap_or(now));
-            let ahead = st.queues.iter().filter(|q| q.profile != me).count() as u32;
-            let batch_wait = (slot - now) + GATE * ahead;
-            (queue_wait, batch_wait.as_secs_f64(), want)
+            (queue_wait, (slot - now).as_secs_f64(), want)
         };
         if want {
             self.inner.wake.notify_one();
@@ -440,7 +512,15 @@ impl Backend for SlurmBackend {
         queue_wait + batch_wait
     }
 
-    /// A promise already submitted (recovered from `jobs.json`) is left to the tick.
+    /// Whole-node clusters allocate `node_cpus` whatever the job asks for.
+    fn waste(&self, res: &Resources) -> f64 {
+        match self.inner.cfg.node_cpus.filter(|_| self.inner.cfg.whole_node) {
+            Some(node) => (1.0 - res.cpus as f64 / node as f64).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    }
+
+    /// A promise already submitted (recovered from `jobs.json`) is left to the next slot.
     async fn launch(&self, job: JobSpec) -> anyhow::Result<()> {
         {
             let mut st = self.inner.st.lock().unwrap();
@@ -448,7 +528,7 @@ impl Backend for SlurmBackend {
                 return Ok(());
             }
             st.jobs.insert(job.promise.clone(), (job.workdir.clone(), Slot::Queued));
-            let p = profile(&job.res);
+            let p = self.inner.profile(&job);
             match st.queues.iter_mut().find(|q| q.profile == p) {
                 Some(q) => q.jobs.push(job),
                 None => st.queues.push(Queue { profile: p, since: Instant::now(), jobs: vec![job] }),
