@@ -13,6 +13,7 @@ pub fn command() -> Command {
             "Run this node's service: its providers (~/.outsource/provider.toml) on ~/.outsource/provider.sock, and its entry, which dials the links in ~/.outsource/outsource.toml.",
         ))
         .subcommand(Command::new("attach").about("Bridge stdio to this node's providers, as a link for another node's entry."))
+        .subcommand(Command::new("connect").about("Bridge stdio to this node's entry, for a Nextflow plugin."))
         .subcommand(Command::new("mcp").about("Serve the caller verbs over MCP on stdio (no watch)."))
         .subcommand(Command::new("http").about("Serve POST /invoke (no watch).").arg(Arg::new("addr").long("addr").default_value("127.0.0.1:7890")));
     surfaces::clap_verbs(roles)
@@ -32,6 +33,7 @@ pub async fn run(m: ArgMatches) -> anyhow::Result<()> {
             roles::serve(outsource_market::Market::new(&roles::node()), cfg.socket.unwrap_or_else(roles::default_socket), cfg.links).await
         }
         "attach" => roles::bridge(roles::provider_socket()).await,
+        "connect" => roles::bridge(roles::default_socket()).await,
         "mcp" => surfaces::mcp_stdio(Arc::new(roles::client(&caller_name()).await?)).await,
         "http" => {
             let client = Arc::new(roles::client(&caller_name()).await?);

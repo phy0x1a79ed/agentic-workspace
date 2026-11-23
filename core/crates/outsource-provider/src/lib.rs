@@ -13,7 +13,7 @@ mod serve;
 
 pub use backend::{Backend, Done, DoneTx, JobSpec};
 pub use config::ProviderConfig;
-pub use host::Host;
+pub use host::{Host, Ran};
 pub use identity::{identify, Probed};
 pub use jobs::{find_cargo, is_local_route, q};
 pub use local::LocalBackend;

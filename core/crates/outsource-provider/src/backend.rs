@@ -17,6 +17,8 @@ pub struct JobSpec {
     /// The content of `run.sh`.
     pub script: String,
     pub res: Resources,
+    /// The step's own runtime estimate in seconds, when the offer gave one.
+    pub est_s: Option<f64>,
 }
 
 /// A job that ended: its promise and exit code. Each backend sends these on the channel it was
@@ -54,6 +56,10 @@ pub fn write_json(path: &Path, value: &impl serde::Serialize) -> std::io::Result
 pub trait Backend: Send + Sync {
     /// Seconds until a job with these resources could start: queue wait plus any batching wait.
     async fn start_eta(&self, res: &Resources) -> f64;
+    /// Share of the allocated cores this job would leave idle; 0 unless the backend rounds up.
+    fn waste(&self, _res: &Resources) -> f64 {
+        0.0
+    }
     /// Hands the job over. Returns at once; completion arrives as a `Done`.
     async fn launch(&self, job: JobSpec) -> anyhow::Result<()>;
     /// Sign of life for a running job, from what the backend already knows (process alive,

@@ -9,6 +9,13 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+/// What a script run printed, and whether it exited zero.
+pub struct Ran {
+    pub ok: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Host {
     ssh: Option<String>,
@@ -41,6 +48,15 @@ impl Host {
 
     /// Runs `script` there and returns its stdout. Dropping the future kills the run.
     pub async fn sh(&self, script: &str) -> anyhow::Result<String> {
+        let ran = self.run(script).await?;
+        if !ran.ok {
+            bail!("{}", ran.stderr.trim());
+        }
+        Ok(ran.stdout)
+    }
+
+    /// Like `sh`, but a script that exits nonzero still returns what it printed.
+    pub async fn run(&self, script: &str) -> anyhow::Result<Ran> {
         let mut child = self
             .command()
             .stdin(Stdio::piped())
@@ -52,11 +68,15 @@ impl Host {
         let feed = async move { stdin.write_all(script.as_bytes()).await };
         let (fed, out) = tokio::join!(feed, child.wait_with_output());
         let out = out?;
-        if !out.status.success() {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        let ran = Ran {
+            ok: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        };
+        if ran.ok {
+            fed?;
         }
-        fed?;
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        Ok(ran)
     }
 
     /// The regular files under `path` (a symlink at `path` itself is followed) as relative path

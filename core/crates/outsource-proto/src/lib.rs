@@ -476,9 +476,14 @@ impl Default for Resources {
 }
 
 pub const TIME_AXIS: &str = "time";
+/// Share of the allocated cores a job leaves idle: `1 - requested / allocated`.
+pub const WASTE_AXIS: &str = "waste";
 
 fn default_axes() -> Vec<Axis> {
-    vec![Axis { name: TIME_AXIS.into(), weight: 1.0, higher_better: false }]
+    vec![
+        Axis { name: TIME_AXIS.into(), weight: 1.0, higher_better: false },
+        Axis { name: WASTE_AXIS.into(), weight: 0.5, higher_better: false },
+    ]
 }
 fn default_picker() -> String {
     "robust-z".into()

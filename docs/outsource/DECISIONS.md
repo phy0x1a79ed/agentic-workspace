@@ -143,4 +143,29 @@ Child of `node-prep`, which closes with it.
 - Shared market state is the same at every entry. Holdings and caches live at the providers. The vocabulary syncs through the providers by union.
 - Replaces the single mizar market that started providers over ssh (dex-poc).
 
-**Landed.** Built on `feat/outsource` 2026-11-23, release 4, pending deploy. The entry's reach comes from the user edges in `edges.yml`. A call with `peer=<node>` reads its paths on that node.
+**Landed.** Release 4 dfa5a2b9, live 2026-11-23. An altair-entry offer ran on fir and returned. Placement: outsource joined the `core` package in cloud `homelab/inventory/group_vars/all/plugins.yml` (cloud dev a8455a5). The entry's reach comes from the user edges in `edges.yml`. A call with `peer=<node>` reads its paths on that node.
+
+## capella-provider — 2026-11-23
+
+**Question.** Should capella stay a provider when it is awake?
+
+**User's words.** "capella is an opportunistic provider, yes"
+
+**Design.** capella runs an entry and a provider like any agent host. It bids only while it is awake. Nothing wakes it for a job. It gets the service from the `core` package the next time its awm config is applied.
+
+**Landed.** No code. Cloud dev a8455a5 places it.
+
+## slurm-vanilla — 2026-11-23
+
+**Question.** How should the Slurm provider batch and pace its cluster calls, and treat whole-node clusters (dex-poc `arrays`)?
+
+**User's words.** "I think a provider that optimizes against slurm should be pretty vanilla. Nothing fancy here." "lets go to 10s delay for ssh calls per cluster -> should still aim to be much lower, ie when recieving 1000s of jobs, do not submit 1 at a time" "5 should be a soft limit -> it misses bids on efficiency rather than straight reject. use the market system"
+
+**Design.**
+- At most one ssh call per cluster per 10 s (was 60 s). metasmith's Slurm preset polls every 10 s and submits at 1 per 5 s.
+- Each call does everything due: cancels, one `sbatch` array per (cpus, mem, walltime) group, the queue and exit-file listing, and `sshare` when stale. A failed `sbatch` fails only its own jobs, with Slurm's error text.
+- No throttle of our own. Slurm's limits apply, and the queue-wait bid grows with our own pending jobs.
+- Walltime is about 2× the job's estimate, capped at the cluster setting.
+- Whole-node clusters stay open to every job. Each bid carries a `waste` axis (share of allocated cores left idle), and the default axes score it, so waste loses bids instead of being refused. Packing is out.
+
+**Landed.** Plan T1–T4 (plan file abstract-munching-magpie), pending.

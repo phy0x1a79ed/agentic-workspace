@@ -298,7 +298,8 @@ async fn a5_imports_agree_across_providers_and_rebuilds_hit() {
     for who in ["a", "b"] {
         let bid = m.bid(who, "p", &rebuild("2.1")).await;
         assert_eq!(bid.hit, Some(Hit::Done));
-        assert_eq!(bid.values.unwrap()["time"], 0.0);
+        let v = bid.values.unwrap();
+        assert_eq!((v["time"], v["waste"]), (0.0, 0.0));
     }
     m.award("b", "p", &rebuild("2.1"));
     let o = m.settle("p").await;
