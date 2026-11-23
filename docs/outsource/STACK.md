@@ -48,7 +48,7 @@ Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89
 
 ## Workers
 
-None.
+- T1–T3 worker (sonnet), started 2026-11-23: batched 10 s Slurm slot, `waste` axis, `outsource connect`. Commits on feat/outsource, built on altair.
 
 ## Closed
 
