@@ -1,4 +1,4 @@
-//! outsource provider runtime: bids, the declared-identity cache, job kinds and the local backend.
+//! outsource provider runtime: bids, the declared-identity cache, job kinds, the local backend and the host that entries attach to.
 
 pub mod backend;
 mod config;
@@ -18,7 +18,7 @@ pub use identity::{identify, Probed};
 pub use jobs::{find_cargo, is_local_route, q};
 pub use local::LocalBackend;
 pub use provider::{DoneRx, Provider};
-pub use serve::serve;
+pub use serve::Hosted;
 
 #[cfg(test)]
 mod tests;

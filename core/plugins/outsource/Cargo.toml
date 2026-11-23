@@ -1,6 +1,6 @@
 [package]
 name = "awm-plugin-outsource"
-description = "The outsource binary: market, provider, connect and caller surfaces; the awm feature adds the awm plugin mode."
+description = "The outsource binary: a node's service, attach and caller surfaces; the awm feature adds the awm plugin mode."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,11 +12,12 @@ path = "src/main.rs"
 
 [features]
 default = ["awm"]
-awm = ["dep:awm-plugin-sdk"]
+awm = ["dep:awm-plugin-sdk", "dep:awm-trust"]
 
 [dependencies]
 outsource = { path = "../../crates/outsource" }
 awm-plugin-sdk = { workspace = true, optional = true }
+awm-trust = { workspace = true, optional = true }
 anyhow.workspace = true
 outsource-proto = { path = "../../crates/outsource-proto" }
 outsource-market = { path = "../../crates/outsource-market" }

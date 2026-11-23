@@ -2,13 +2,15 @@
 
 ## Purpose & Contents
 
-This file is the contract between the outsource market, providers and callers that the types in `core/crates/outsource-proto` cannot express alone: the order of messages, who answers what, and the `spec` and slots of each job kind. Design reasons are in `DECISIONS.md` here and in `docs/dex-poc/DECISIONS.md`.
+This file is the contract between the outsource entries, providers and callers that the types in `core/crates/outsource-proto` cannot express alone: the order of messages, who answers what, and the `spec` and slots of each job kind. Design reasons are in `DECISIONS.md` here and in `docs/dex-poc/DECISIONS.md`.
 
 ## Message flow
 
-Every message is an `Envelope` from `outsource-proto`. `to` names a provider id or a caller id. Each `ask` gets exactly one reply: `return`, `raise` or `doesNotUnderstand`. A `send` gets no reply. The market replies to an unknown promise with `raise UnknownPromise`.
+Every message is an `Envelope` from `outsource-proto`. `to` names a provider id, an entry or a caller id. Each `ask` gets exactly one reply: `return`, `raise` or `doesNotUnderstand`. A `send` gets no reply. The market replies to an unknown promise with `raise UnknownPromise`.
 
-1. A provider link sends one `register` ask per provider it hosts, with `routes`: the providers its rsync reaches. The market returns `null`.
+The market is one, with an entry on every node. Each entry is a market of its own with its own promises and watchers, named by its node. Below, "the market" is the entry a promise was posted at. Each node runs one host process for its providers. Every entry that reaches the node attaches to it: its own entry in process, another node's entry through `outsource attach` over ssh, which joins stdio to `~/.outsource/provider.sock`.
+
+1. An entry opens each link to a node's providers with a `vocab` send `{properties}`: its whole vocabulary. The first `vocab` on a link names the entry by its `from`. The host merges it, sends the merged vocabulary back, then sends one `register` ask per provider it hosts to that entry, with `routes`: the providers its rsync reaches. The entry returns `null`.
 2. A caller sends an `offer` ask with `{set}`. The market returns `{"promise": <id>}` at once.
 3. The market sends `offer` with `{set, promise, inbound}` to each eligible provider. `inbound` names the providers whose registered `routes` reach that provider. A provider is eligible when its link is up, its version range holds the offer envelope's `v`, and the set's `place` is a subset of its registered `props`.
 4. Each provider answers with a `bid` ask. `values: null` is a decline with a `reason`. The market returns `null`.
@@ -21,7 +23,9 @@ Every message is an `Envelope` from `outsource-proto`. `to` names a provider id 
 11. A caller's `review` on a settled promise is sent on to the provider that settled it. The market also records the per-axis error for that provider and contract.
 12. A caller's `watch` makes the market send `event` with the `PromiseStatus` to that link on every phase change of the named promises, or of all promises.
 13. A provider that must move data between itself and a provider it has no route to asks the market `transfer` with `{from, to, src, dest, files?}`. The market asks the other end the same `transfer` and relays its reply. That end runs rsync over its own route to the asker: it pushes when it is `from` and pulls when it is `to`. `src` lands in the directory `dest` under its base name, or each path in `files`, relative to `src`, lands at that path under `dest`.
-14. When a link drops, its providers become ineligible. Their awarded promises stay awarded. When a provider id registers again, the market asks it `status` for each open promise awarded to it and applies each answer. `raise UnknownPromise` counts as a broken promise.
+14. A provider sends every message about a promise to the entry that awarded it, and keeps that entry with the promise across restarts. A bid goes to the entry that sent the offer. A reply goes to the `from` of its ask.
+15. A `vocab` merges by union: keys and values join, a list closes an open key, and the description with the newer `updated` wins. An entry sends its vocabulary to every link with a registered provider after a `property_add`, or when a received `vocab` changes it. A host sends its vocabulary to every attached entry when a merge changes it. A host keeps its vocabulary in `~/.outsource/vocab.json`. An entry keeps its own in memory.
+16. When a link drops, its providers become ineligible. Their awarded promises stay awarded. When a provider id registers again, the market asks it `status` for each open promise awarded to it and applies each answer. `raise UnknownPromise` counts as a broken promise.
 
 The contract of a set, for history and corrections, is the `contract` prop of its first compute step, else that step's `op`.
 

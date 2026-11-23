@@ -1,5 +1,5 @@
-# outsource: the compute market. The service hosts the market, dials the provider links in
-# ~/.outsource/outsource.toml and serves the caller verbs to agents. Design: docs/dex-poc/DECISIONS.md.
+# outsource: the compute market. The service is this node's entry and the host of its providers. The entry
+# attaches to the providers of every node this one has an edge to. Design: docs/outsource/DECISIONS.md.
 [plugin]
 name = "outsource"
 version = "0.1.0"

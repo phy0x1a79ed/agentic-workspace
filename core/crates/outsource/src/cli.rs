@@ -3,21 +3,16 @@
 use crate::{roles, surfaces};
 use outsource_proto::{Msg, WatchArgs};
 use clap::{Arg, ArgMatches, Command};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn command() -> Command {
-    let config = || Arg::new("config").long("config").value_parser(clap::value_parser!(PathBuf));
     let roles = Command::new("outsource")
-        .about("outsource: a compute market. Caller verbs talk to the market at OUTSOURCE_CONNECT or ~/.outsource/market.sock.")
+        .about("outsource: a compute market. Caller verbs talk to this node's entry at ~/.outsource/market.sock.")
         .subcommand_required(true)
-        .subcommand(Command::new("serve").about("Run the market: listen on the socket and dial the links in ~/.outsource/outsource.toml."))
-        .subcommand(Command::new("provider").about("Run a provider, and one per [[cluster]], over stdio (~/.outsource/provider.toml).").arg(config()))
-        .subcommand(
-            Command::new("connect")
-                .about("Bridge stdio to the market socket.")
-                .arg(Arg::new("socket").long("socket").value_parser(clap::value_parser!(PathBuf))),
-        )
+        .subcommand(Command::new("serve").about(
+            "Run this node's service: its providers (~/.outsource/provider.toml) on ~/.outsource/provider.sock, and its entry, which dials the links in ~/.outsource/outsource.toml.",
+        ))
+        .subcommand(Command::new("attach").about("Bridge stdio to this node's providers, as a link for another node's entry."))
         .subcommand(Command::new("mcp").about("Serve the caller verbs over MCP on stdio (no watch)."))
         .subcommand(Command::new("http").about("Serve POST /invoke (no watch).").arg(Arg::new("addr").long("addr").default_value("127.0.0.1:7890")));
     surfaces::clap_verbs(roles)
@@ -32,9 +27,11 @@ pub async fn run(m: ArgMatches) -> anyhow::Result<()> {
     // A dialled role's stderr reaches the market host's log; stdout carries the link.
     tracing_subscriber::fmt().with_writer(std::io::stderr).with_ansi(false).init();
     match name {
-        "serve" => roles::serve(outsource_market::Market::new("market"), roles::MarketConfig::load()?).await,
-        "provider" => roles::provider(sub.get_one::<PathBuf>("config").cloned()).await,
-        "connect" => roles::connect(sub.get_one::<PathBuf>("socket").cloned().unwrap_or_else(roles::default_socket)).await,
+        "serve" => {
+            let cfg = roles::MarketConfig::load()?;
+            roles::serve(outsource_market::Market::new(&roles::node()), cfg.socket.unwrap_or_else(roles::default_socket), cfg.links).await
+        }
+        "attach" => roles::bridge(roles::provider_socket()).await,
         "mcp" => surfaces::mcp_stdio(Arc::new(roles::client(&caller_name()).await?)).await,
         "http" => {
             let client = Arc::new(roles::client(&caller_name()).await?);

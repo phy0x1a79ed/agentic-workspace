@@ -4,7 +4,7 @@
 //! when it has one, else from its stat or git commit; content is never read.
 
 use outsource_proto::{fold_type, instance_id, props, slot_id, Axis, Fact, OfferSet, PropSet, Resources, Step, TIME_AXIS};
-use outsource_provider::{identify, is_local_route, q, Host};
+use outsource_provider::{identify, q, Host};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -65,34 +65,18 @@ pub struct Prep {
     pub to: String,
 }
 
-/// Where the caller stands: its node's provider id (the `origin` of every material), the
-/// directory its relative paths mean when known, and the host its files are read on.
+/// Where the caller stands: its node's provider id (the `origin` of every material) and the
+/// directory its relative paths mean when known.
 #[derive(Debug, Clone)]
 pub struct Site {
     pub node: String,
     pub cwd: Option<PathBuf>,
-    pub host: Host,
 }
 
 impl Site {
-    /// `OUTSOURCE_NODE`, else the hostname a provider takes as its default id, and this process's cwd.
+    /// This node and this process's cwd.
     pub fn here() -> Site {
-        let node = std::env::var("OUTSOURCE_NODE").ok().filter(|n| !n.is_empty()).unwrap_or_else(crate::roles::hostname);
-        Site { node, cwd: std::env::current_dir().ok(), host: Host::default() }
-    }
-
-    /// A caller on `node`: `here` when that is this node, else read over this node's route to it,
-    /// with no cwd.
-    pub fn of_caller(node: Option<&str>) -> Site {
-        let here = Site::here();
-        match node {
-            Some(n) if n != here.node => {
-                let route = crate::roles::route_to(n).unwrap_or_else(|| n.to_string());
-                let host = if is_local_route(&route) { Host::default() } else { Host::new(Some(route)) };
-                Site { node: n.into(), cwd: None, host }
-            }
-            _ => here,
-        }
+        Site { node: crate::roles::node(), cwd: std::env::current_dir().ok() }
     }
 
     fn path(&self, raw: &str, what: &str) -> Result<PathBuf, String> {
@@ -270,7 +254,7 @@ pub async fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> 
 }
 
 async fn container_of(env: &Path, site: &Site) -> Result<String, String> {
-    let text = site.host.sh(&format!("cat {}", q(&env.to_string_lossy()))).await.map_err(|e| format!("{} on {}: {e}", env.display(), site.node))?;
+    let text = Host::default().sh(&format!("cat {}", q(&env.to_string_lossy()))).await.map_err(|e| format!("{} on {}: {e}", env.display(), site.node))?;
     let yaml: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", env.display()))?;
     yaml.get("container")
         .and_then(serde_yaml::Value::as_str)
@@ -294,7 +278,7 @@ async fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<
     let probed = match raw {
         Some(raw) => {
             let path = site.path(raw, "requires")?;
-            let probed = identify(&site.host, &path.to_string_lossy(), &site.node, true, warnings).await;
+            let probed = identify(&Host::default(), &path.to_string_lossy(), &site.node, true, warnings).await;
             Some(probed.map_err(|e| format!("requires {raw} on {}: {e}", site.node))?)
         }
         None => None,
@@ -331,7 +315,7 @@ mod tests {
     }
 
     fn site(dir: &Path) -> Site {
-        Site { node: "mine".into(), cwd: Some(dir.to_path_buf()), host: Host::default() }
+        Site { node: "mine".into(), cwd: Some(dir.to_path_buf()) }
     }
 
     fn job(requires: &[&str], protocol: &str) -> Value {
@@ -433,28 +417,6 @@ mod tests {
 
         // The protocol is part of a result's identity.
         assert_ne!(base.set.steps[0].props["job"], compiled!("q").set.steps[0].props["job"]);
-    }
-
-    /// A caller on another node: its files are read over the route to it and the set starts there.
-    #[tokio::test]
-    async fn a_remote_caller_starts_at_its_node() {
-        let d = tempfile::tempdir().unwrap();
-        let d = d.path().canonicalize().unwrap();
-        std::fs::write(d.join("in.tsv"), "a").unwrap();
-        let far = Site { node: "altair".into(), cwd: None, host: Host::default() };
-        let abs = d.join("in.tsv").to_string_lossy().into_owned();
-        let dest = d.join("out").to_string_lossy().into_owned();
-        let c = compile(json!({"requires": [abs], "produces": ["r"], "protocol": "p", "dest": dest}), &far).await.unwrap();
-        assert_eq!(c.set.start, [Fact::at_path(&stage_id(&c, "in.tsv"), "altair", &abs)]);
-        assert_eq!((c.set.steps[1].to.as_deref(), c.set.size), (Some("altair"), Some(1)));
-        for (args, err) in [
-            (json!({"requires": ["in.tsv"], "produces": [], "protocol": "p"}), "requires in.tsv: a call from altair must give an absolute path"),
-            (json!({"requires": [abs], "produces": ["r"], "protocol": "p"}), "a call from altair must give an absolute dest"),
-            (json!({"requires": [format!("{abs}.gone")], "produces": [], "protocol": "p"}), "on altair: "),
-        ] {
-            let e = compile(args, &far).await.unwrap_err();
-            assert!(e.contains(err), "{e}");
-        }
     }
 
     #[tokio::test]

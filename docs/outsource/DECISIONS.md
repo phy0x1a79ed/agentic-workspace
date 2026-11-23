@@ -129,3 +129,18 @@ Child of `node-prep`, which closes with it.
 - No hook.
 
 **Landed.** Written at the end, with the deploy, once the verbs settle. The skill must reach every node agents run on (altair included).
+
+## topology — 2026-11-23
+
+**Question.** Where do the market and the providers live, so that an agent on any node can outsource work?
+
+**User's words.** "it is really 1 market, and each node has an entry and supports/runs its own providers. the edges dictate which nodes can offer to which providers"
+
+**Design.**
+- Every agent host runs the outsource service. The service is that node's entry to the one market and the host of that node's providers: its own provider, plus any Slurm cluster providers it fronts (altair: fir, sockeye).
+- Each node runs one provider process that owns its state. Every entry that reaches the node attaches to it over a socket. Entries never spawn providers.
+- An agent posts at its own node's entry. The entry offers to the providers of its own node and of every node its awm edges reach. Data moves along those same edges.
+- Shared market state is the same at every entry. Holdings and caches live at the providers. The vocabulary syncs through the providers by union.
+- Replaces the single mizar market that started providers over ssh (dex-poc).
+
+**Landed.** Built on `feat/outsource` 2026-11-23, release 4, pending deploy. The entry's reach comes from the user edges in `edges.yml`. A call with `peer=<node>` reads its paths on that node.

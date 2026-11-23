@@ -1,6 +1,5 @@
-//! The `outsource` binary. With the `awm` feature, `outsource awm-plugin` hosts the market as an awm
-//! service: agents reach the caller verbs through the gateway and promise events go out on the
-//! `promise` emit topic. outsource's own crates never import awm.
+//! The `outsource` binary. With the `awm` feature, `outsource awm-plugin` runs the node's service under awm,
+//! with the entry's reach taken from the edge list. outsource's own crates never import awm.
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,7 +16,8 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(feature = "awm")]
 mod awm {
-    use awm_plugin_sdk::{Call, Service, VerbError};
+    use awm_plugin_sdk::{config, Call, Service, VerbError};
+    use awm_trust::edges::EdgeKey;
     use outsource::{offer, roles, surfaces};
     use outsource_proto::{Msg, WatchArgs};
     use serde_json::{json, Value};
@@ -48,9 +48,31 @@ mod awm {
         args
     }
 
+    /// An attach command per node this one holds a user edge to. `AWM_EDGE_WAKE=0` keeps a redial
+    /// from waking a sleeping node.
+    fn links() -> Vec<String> {
+        let here = config::here();
+        let edges = match config::edges() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("outsource: no edge list, so no other node's providers: {e:#}");
+                return vec![];
+            }
+        };
+        let bin = config::awm_dir().join("bin/outsource");
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let bin = bin.strip_prefix(&home).unwrap_or(&bin).display().to_string();
+        edges
+            .dialable_from(&here)
+            .into_iter()
+            .filter(|n| edges.key(&here, n) == Some(EdgeKey::User))
+            .map(|n| format!("AWM_EDGE_WAKE=0 ssh -o BatchMode=yes -o ConnectTimeout=10 {n} {bin} attach"))
+            .collect()
+    }
+
     pub async fn run() -> anyhow::Result<()> {
         awm_plugin_sdk::telemetry::init();
-        let market = outsource_market::Market::new("market");
+        let market = outsource_market::Market::new(&config::here());
         let client = Arc::new(roles::local_client(&market, "awm"));
         let mut svc = Service::from_env()?.emitter("promise", Some("A outsource promise changed phase."));
         for v in surfaces::remote_verbs() {
@@ -58,8 +80,7 @@ mod awm {
             svc = svc.verb("outsource", v.name, v.summary, params(v.schema), move |call: Call| {
                 let client = client.clone();
                 async move {
-                    let site = offer::Site::of_caller(call.peer_node());
-                    surfaces::invoke(&client, verb, outsource_args(&call), &site).await.map_err(|e| {
+                    surfaces::invoke(&client, verb, outsource_args(&call), &offer::Site::here()).await.map_err(|e| {
                         let name = e["args"]["name"].as_str().unwrap_or("doesNotUnderstand").to_string();
                         VerbError::new(name, e.to_string())
                     })
@@ -77,10 +98,10 @@ mod awm {
                 }
             }
         });
-        let cfg = roles::MarketConfig::load()?;
+        let socket = roles::MarketConfig::load()?.socket.unwrap_or_else(roles::default_socket);
         tokio::spawn(async move {
-            if let Err(e) = roles::serve(market, cfg).await {
-                tracing::error!("outsource market: {e:#}");
+            if let Err(e) = roles::serve(market, socket, links()).await {
+                tracing::error!("outsource service: {e:#}");
             }
         });
         svc.run().await

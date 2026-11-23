@@ -508,7 +508,6 @@ async fn holder_records_fill_start_and_import_goes_straight_to_its_provider() {
 async fn vocabulary_guards_every_typed_material_and_output() {
     let m = Market::new("market");
     let (mut c, mut p) = (Peer::new(&m, "c"), Peer::new(&m, "p"));
-    p.reg([1, 1], &[]).await;
     let raised = |msg: Msg| match msg {
         Msg::Raise(r) if r.name == raise::BAD_ARGS => r.message,
         m => panic!("expected BadArgs, got {m:?}"),
@@ -527,10 +526,11 @@ async fn vocabulary_guards_every_typed_material_and_output() {
     assert_eq!(c.ask(add("organism", Some(&["Human", "mouse"]))).await, ok());
     assert_eq!(c.ask(add("organism", Some(&["rat"]))).await, ok());
     let Msg::Return(v) = c.ask(Msg::Properties(PropertiesArgs {})).await else { panic!("properties") };
-    assert_eq!(v["properties"]["organism"], json!({"description": "the organism", "values": ["human", "mouse", "rat"]}));
+    assert_eq!((&v["properties"]["organism"]["description"], &v["properties"]["organism"]["values"]), (&json!("the organism"), &json!(["human", "mouse", "rat"])));
     assert!(raised(c.ask(add("two words", None)).await).contains("one word"));
 
     // An offer is checked in its staged materials and its typed outputs alike.
+    p.reg([1, 1], &[]).await;
     let typed = |stage: Value, outs: Value| {
         set(json!({"steps": [{"op": "task", "props": {"contract": "c"}, "spec": {"stage": {"m": {"id": "I", "type": stage}}, "typed": [{"path": "o", "type": outs}]}}]}))
     };
@@ -554,17 +554,4 @@ async fn vocabulary_guards_every_typed_material_and_output() {
         p.reply(&e, Msg::Return(json!({"ids": [], "facts": []}))).await;
     });
     assert!(matches!(r, Msg::Return(_)));
-
-    // A kept vocabulary reloads over the seed in a new market.
-    let file = std::env::temp_dir().join(format!("vocab-{}.json", outsource_proto::new_id()));
-    let kept = Market::new("a");
-    kept.keep_vocab(file.clone()).unwrap();
-    let mut c2 = Peer::new(&kept, "c");
-    assert_eq!(c2.ask(add("organism", Some(&["Human"]))).await, ok());
-    let again = Market::new("b");
-    again.keep_vocab(file.clone()).unwrap();
-    let Msg::Return(v) = Peer::new(&again, "c").ask(Msg::Properties(PropertiesArgs {})).await else { panic!("properties") };
-    assert_eq!(v["properties"]["organism"]["values"], json!(["human"]));
-    assert!(v["properties"]["db"].is_object());
-    std::fs::remove_file(file).unwrap();
 }

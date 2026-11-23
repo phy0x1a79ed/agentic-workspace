@@ -1,6 +1,6 @@
-//! Provider behaviour over a real `serve` loop with scripted jobs: no network, no real builds.
+//! Provider behaviour over a real host loop with scripted jobs: no network, no real builds.
 
-use crate::{serve, Provider, ProviderConfig};
+use crate::{Hosted, Provider, ProviderConfig};
 use outsource_carrier::Link;
 use outsource_proto::*;
 use serde_json::{json, Value};
@@ -12,15 +12,17 @@ use tokio::task::JoinHandle;
 struct Mkt {
     tx: UnboundedSender<Envelope>,
     rx: UnboundedReceiver<Envelope>,
-    serving: JoinHandle<anyhow::Result<()>>,
+    serving: JoinHandle<()>,
 }
 
 impl Mkt {
     fn start(providers: Vec<Provider>) -> Mkt {
         let (tx, p_rx) = unbounded_channel();
         let (p_tx, rx) = unbounded_channel();
-        let serving = tokio::spawn(serve(providers, Link { tx: p_tx, rx: p_rx }));
-        Mkt { tx, rx, serving }
+        let serving = tokio::spawn(Hosted::new(providers, vocab::Vocab::seeded()).serve(Link { tx: p_tx, rx: p_rx }));
+        let m = Mkt { tx, rx, serving };
+        m.send("providers", Msg::Vocab(VocabArgs { properties: Default::default() }));
+        m
     }
 
     fn send(&self, to: &str, msg: Msg) -> String {
