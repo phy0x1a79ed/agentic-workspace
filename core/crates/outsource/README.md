@@ -6,25 +6,22 @@ outsource is a compute market. Callers post offer sets, providers bid, and the m
 
 ## Topology
 
-- One market runs, in the awm `outsource` plugin on mizar. The cloud inventory places it (`awm_plugins_homed` in `homelab/inventory/group_vars/all/plugins.yml`). A second market splits the providers, so keep the plugin on one node.
-- Agents reach the market through the awm `outsource` tool from any node. The shell uses `outsource <verb>` on mizar, or sets `OUTSOURCE_CONNECT` to a dial command elsewhere.
-- The market dials every provider. `~/.outsource/outsource.toml` on mizar holds `links`, one shell command per link. The command must start a provider that speaks JSON lines on stdio.
-- Each awm node runs `outsource provider` from `$AWM_DIR/bin/outsource`, configured by `~/.outsource/provider.toml` on that node.
-- The provider on altair also hosts every Slurm cluster, one provider per `[[cluster]]` in its `provider.toml`. altair holds the cluster ssh masters. Its Slurm backend reaches each cluster only by one-shot `ssh -o BatchMode=yes` calls over those masters. No outsource process runs on a cluster, only the job scripts on its compute nodes.
-
-**CAUTION** altair cannot ssh to mizar. Callers on altair, such as the metasmith executor, reach the market socket through an `ssh -R` forward that mizar opens. That forward does not survive a reboot.
+- Every agent host runs the awm `outsource` plugin. The plugin is the node's entry to the one market and the host of the node's providers. Agents post at their own node's entry.
+- The entry reaches its own providers in process. It reaches the providers of every node it holds a user edge to in `edges.yml`, by `ssh <node> <awm_dir>/bin/outsource attach`. A node whose service is down fails the attach, and the entry redials up to once a minute.
+- The node's providers come from its `~/.outsource/provider.toml`. They listen on `~/.outsource/provider.sock` for the entries that attach.
+- The providers on altair include every Slurm cluster, one provider per `[[cluster]]` in its `provider.toml`. altair holds the cluster ssh masters. Its Slurm backend reaches each cluster only by one-shot `ssh -o BatchMode=yes` calls over those masters. No outsource process runs on a cluster, only the job scripts on its compute nodes.
+- The standalone `outsource serve` takes the attach commands from `links` in `~/.outsource/outsource.toml` in place of the edge list.
 
 ## Add a node provider
 
 1. Write `~/.outsource/provider.toml` on the node with `id`, `slots` and `props.name`. Add `routes` to the providers it can fetch from with rsync.
-2. Add `ssh -o BatchMode=yes <node> <awm_dir>/bin/outsource provider` to `links` in mizar's `~/.outsource/outsource.toml`.
-3. Restart the awm `outsource` plugin on mizar.
+2. Enable the awm `outsource` plugin on the node.
 
 ## Add a Slurm cluster
 
 1. Open the cluster's ssh master on altair with the awm `ssh` tool.
 2. Add a `[[cluster]]` to altair's `~/.outsource/provider.toml`. `docs/outsource/altair-provider.toml.example` shows the shape.
-3. Restart the awm `outsource` plugin on mizar, so the market redials `ssh altair outsource provider`.
+3. Restart the awm `outsource` plugin on altair.
 
 **CAUTION** Set `work_dir` and `scratch` to paths on the cluster's scratch. Compute nodes cannot write home on these clusters, and each job writes its `exit` file into its work dir. `state_dir` and `jobs.json` stay on altair.
 

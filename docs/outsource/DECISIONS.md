@@ -143,4 +143,4 @@ Child of `node-prep`, which closes with it.
 - Shared market state is the same at every entry. Holdings and caches live at the providers. The vocabulary syncs through the providers by union.
 - Replaces the single mizar market that started providers over ssh (dex-poc).
 
-**Landed.** Worker dispatched 2026-11-23, release 4.
+**Landed.** Built on `feat/outsource` 2026-11-23, release 4, pending deploy. The entry's reach comes from the user edges in `edges.yml`. A call with `peer=<node>` reads its paths on that node.

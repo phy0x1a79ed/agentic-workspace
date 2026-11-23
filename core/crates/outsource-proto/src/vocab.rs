@@ -1,23 +1,32 @@
-//! The market's property vocabulary: the keys a typed material may use, each with a description
-//! and an optional list of allowed values. Standalone of awm; it persists in a JSON file when asked.
+//! The property vocabulary that every entry and provider shares, merged by union.
 
-use outsource_proto::PropSet;
+use crate::PropSet;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Property {
-    description: String,
+#[serde(deny_unknown_fields)]
+pub struct Property {
+    pub description: String,
     /// `None` accepts any value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    values: Option<Vec<String>>,
+    pub values: Option<Vec<String>>,
+    /// Unix milliseconds of the description's last change; the newer description wins a merge.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub updated: u64,
 }
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+pub type Properties = BTreeMap<String, Property>;
 
 #[derive(Debug, Default)]
 pub struct Vocab {
-    keys: BTreeMap<String, Property>,
+    keys: Properties,
     file: Option<PathBuf>,
 }
 
@@ -34,14 +43,14 @@ const SUGGEST: usize = 3;
 
 impl Vocab {
     pub fn seeded() -> Vocab {
-        let keys = SEED.iter().map(|(k, d)| (k.to_string(), Property { description: d.to_string(), values: None })).collect();
+        let keys = SEED.iter().map(|(k, d)| (k.to_string(), Property { description: d.to_string(), values: None, updated: 0 })).collect();
         Vocab { keys, file: None }
     }
 
     /// Loads `file` over the seed (its keys win) and saves every later change there.
     pub fn keep(&mut self, file: PathBuf) -> std::io::Result<()> {
         match std::fs::read(&file) {
-            Ok(bytes) => self.keys.extend(serde_json::from_slice::<BTreeMap<String, Property>>(&bytes)?),
+            Ok(bytes) => self.keys.extend(serde_json::from_slice::<Properties>(&bytes)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
@@ -53,14 +62,44 @@ impl Vocab {
         json!({ "properties": self.keys })
     }
 
+    pub fn keys(&self) -> &Properties {
+        &self.keys
+    }
+
+    /// Joins `other` in: keys and values by union, a list closes an open key, the newer
+    /// description wins. Returns whether anything changed.
+    pub fn merge(&mut self, other: &Properties) -> Result<bool, String> {
+        let before = self.keys.clone();
+        for (k, theirs) in other {
+            let Some(mine) = self.keys.get_mut(k) else {
+                self.keys.insert(k.clone(), theirs.clone());
+                continue;
+            };
+            if (theirs.updated, &theirs.description) > (mine.updated, &mine.description) {
+                mine.description = theirs.description.clone();
+                mine.updated = theirs.updated;
+            }
+            if let Some(vs) = &theirs.values {
+                let list = mine.values.get_or_insert_with(Vec::new);
+                list.extend(vs.iter().filter(|v| !list.contains(v)).cloned().collect::<Vec<_>>());
+                list.sort();
+            }
+        }
+        if self.keys == before {
+            return Ok(false);
+        }
+        self.save().map(|()| true)
+    }
+
     /// Adds `name` or extends it: the description is replaced and `values` join the allowed list.
     pub fn add(&mut self, name: &str, description: &str, values: Option<&[String]>) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() || name.contains(char::is_whitespace) {
             return Err(format!("property name {name:?} must be one word"));
         }
-        let prop = self.keys.entry(name.to_string()).or_insert_with(|| Property { description: String::new(), values: None });
+        let prop = self.keys.entry(name.to_string()).or_insert_with(|| Property { description: String::new(), values: None, updated: 0 });
         prop.description = description.to_string();
+        prop.updated = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         if let Some(vs) = values {
             let list = prop.values.get_or_insert_with(Vec::new);
             for v in vs.iter().map(|v| v.trim().to_lowercase()).filter(|v| !v.is_empty()) {

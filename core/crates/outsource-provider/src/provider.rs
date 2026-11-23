@@ -41,6 +41,9 @@ impl Instance {
 struct PromiseRec {
     set: OfferSet,
     phase: Phase,
+    /// The entry that awarded it, which every message about it goes back to.
+    #[serde(default)]
+    entry: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,11 +93,11 @@ pub(crate) struct Inner {
     /// Runs compute steps.
     backend: Arc<dyn Backend>,
     pub state: Mutex<State>,
-    out: Mutex<Option<mpsc::UnboundedSender<Envelope>>>,
-    peer: Mutex<String>,
+    /// Each attached entry's link, by entry name.
+    out: Mutex<HashMap<String, mpsc::UnboundedSender<Envelope>>>,
     jobs: Arc<Mutex<HashMap<PromiseId, oneshot::Sender<i32>>>>,
-    /// This provider's own asks to the market, by envelope id, awaiting replies.
-    asks: Mutex<HashMap<String, oneshot::Sender<Msg>>>,
+    /// This provider's own asks to entries, by envelope id, with the entry asked, awaiting replies.
+    asks: Mutex<HashMap<String, (String, oneshot::Sender<Msg>)>>,
     cargo: Option<PathBuf>,
     apptainer: Option<PathBuf>,
     /// The most a job may ask for; `None` is no limit.
@@ -261,8 +264,7 @@ impl Provider {
             work_dir,
             backend,
             state: Mutex::new(state),
-            out: Mutex::new(None),
-            peer: Mutex::new("market".into()),
+            out: Mutex::default(),
             jobs: jobs.clone(),
             asks: Mutex::default(),
             cargo,
@@ -296,19 +298,23 @@ impl Provider {
         }
     }
 
-    pub(crate) fn attach(&self, tx: mpsc::UnboundedSender<Envelope>) {
-        *self.inner.out.lock().unwrap() = Some(tx);
+    pub(crate) fn attach(&self, entry: &str, tx: mpsc::UnboundedSender<Envelope>) {
+        self.inner.out.lock().unwrap().insert(entry.into(), tx);
     }
 
-    pub(crate) fn detach(&self) {
-        *self.inner.out.lock().unwrap() = None;
-        self.inner.asks.lock().unwrap().clear();
+    /// Forgets `entry` unless it has attached again on a newer link than `tx`.
+    pub(crate) fn detach(&self, entry: &str, tx: &mpsc::UnboundedSender<Envelope>) {
+        let mut out = self.inner.out.lock().unwrap();
+        if out.get(entry).is_some_and(|t| t.same_channel(tx)) {
+            out.remove(entry);
+            self.inner.asks.lock().unwrap().retain(|_, (e, _)| e != entry);
+        }
     }
 
-    pub(crate) fn register(&self) {
+    pub(crate) fn register(&self, entry: &str) {
         let c = &self.inner.cfg;
         self.inner.send(
-            "market",
+            entry,
             Msg::Register(RegisterArgs { provider: c.id.clone(), versions: c.versions, props: c.props.clone(), routes: c.routes.keys().cloned().collect() }),
         );
     }
@@ -331,14 +337,11 @@ impl Provider {
     /// Handles one envelope addressed to this provider.
     pub(crate) async fn handle(&self, env: Envelope) {
         let me = &self.inner;
-        if !matches!(env.selector.as_str(), "return" | "raise" | "doesNotUnderstand") {
-            *me.peer.lock().unwrap() = env.from.clone();
-        }
         let msg = match env.msg() {
             Ok(m) => m,
             Err(r) => return me.reply_env(env.refusal_reply(&r)),
         };
-        if let Some(waiter) = env.reply_to.as_ref().and_then(|id| me.asks.lock().unwrap().remove(id)) {
+        if let Some((_, waiter)) = env.reply_to.as_ref().and_then(|id| me.asks.lock().unwrap().remove(id)) {
             let _ = waiter.send(msg);
             return;
         }
@@ -351,7 +354,7 @@ impl Provider {
                 });
             }
             Msg::Offer(a) => me.on_offer(&env, a).await,
-            Msg::Award(a) => me.on_award(a),
+            Msg::Award(a) => me.on_award(&env.from, a),
             Msg::Event(s) => me.on_event(s),
             Msg::Status(r) => me.on_status(&env, r).await,
             Msg::Cancel(r) => me.on_cancel(&env, r).await,
@@ -396,13 +399,13 @@ impl Inner {
     }
 
     fn reply_env(&self, env: Envelope) {
-        if let Some(tx) = self.out.lock().unwrap().as_ref() {
+        if let Some(tx) = self.out.lock().unwrap().get(&env.to) {
             let _ = tx.send(env);
         }
     }
 
-    fn peer(&self) -> String {
-        self.peer.lock().unwrap().clone()
+    fn entry_of(&self, promise: &str) -> String {
+        self.state.lock().unwrap().promises.get(promise).map(|r| r.entry.clone()).unwrap_or_default()
     }
 
     pub(crate) fn persist(&self, st: &State) {
@@ -655,7 +658,7 @@ impl Inner {
 
     // ---- running -------------------------------------------------------------------------
 
-    fn on_award(self: &Arc<Self>, a: AwardArgs) {
+    fn on_award(self: &Arc<Self>, entry: &str, a: AwardArgs) {
         {
             let mut st = self.state.lock().unwrap();
             if st.promises.get(&a.promise).is_some_and(|r| !r.phase.is_final()) {
@@ -664,10 +667,10 @@ impl Inner {
             let work = st.open.remove(&a.promise).unwrap_or(0.0);
             st.running.insert(a.promise.clone(), work);
             let phase = Phase::Started { provider: self.cfg.id.clone() };
-            st.promises.insert(a.promise.clone(), PromiseRec { set: a.set, phase });
+            st.promises.insert(a.promise.clone(), PromiseRec { set: a.set, phase, entry: entry.into() });
             self.persist(&st);
         }
-        self.send(&self.peer(), Msg::Started(StartedArgs { promise: a.promise.clone(), provider: self.cfg.id.clone() }));
+        self.send(entry, Msg::Started(StartedArgs { promise: a.promise.clone(), provider: self.cfg.id.clone() }));
         self.spawn_run(a.promise);
     }
 
@@ -696,20 +699,21 @@ impl Inner {
                 Phase::Failed { name: raise::BROKEN_PROMISE.into(), message: message.clone() }
             }
         };
-        {
+        let entry = {
             let mut st = self.state.lock().unwrap();
             st.running.remove(&promise);
             st.tasks.remove(&promise);
-            match st.promises.get_mut(&promise) {
-                Some(r) if !r.phase.is_final() => r.phase = phase,
+            let entry = match st.promises.get_mut(&promise) {
+                Some(r) if !r.phase.is_final() => {
+                    r.phase = phase;
+                    r.entry.clone()
+                }
                 _ => return,
-            }
+            };
             self.persist(&st);
-        }
-        self.send(
-            &self.peer(),
-            Msg::Settle(SettleArgs { promise, provider: self.cfg.id.clone(), outcome }),
-        );
+            entry
+        };
+        self.send(&entry, Msg::Settle(SettleArgs { promise, provider: self.cfg.id.clone(), outcome }));
     }
 
     async fn execute(self: &Arc<Self>, promise: &str, set: &OfferSet) -> Result<Outcome, String> {
@@ -825,7 +829,7 @@ impl Inner {
                 }
                 Act::Wait(mut rx) => while rx.changed().await.is_ok() {},
                 Act::Run(eid, typed) => {
-                    let made = match self.receive(set, stage_sources(step, resolved)).await {
+                    let made = match self.receive(promise, set, stage_sources(step, resolved)).await {
                         Ok(()) => self.run_job(promise, idx, step, set, resolved).await,
                         Err(e) => Err(e),
                     };
@@ -1019,7 +1023,7 @@ impl Inner {
 
     /// Has each holder this provider has no route to push its material into `held/<id>/` here,
     /// through the market, and holds it under `pairs`. Items are `(id, src, pairs)`.
-    async fn receive(&self, set: &OfferSet, items: Vec<(Id, Option<String>, Vec<Pair>)>) -> Result<(), String> {
+    async fn receive(&self, promise: &str, set: &OfferSet, items: Vec<(Id, Option<String>, Vec<Pair>)>) -> Result<(), String> {
         for (id, src, pairs) in items {
             let (holder, src) = {
                 let st = self.state.lock().unwrap();
@@ -1036,7 +1040,7 @@ impl Inner {
             };
             let dir = self.held_dir(&id);
             let ask = TransferArgs { from: holder, to: self.cfg.id.clone(), src: src.clone(), dest: dir.to_string_lossy().into(), files: vec![] };
-            self.ask_market(Msg::Transfer(ask)).await.map_err(|e| format!("cannot stage {id}: {e}"))?;
+            self.ask_market(promise, Msg::Transfer(ask)).await.map_err(|e| format!("cannot stage {id}: {e}"))?;
             let path = dir.join(Path::new(src.trim_end_matches('/')).file_name().ok_or_else(|| format!("{src} has no base name"))?);
             let files = self.host.files(&path).await.map_err(|e| format!("cannot stage {id}: {e}"))?;
             let mut st = self.state.lock().unwrap();
@@ -1051,7 +1055,7 @@ impl Inner {
     /// holds it, and pulls the environment image. Returns the ids now held here.
     async fn prep(self: &Arc<Self>, promise: &str, idx: usize, step: &Step, set: &OfferSet, resolved: &mut Resolved) -> Result<Vec<Id>, String> {
         self.resolve_staged(step, resolved).await;
-        self.receive(set, stage_sources(step, resolved)).await?;
+        self.receive(promise, set, stage_sources(step, resolved)).await?;
         let mut lines = self.script_head(promise, idx);
         let (mut ids, mut fetched) = (vec![], vec![]);
         {
@@ -1131,7 +1135,7 @@ impl Inner {
         let files_only = step.spec["files"].as_bool().unwrap_or(false);
         if !files_only {
             let items = ids.iter().map(|id| (id.clone(), step.spec["src"][id].as_str().map(String::from), stage_pairs(&Value::Null, id))).collect();
-            self.receive(set, items).await?;
+            self.receive(promise, set, items).await?;
         }
         let workdir = self.work_dir.join(format!("{promise}-{idx}"));
         let mut lines = self.script_head(promise, idx);
@@ -1165,7 +1169,7 @@ impl Inner {
         }
         self.host.sh(&(lines.join("\n") + "\n")).await.map_err(|e| format!("place failed: {e}"))?;
         for pull in pulls {
-            self.ask_market(Msg::Transfer(pull)).await.map_err(|e| format!("place failed: {e}"))?;
+            self.ask_market(promise, Msg::Transfer(pull)).await.map_err(|e| format!("place failed: {e}"))?;
         }
         Ok(placed)
     }
@@ -1191,11 +1195,12 @@ impl Inner {
         }
     }
 
-    /// Asks the market and waits for its reply; `Ok` holds a `return`'s value.
-    async fn ask_market(&self, msg: Msg) -> Result<Value, String> {
-        let env = Envelope::new(&self.cfg.id, &self.peer(), &msg);
+    /// Asks the entry that owns `promise` and waits for its reply; `Ok` holds a `return`'s value.
+    async fn ask_market(&self, promise: &str, msg: Msg) -> Result<Value, String> {
+        let entry = self.entry_of(promise);
+        let env = Envelope::new(&self.cfg.id, &entry, &msg);
         let (tx, rx) = oneshot::channel();
-        self.asks.lock().unwrap().insert(env.id.clone(), tx);
+        self.asks.lock().unwrap().insert(env.id.clone(), (entry, tx));
         self.reply_env(env);
         match rx.await {
             Ok(Msg::Return(v)) => Ok(v),

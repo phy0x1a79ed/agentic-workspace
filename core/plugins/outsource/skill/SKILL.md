@@ -15,7 +15,7 @@ Send a job to `outsource` when you expect it to take over about 10 minutes or ov
 
 ## Phrase the job
 
-1. Give every path as an absolute path. The tool does not know your working directory.
+1. Give every path as an absolute path on your own node. The tool does not know your working directory. A call with `peer=<node>` reads every path on that node.
 2. Pass each git repo as its own entry in `requires`. A repo is identified by its HEAD commit.
 3. Commit before you post when the result must reflect your edits. A repo with uncommitted changes keeps its commit identity, so a prior result may come back. The reply warns when that happens.
 4. Put the environment in `requires` as one metasmith-style `.env` file with a `container:` line. The protocol then runs inside that container.

@@ -10,6 +10,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub mod vocab;
+
 /// The contract versions this build speaks, inclusive.
 pub const SUPPORTED: [u32; 2] = [1, 1];
 pub const V: u32 = SUPPORTED[1];
@@ -54,6 +56,8 @@ pub enum Msg {
     #[serde(rename = "property_add")]
     PropertyAdd(PropertyAddArgs),
     Properties(PropertiesArgs),
+    /// Entry to a node's providers and back: the sender's whole vocabulary, to merge.
+    Vocab(VocabArgs),
     Review(ReviewArgs),
     Watch(WatchArgs),
     // Provider verbs.
@@ -72,7 +76,7 @@ pub enum Msg {
 }
 
 pub const SELECTORS: &[&str] = &[
-    "offer", "status", "cancel", "dispose", "import", "property_add", "properties", "review", "watch", "register", "bid", "started", "settle", "transfer",
+    "offer", "status", "cancel", "dispose", "import", "property_add", "properties", "vocab", "review", "watch", "register", "bid", "started", "settle", "transfer",
     "award", "event", "return", "raise", "doesNotUnderstand",
 ];
 
@@ -138,6 +142,13 @@ pub struct PropertyAddArgs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropertiesArgs {}
+
+/// The first `vocab` an entry sends on a link to a node's providers names the entry by its `from`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VocabArgs {
+    pub properties: vocab::Properties,
+}
 
 /// A type's values are case-folded before its id is taken; keys are exact.
 pub fn fold_type(ty: &PropSet) -> PropSet {

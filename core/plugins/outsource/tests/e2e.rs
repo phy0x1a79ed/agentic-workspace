@@ -1,6 +1,6 @@
-//! The real binary end to end: `serve` dials one provider as a child and one over `ssh localhost`,
-//! raw offer sets settle at each, a transform-shaped `offer` settles and copies its outputs home,
-//! and MCP leaves out `watch`.
+//! The real binary end to end: two nodes each `serve`, `near`'s entry reaches `far`'s providers
+//! through `attach`, raw offer sets settle at each, a transform-shaped `offer` settles and copies
+//! its outputs home, and MCP leaves out `watch`.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -12,15 +12,22 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_outsource");
 
 fn outsource(home: &Path, args: &[&str]) -> Value {
-    let out = Command::new(BIN).args(args).env("HOME", home).env("OUTSOURCE_NODE", "near").env_remove("OUTSOURCE_CONNECT").output().unwrap();
+    let out = Command::new(BIN).args(args).env("HOME", home).env("OUTSOURCE_NODE", "near").output().unwrap();
     assert!(out.status.success(), "outsource {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
-fn provider_toml(home: &Path, id: &str) -> String {
-    let path = home.join(format!("{id}.toml"));
-    std::fs::write(&path, format!("id = \"{id}\"\nstate_dir = \"{}\"\n[props]\nname = \"{id}\"\n", home.join(id).display())).unwrap();
-    path.display().to_string()
+/// Starts node `id`'s service under its own HOME, with its provider of the same id.
+fn node(home: &Path, id: &str, links: &[String]) -> Reap {
+    let dir = home.join(".outsource");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("provider.toml"), format!("id = \"{id}\"\nstate_dir = \"{}\"\n[props]\nname = \"{id}\"\n", home.join(id).display())).unwrap();
+    std::fs::write(dir.join("outsource.toml"), format!("links = {}\n", json!(links))).unwrap();
+    let serve = Reap(Command::new(BIN).arg("serve").env("HOME", home).env("OUTSOURCE_NODE", id).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+    while !dir.join("market.sock").exists() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    serve
 }
 
 /// Posts a raw offer set through the market socket, as a provider-facing client would: the
@@ -78,21 +85,11 @@ impl Drop for Reap {
 }
 
 #[test]
-fn serve_dials_providers_and_callers_offer_through_the_socket() {
-    let home = tempfile::tempdir().unwrap();
-    let home = home.path();
-    let local = provider_toml(home, "near");
-    let remote = provider_toml(home, "far");
-    std::fs::create_dir_all(home.join(".outsource")).unwrap();
-    let links = json!([
-        format!("{BIN} provider --config {local}"),
-        format!("ssh -o BatchMode=yes localhost HOME={} {BIN} provider --config {remote}", home.display()),
-    ]);
-    std::fs::write(home.join(".outsource/outsource.toml"), format!("links = {links}\n")).unwrap();
-    let _serve = Reap(Command::new(BIN).arg("serve").env("HOME", home).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
-    while !home.join(".outsource/market.sock").exists() {
-        std::thread::sleep(Duration::from_millis(50));
-    }
+fn an_entry_reaches_its_own_providers_and_another_node_through_attach() {
+    let (near, far) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (home, far) = (near.path(), far.path());
+    let _far = node(far, "far", &[]);
+    let _near = node(home, "near", &[format!("HOME={} {BIN} attach", far.display())]);
 
     let work = home.join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -114,7 +111,7 @@ fn serve_dials_providers_and_callers_offer_through_the_socket() {
         assert_eq!(listing[0], &json!(["out.txt"]));
     }
 
-    // The vocabulary rides the same socket and is kept under HOME.
+    // The vocabulary is kept under HOME by the node's providers.
     assert!(outsource(home, &["properties"])["properties"]["db"].is_object());
     outsource(home, &["property_add", "--name", "organism", "--description", "source organism", "--values", "Human"]);
     assert_eq!(outsource(home, &["properties"])["properties"]["organism"]["values"], json!(["human"]));

@@ -1,22 +1,21 @@
-//! The outsource market: runs bid rounds, awards one provider per promise and keeps promise state in memory.
+//! One node's entry to the outsource market: runs bid rounds over the providers it reaches and keeps its own promises in memory.
 
 mod picker;
-mod vocab;
 #[cfg(test)]
 mod tests;
 
 use outsource_proto::{
     fold_type, raise, raise_msg, AwardArgs, BidArgs, DnuArgs, DisposeArgs, Envelope, Fact, Id, ImportArgs, Msg, OfferArgs, OfferSet, Outcome,
     Phase, PromiseId, PromiseRef, PromiseStatus, PropSet, PropertyAddArgs, ProviderId, ReviewArgs, SettleArgs, StartedArgs,
-    Step, TransferArgs, TIME_AXIS,
+    Step, TransferArgs, VocabArgs, TIME_AXIS,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
+use outsource_proto::vocab::Vocab;
 use tokio::time::{Duration, Instant};
-use vocab::Vocab;
 
 pub type LinkId = u64;
 type Values = BTreeMap<String, f64>;
@@ -155,11 +154,6 @@ impl Market {
         self.inner.lock().unwrap()
     }
 
-    /// Loads the property vocabulary from `file` over the seed and saves every later `property_add` there.
-    pub fn keep_vocab(&self, file: std::path::PathBuf) -> std::io::Result<()> {
-        self.lock().vocab.keep(file)
-    }
-
     pub fn attach(&self, tx: UnboundedSender<Envelope>) -> LinkId {
         let mut g = self.lock();
         g.next_link += 1;
@@ -187,6 +181,13 @@ impl Market {
             }
             g.check_complete(&id);
         }
+    }
+
+    /// Serves a link to a node's providers: introduces this entry with its vocabulary first.
+    pub async fn join(&self, tx: UnboundedSender<Envelope>, rx: UnboundedReceiver<Envelope>) {
+        let hello = self.lock().vocab_envelope();
+        let _ = tx.send(hello);
+        self.serve(tx, rx).await
     }
 
     /// Attach, feed inbound envelopes until `rx` closes, then detach.
@@ -371,6 +372,17 @@ impl Inner {
         }
     }
 
+    fn vocab_envelope(&self) -> Envelope {
+        Envelope::new(&self.name, "providers", &Msg::Vocab(VocabArgs { properties: self.vocab.keys().clone() }))
+    }
+
+    fn share_vocab(&self) {
+        let links: BTreeSet<LinkId> = self.providers.values().filter_map(|p| p.link).collect();
+        for link in links {
+            self.send(link, self.vocab_envelope());
+        }
+    }
+
     fn provider_link(&self, pid: &str) -> Option<LinkId> {
         self.providers.get(pid)?.link
     }
@@ -418,9 +430,18 @@ impl Inner {
             }
             Msg::Offer(a) => self.offer(env.v, a),
             Msg::PropertyAdd(PropertyAddArgs { name, description, values }) => match self.vocab.add(&name, &description, values.as_deref()) {
-                Ok(()) => ok(),
+                Ok(()) => {
+                    self.share_vocab();
+                    ok()
+                }
                 Err(e) => raise_msg(raise::BAD_ARGS, e),
             },
+            Msg::Vocab(a) => {
+                if self.vocab.merge(&a.properties).unwrap_or(true) {
+                    self.share_vocab();
+                }
+                return None;
+            }
             Msg::Properties(_) => Msg::Return(self.vocab.list()),
             Msg::Cancel(r) => self.cancel(&r.promise),
             Msg::Review(a) => self.review(a),

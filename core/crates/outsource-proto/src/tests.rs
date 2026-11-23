@@ -60,6 +60,9 @@ fn every_msg_round_trips() {
         }),
         Msg::PropertyAdd(PropertyAddArgs { name: "db".into(), description: "database".into(), values: Some(vec!["nr".into()]) }),
         Msg::Properties(PropertiesArgs {}),
+        Msg::Vocab(VocabArgs {
+            properties: [("db".into(), vocab::Property { description: "database".into(), values: Some(vec!["nr".into()]), updated: 7 })].into(),
+        }),
         Msg::Settle(SettleArgs { promise: "p1".into(), provider: "capella".into(), outcome: Outcome::Broken { message: "exit 1".into() } }),
         Msg::Award(AwardArgs { promise: "p1".into(), set }),
         Msg::Event(PromiseStatus { promise: "p1".into(), phase: Phase::Awarded { provider: "capella".into() }, life: None }),
@@ -166,4 +169,30 @@ fn catalog_keeps_watch_off_mcp_and_http() {
     for v in CALLER_VERBS {
         serde_json::from_str::<Value>(v.schema).unwrap();
     }
+}
+
+#[test]
+fn vocab_merges_by_union_closing_open_keys_and_keeping_the_newer_description() {
+    let prop = |d: &str, values: Option<&[&str]>, updated| vocab::Property {
+        description: d.into(),
+        values: values.map(|v| v.iter().map(|s| s.to_string()).collect()),
+        updated,
+    };
+    let mut v = vocab::Vocab::seeded();
+    v.add("organism", "old", None).unwrap();
+    v.add("site", "mine", None).unwrap();
+    let theirs: vocab::Properties = [
+        ("organism".to_string(), prop("new", Some(&["mouse"]), u64::MAX)),
+        ("site".to_string(), prop("stale", None, 1)),
+        ("db".to_string(), prop(&v.keys()["db"].description, Some(&["nr"]), 0)),
+        ("lab".to_string(), prop("the lab", None, 1)),
+    ]
+    .into();
+    assert!(v.merge(&theirs).unwrap());
+    assert!(!v.merge(&theirs).unwrap(), "a merge is idempotent");
+    let k = v.keys();
+    assert_eq!((k["organism"].description.as_str(), k["organism"].values.as_deref()), ("new", Some(&["mouse".to_string()][..])));
+    assert_eq!(k["site"].description, "mine");
+    assert_eq!(k["db"].values.as_deref(), Some(&["nr".to_string()][..]), "a list closes an open key");
+    assert_eq!(k["lab"].description, "the lab");
 }
