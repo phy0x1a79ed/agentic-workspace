@@ -6,7 +6,7 @@
 
 ## Current
 
-`tune`: what "tune" covers beyond the decisions so far.
+`deploy`: apply the decided changes and try a real job.
 
 ## Waiting on the user
 
@@ -20,8 +20,7 @@ Nothing.
 
 ## Stack
 
-- `tune`: "I want to tune the Baitan service."
-- `deploy`: try a real job live after deploy ("need to try for real"). Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
+- `deploy`: "I just meant to now apply these changes and try it for real". Order: prep worker lands → ontology build → runtime stats → docs (AGENTS.md sentence, outsource skill on every node, JOBS.md) → ship → node migration → real job. Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
 - carried from dex-poc stack (open there): `test-cases` (msm across HPC clusters), `arrays`, `arbutus-spot`, `backend-hardening`.
 
 ## Workers
@@ -31,6 +30,7 @@ Nothing.
 ## Closed
 
 - `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
+- `tune`: means apply the changes and try for real; folded into `deploy`.
 - `discovery`: one AGENTS.md sentence (MCP tools list) + an `outsource` skill; threshold ~10 min or 4 cores; no hook. Written with deploy.
 - `ontology`: market-held vocabulary, descriptions, optional allowed values, unknown keys rejected, `property_add`, lowercase values. Build queued after prep worker.
 - `node-prep`: closed through its children.
