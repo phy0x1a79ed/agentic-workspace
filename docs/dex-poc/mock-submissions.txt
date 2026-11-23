@@ -1,0 +1,323 @@
+===== 000-fir.sh
+# argv: -o BatchMode=yes fir sh -s
+set -e
+mkdir -p '/scratch/outsource/fir' && cd '/scratch/outsource/fir'
+mkdir -p '/scratch/outsource/fir/batch-1addc72a-c280-45b6-9b85-c414582520b8'
+mkdir -p '/scratch/outsource/fir/work/prodigal-g0'
+printf '%s' 'prodigal -i genome_0.fna -a proteins.faa
+' > '/scratch/outsource/fir/work/prodigal-g0/run.sh'
+mkdir -p '/scratch/outsource/fir/work/prodigal-g1'
+printf '%s' 'prodigal -i genome_1.fna -a proteins.faa
+' > '/scratch/outsource/fir/work/prodigal-g1/run.sh'
+mkdir -p '/scratch/outsource/fir/work/prodigal-g2'
+printf '%s' 'prodigal -i genome_2.fna -a proteins.faa
+' > '/scratch/outsource/fir/work/prodigal-g2/run.sh'
+printf '%s' '/scratch/outsource/fir/work/prodigal-g0
+/scratch/outsource/fir/work/prodigal-g1
+/scratch/outsource/fir/work/prodigal-g2
+' > '/scratch/outsource/fir/batch-1addc72a-c280-45b6-9b85-c414582520b8/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/fir/batch-1addc72a-c280-45b6-9b85-c414582520b8/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/fir/batch-1addc72a-c280-45b6-9b85-c414582520b8/task.sh'
+'sbatch' '--array=0-2' '--nodes=1' '--cpus-per-task=2' '--mem=4096M' '--account=def-shallam' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/fir/batch-1addc72a-c280-45b6-9b85-c414582520b8/slurm-%A_%a.out' '/scratch/outsource/fir/batch-1addc72a-c280-45b6-9b85-c414582520b8/task.sh'
+===== 000-nibi.sh
+# argv: -o BatchMode=yes nibi sh -s
+set -e
+mkdir -p '/scratch/outsource/nibi' && cd '/scratch/outsource/nibi'
+mkdir -p '/scratch/outsource/nibi/batch-fdbb2584-1d78-43bb-80a1-f4fc2e01e344'
+mkdir -p '/scratch/outsource/nibi/work/prodigal-g3'
+printf '%s' 'prodigal -i genome_3.fna -a proteins.faa
+' > '/scratch/outsource/nibi/work/prodigal-g3/run.sh'
+mkdir -p '/scratch/outsource/nibi/work/prodigal-g4'
+printf '%s' 'prodigal -i genome_4.fna -a proteins.faa
+' > '/scratch/outsource/nibi/work/prodigal-g4/run.sh'
+mkdir -p '/scratch/outsource/nibi/work/prodigal-g5'
+printf '%s' 'prodigal -i genome_5.fna -a proteins.faa
+' > '/scratch/outsource/nibi/work/prodigal-g5/run.sh'
+printf '%s' '/scratch/outsource/nibi/work/prodigal-g3
+/scratch/outsource/nibi/work/prodigal-g4
+/scratch/outsource/nibi/work/prodigal-g5
+' > '/scratch/outsource/nibi/batch-fdbb2584-1d78-43bb-80a1-f4fc2e01e344/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/nibi/batch-fdbb2584-1d78-43bb-80a1-f4fc2e01e344/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/nibi/batch-fdbb2584-1d78-43bb-80a1-f4fc2e01e344/task.sh'
+'sbatch' '--array=0-2' '--nodes=1' '--cpus-per-task=2' '--mem=4096M' '--account=def-shallam' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/nibi/batch-fdbb2584-1d78-43bb-80a1-f4fc2e01e344/slurm-%A_%a.out' '/scratch/outsource/nibi/batch-fdbb2584-1d78-43bb-80a1-f4fc2e01e344/task.sh'
+===== 001-sockeye.sh
+# argv: -o BatchMode=yes sockeye sh -s
+set -e
+mkdir -p '/scratch/outsource/sockeye' && cd '/scratch/outsource/sockeye'
+mkdir -p '/scratch/outsource/sockeye/batch-5411f96c-894e-4953-af66-b9002ddd7139'
+mkdir -p '/scratch/outsource/sockeye/work/prodigal-g9'
+printf '%s' 'prodigal -i genome_9.fna -a proteins.faa
+' > '/scratch/outsource/sockeye/work/prodigal-g9/run.sh'
+mkdir -p '/scratch/outsource/sockeye/work/prodigal-g10'
+printf '%s' 'prodigal -i genome_10.fna -a proteins.faa
+' > '/scratch/outsource/sockeye/work/prodigal-g10/run.sh'
+mkdir -p '/scratch/outsource/sockeye/work/prodigal-g11'
+printf '%s' 'prodigal -i genome_11.fna -a proteins.faa
+' > '/scratch/outsource/sockeye/work/prodigal-g11/run.sh'
+printf '%s' '/scratch/outsource/sockeye/work/prodigal-g9
+/scratch/outsource/sockeye/work/prodigal-g10
+/scratch/outsource/sockeye/work/prodigal-g11
+' > '/scratch/outsource/sockeye/batch-5411f96c-894e-4953-af66-b9002ddd7139/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/sockeye/batch-5411f96c-894e-4953-af66-b9002ddd7139/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/sockeye/batch-5411f96c-894e-4953-af66-b9002ddd7139/task.sh'
+'sbatch' '--array=0-2' '--nodes=1' '--cpus-per-task=2' '--mem=4096M' '--account=st-shallam-1' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/sockeye/batch-5411f96c-894e-4953-af66-b9002ddd7139/slurm-%A_%a.out' '/scratch/outsource/sockeye/batch-5411f96c-894e-4953-af66-b9002ddd7139/task.sh'
+===== 001-trillium.sh
+# argv: -o BatchMode=yes trillium sh -s
+set -e
+mkdir -p '/scratch/outsource/trillium' && cd '/scratch/outsource/trillium'
+mkdir -p '/scratch/outsource/trillium/batch-9a216928-ea6d-41cd-a4c2-f82ccb9380fb'
+mkdir -p '/scratch/outsource/trillium/work/prodigal-g6'
+printf '%s' 'prodigal -i genome_6.fna -a proteins.faa
+' > '/scratch/outsource/trillium/work/prodigal-g6/run.sh'
+mkdir -p '/scratch/outsource/trillium/work/prodigal-g7'
+printf '%s' 'prodigal -i genome_7.fna -a proteins.faa
+' > '/scratch/outsource/trillium/work/prodigal-g7/run.sh'
+mkdir -p '/scratch/outsource/trillium/work/prodigal-g8'
+printf '%s' 'prodigal -i genome_8.fna -a proteins.faa
+' > '/scratch/outsource/trillium/work/prodigal-g8/run.sh'
+printf '%s' '/scratch/outsource/trillium/work/prodigal-g6
+/scratch/outsource/trillium/work/prodigal-g7
+/scratch/outsource/trillium/work/prodigal-g8
+' > '/scratch/outsource/trillium/batch-9a216928-ea6d-41cd-a4c2-f82ccb9380fb/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/trillium/batch-9a216928-ea6d-41cd-a4c2-f82ccb9380fb/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/trillium/batch-9a216928-ea6d-41cd-a4c2-f82ccb9380fb/task.sh'
+'sbatch' '--array=0-2' '--nodes=1' '--account=def-shallam' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/trillium/batch-9a216928-ea6d-41cd-a4c2-f82ccb9380fb/slurm-%A_%a.out' '/scratch/outsource/trillium/batch-9a216928-ea6d-41cd-a4c2-f82ccb9380fb/task.sh'
+===== 004-fir.sh
+# argv: -o BatchMode=yes fir sh -s
+set -e
+mkdir -p '/scratch/outsource/fir' && cd '/scratch/outsource/fir'
+mkdir -p '/scratch/outsource/fir/batch-e000211a-fdcf-4af3-9196-513717b99485'
+mkdir -p '/scratch/outsource/fir/work/diamond-0'
+printf '%s' 'diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16
+' > '/scratch/outsource/fir/work/diamond-0/run.sh'
+printf '%s' '/scratch/outsource/fir/work/diamond-0
+' > '/scratch/outsource/fir/batch-e000211a-fdcf-4af3-9196-513717b99485/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/fir/batch-e000211a-fdcf-4af3-9196-513717b99485/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/fir/batch-e000211a-fdcf-4af3-9196-513717b99485/task.sh'
+'sbatch' '--array=0-0' '--nodes=1' '--cpus-per-task=16' '--mem=65536M' '--account=def-shallam' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/fir/batch-e000211a-fdcf-4af3-9196-513717b99485/slurm-%A_%a.out' '/scratch/outsource/fir/batch-e000211a-fdcf-4af3-9196-513717b99485/task.sh'
+===== 004-nibi.sh
+# argv: -o BatchMode=yes nibi sh -s
+set -e
+mkdir -p '/scratch/outsource/nibi' && cd '/scratch/outsource/nibi'
+mkdir -p '/scratch/outsource/nibi/batch-b5cce937-daff-4153-b201-3ca5eabb4338'
+mkdir -p '/scratch/outsource/nibi/work/diamond-1'
+printf '%s' 'diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16
+' > '/scratch/outsource/nibi/work/diamond-1/run.sh'
+printf '%s' '/scratch/outsource/nibi/work/diamond-1
+' > '/scratch/outsource/nibi/batch-b5cce937-daff-4153-b201-3ca5eabb4338/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/nibi/batch-b5cce937-daff-4153-b201-3ca5eabb4338/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/nibi/batch-b5cce937-daff-4153-b201-3ca5eabb4338/task.sh'
+'sbatch' '--array=0-0' '--nodes=1' '--cpus-per-task=16' '--mem=65536M' '--account=def-shallam' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/nibi/batch-b5cce937-daff-4153-b201-3ca5eabb4338/slurm-%A_%a.out' '/scratch/outsource/nibi/batch-b5cce937-daff-4153-b201-3ca5eabb4338/task.sh'
+===== 004-sockeye.sh
+# argv: -o BatchMode=yes sockeye sh -s
+set -e
+mkdir -p '/scratch/outsource/sockeye' && cd '/scratch/outsource/sockeye'
+mkdir -p '/scratch/outsource/sockeye/batch-2254ca0c-3ce2-4515-9e50-683e4561e7cb'
+mkdir -p '/scratch/outsource/sockeye/work/diamond-3'
+printf '%s' 'diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16
+' > '/scratch/outsource/sockeye/work/diamond-3/run.sh'
+printf '%s' '/scratch/outsource/sockeye/work/diamond-3
+' > '/scratch/outsource/sockeye/batch-2254ca0c-3ce2-4515-9e50-683e4561e7cb/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/sockeye/batch-2254ca0c-3ce2-4515-9e50-683e4561e7cb/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/sockeye/batch-2254ca0c-3ce2-4515-9e50-683e4561e7cb/task.sh'
+'sbatch' '--array=0-0' '--nodes=1' '--cpus-per-task=16' '--mem=65536M' '--account=st-shallam-1' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/sockeye/batch-2254ca0c-3ce2-4515-9e50-683e4561e7cb/slurm-%A_%a.out' '/scratch/outsource/sockeye/batch-2254ca0c-3ce2-4515-9e50-683e4561e7cb/task.sh'
+===== 004-trillium.sh
+# argv: -o BatchMode=yes trillium sh -s
+set -e
+mkdir -p '/scratch/outsource/trillium' && cd '/scratch/outsource/trillium'
+mkdir -p '/scratch/outsource/trillium/batch-461b79f8-fb95-4e88-bd04-e99560953201'
+mkdir -p '/scratch/outsource/trillium/work/diamond-2'
+printf '%s' 'diamond blastp -d uniref50.dmnd -q proteins.faa -o hits.tsv --threads 16
+' > '/scratch/outsource/trillium/work/diamond-2/run.sh'
+printf '%s' '/scratch/outsource/trillium/work/diamond-2
+' > '/scratch/outsource/trillium/batch-461b79f8-fb95-4e88-bd04-e99560953201/workdirs'
+printf '%s' '#!/bin/sh
+d=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" '\''/scratch/outsource/trillium/batch-461b79f8-fb95-4e88-bd04-e99560953201/workdirs'\'')
+cd "$d" || exit 1
+[ -f exit ] && exit 0
+sh run.sh
+echo $? > exit.tmp && mv exit.tmp exit
+' > '/scratch/outsource/trillium/batch-461b79f8-fb95-4e88-bd04-e99560953201/task.sh'
+'sbatch' '--array=0-0' '--nodes=1' '--account=def-shallam' '--time=02:00:00' '--job-name=outsource' '--output=/scratch/outsource/trillium/batch-461b79f8-fb95-4e88-bd04-e99560953201/slurm-%A_%a.out' '/scratch/outsource/trillium/batch-461b79f8-fb95-4e88-bd04-e99560953201/task.sh'
+===== 008-fir.sh
+# argv: -o BatchMode=yes fir sh -s
+set -e
+mkdir -p '/scratch/outsource/fir' && cd '/scratch/outsource/fir'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/fir/work/diamond-0/exit' ] && echo "9004_0 $(cat '/scratch/outsource/fir/work/diamond-0/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g1/exit' ] && echo "9000_1 $(cat '/scratch/outsource/fir/work/prodigal-g1/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g0/exit' ] && echo "9000_0 $(cat '/scratch/outsource/fir/work/prodigal-g0/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g2/exit' ] && echo "9000_2 $(cat '/scratch/outsource/fir/work/prodigal-g2/exit')"
+exit 0
+
+===== 008-nibi.sh
+# argv: -o BatchMode=yes nibi sh -s
+set -e
+mkdir -p '/scratch/outsource/nibi' && cd '/scratch/outsource/nibi'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/nibi/work/prodigal-g5/exit' ] && echo "9000_2 $(cat '/scratch/outsource/nibi/work/prodigal-g5/exit')"
+[ -f '/scratch/outsource/nibi/work/prodigal-g3/exit' ] && echo "9000_0 $(cat '/scratch/outsource/nibi/work/prodigal-g3/exit')"
+[ -f '/scratch/outsource/nibi/work/diamond-1/exit' ] && echo "9004_0 $(cat '/scratch/outsource/nibi/work/diamond-1/exit')"
+[ -f '/scratch/outsource/nibi/work/prodigal-g4/exit' ] && echo "9000_1 $(cat '/scratch/outsource/nibi/work/prodigal-g4/exit')"
+exit 0
+
+===== 008-sockeye.sh
+# argv: -o BatchMode=yes sockeye sh -s
+set -e
+mkdir -p '/scratch/outsource/sockeye' && cd '/scratch/outsource/sockeye'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/sockeye/work/prodigal-g9/exit' ] && echo "9001_0 $(cat '/scratch/outsource/sockeye/work/prodigal-g9/exit')"
+[ -f '/scratch/outsource/sockeye/work/diamond-3/exit' ] && echo "9004_0 $(cat '/scratch/outsource/sockeye/work/diamond-3/exit')"
+[ -f '/scratch/outsource/sockeye/work/prodigal-g11/exit' ] && echo "9001_2 $(cat '/scratch/outsource/sockeye/work/prodigal-g11/exit')"
+[ -f '/scratch/outsource/sockeye/work/prodigal-g10/exit' ] && echo "9001_1 $(cat '/scratch/outsource/sockeye/work/prodigal-g10/exit')"
+exit 0
+
+===== 008-trillium.sh
+# argv: -o BatchMode=yes trillium sh -s
+set -e
+mkdir -p '/scratch/outsource/trillium' && cd '/scratch/outsource/trillium'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/trillium/work/diamond-2/exit' ] && echo "9004_0 $(cat '/scratch/outsource/trillium/work/diamond-2/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g8/exit' ] && echo "9001_2 $(cat '/scratch/outsource/trillium/work/prodigal-g8/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g7/exit' ] && echo "9001_1 $(cat '/scratch/outsource/trillium/work/prodigal-g7/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g6/exit' ] && echo "9001_0 $(cat '/scratch/outsource/trillium/work/prodigal-g6/exit')"
+exit 0
+
+===== 012-fir.sh
+# argv: -o BatchMode=yes fir sh -s
+set -e
+mkdir -p '/scratch/outsource/fir' && cd '/scratch/outsource/fir'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/fir/work/diamond-0/exit' ] && echo "9004_0 $(cat '/scratch/outsource/fir/work/diamond-0/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g1/exit' ] && echo "9000_1 $(cat '/scratch/outsource/fir/work/prodigal-g1/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g0/exit' ] && echo "9000_0 $(cat '/scratch/outsource/fir/work/prodigal-g0/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g2/exit' ] && echo "9000_2 $(cat '/scratch/outsource/fir/work/prodigal-g2/exit')"
+exit 0
+
+===== 012-nibi.sh
+# argv: -o BatchMode=yes nibi sh -s
+set -e
+mkdir -p '/scratch/outsource/nibi' && cd '/scratch/outsource/nibi'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/nibi/work/prodigal-g5/exit' ] && echo "9000_2 $(cat '/scratch/outsource/nibi/work/prodigal-g5/exit')"
+[ -f '/scratch/outsource/nibi/work/prodigal-g3/exit' ] && echo "9000_0 $(cat '/scratch/outsource/nibi/work/prodigal-g3/exit')"
+[ -f '/scratch/outsource/nibi/work/diamond-1/exit' ] && echo "9004_0 $(cat '/scratch/outsource/nibi/work/diamond-1/exit')"
+[ -f '/scratch/outsource/nibi/work/prodigal-g4/exit' ] && echo "9000_1 $(cat '/scratch/outsource/nibi/work/prodigal-g4/exit')"
+exit 0
+
+===== 012-sockeye.sh
+# argv: -o BatchMode=yes sockeye sh -s
+set -e
+mkdir -p '/scratch/outsource/sockeye' && cd '/scratch/outsource/sockeye'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/sockeye/work/prodigal-g9/exit' ] && echo "9001_0 $(cat '/scratch/outsource/sockeye/work/prodigal-g9/exit')"
+[ -f '/scratch/outsource/sockeye/work/diamond-3/exit' ] && echo "9004_0 $(cat '/scratch/outsource/sockeye/work/diamond-3/exit')"
+[ -f '/scratch/outsource/sockeye/work/prodigal-g11/exit' ] && echo "9001_2 $(cat '/scratch/outsource/sockeye/work/prodigal-g11/exit')"
+[ -f '/scratch/outsource/sockeye/work/prodigal-g10/exit' ] && echo "9001_1 $(cat '/scratch/outsource/sockeye/work/prodigal-g10/exit')"
+exit 0
+
+===== 012-trillium.sh
+# argv: -o BatchMode=yes trillium sh -s
+set -e
+mkdir -p '/scratch/outsource/trillium' && cd '/scratch/outsource/trillium'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/trillium/work/diamond-2/exit' ] && echo "9004_0 $(cat '/scratch/outsource/trillium/work/diamond-2/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g8/exit' ] && echo "9001_2 $(cat '/scratch/outsource/trillium/work/prodigal-g8/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g7/exit' ] && echo "9001_1 $(cat '/scratch/outsource/trillium/work/prodigal-g7/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g6/exit' ] && echo "9001_0 $(cat '/scratch/outsource/trillium/work/prodigal-g6/exit')"
+exit 0
+
+===== 016-fir.sh
+# argv: -o BatchMode=yes fir sh -s
+set -e
+mkdir -p '/scratch/outsource/fir' && cd '/scratch/outsource/fir'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/fir/work/diamond-0/exit' ] && echo "9004_0 $(cat '/scratch/outsource/fir/work/diamond-0/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g1/exit' ] && echo "9000_1 $(cat '/scratch/outsource/fir/work/prodigal-g1/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g0/exit' ] && echo "9000_0 $(cat '/scratch/outsource/fir/work/prodigal-g0/exit')"
+[ -f '/scratch/outsource/fir/work/prodigal-g2/exit' ] && echo "9000_2 $(cat '/scratch/outsource/fir/work/prodigal-g2/exit')"
+exit 0
+
+===== 016-nibi.sh
+# argv: -o BatchMode=yes nibi sh -s
+set -e
+mkdir -p '/scratch/outsource/nibi' && cd '/scratch/outsource/nibi'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/nibi/work/prodigal-g5/exit' ] && echo "9000_2 $(cat '/scratch/outsource/nibi/work/prodigal-g5/exit')"
+[ -f '/scratch/outsource/nibi/work/prodigal-g3/exit' ] && echo "9000_0 $(cat '/scratch/outsource/nibi/work/prodigal-g3/exit')"
+[ -f '/scratch/outsource/nibi/work/diamond-1/exit' ] && echo "9004_0 $(cat '/scratch/outsource/nibi/work/diamond-1/exit')"
+[ -f '/scratch/outsource/nibi/work/prodigal-g4/exit' ] && echo "9000_1 $(cat '/scratch/outsource/nibi/work/prodigal-g4/exit')"
+exit 0
+
+===== 016-sockeye.sh
+# argv: -o BatchMode=yes sockeye sh -s
+set -e
+mkdir -p '/scratch/outsource/sockeye' && cd '/scratch/outsource/sockeye'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/sockeye/work/prodigal-g9/exit' ] && echo "9001_0 $(cat '/scratch/outsource/sockeye/work/prodigal-g9/exit')"
+[ -f '/scratch/outsource/sockeye/work/diamond-3/exit' ] && echo "9004_0 $(cat '/scratch/outsource/sockeye/work/diamond-3/exit')"
+[ -f '/scratch/outsource/sockeye/work/prodigal-g11/exit' ] && echo "9001_2 $(cat '/scratch/outsource/sockeye/work/prodigal-g11/exit')"
+[ -f '/scratch/outsource/sockeye/work/prodigal-g10/exit' ] && echo "9001_1 $(cat '/scratch/outsource/sockeye/work/prodigal-g10/exit')"
+exit 0
+
+===== 017-trillium.sh
+# argv: -o BatchMode=yes trillium sh -s
+set -e
+mkdir -p '/scratch/outsource/trillium' && cd '/scratch/outsource/trillium'
+'squeue' '-h' '-r' '--me' '-o' '%i %T'
+echo '#exits'
+[ -f '/scratch/outsource/trillium/work/diamond-2/exit' ] && echo "9004_0 $(cat '/scratch/outsource/trillium/work/diamond-2/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g8/exit' ] && echo "9001_2 $(cat '/scratch/outsource/trillium/work/prodigal-g8/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g7/exit' ] && echo "9001_1 $(cat '/scratch/outsource/trillium/work/prodigal-g7/exit')"
+[ -f '/scratch/outsource/trillium/work/prodigal-g6/exit' ] && echo "9001_0 $(cat '/scratch/outsource/trillium/work/prodigal-g6/exit')"
+exit 0
+
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 1.63s
+

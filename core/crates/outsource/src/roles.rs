@@ -1,4 +1,4 @@
-//! The long-running roles: the market server, a provider over stdio, a Slurm front over stdio, and `connect`.
+//! The long-running roles: the market server, a provider over stdio, and `connect`.
 
 use crate::client::Client;
 use outsource_carrier::{dial, stdio, unix_connect, unix_listen, Link};
@@ -78,12 +78,23 @@ async fn keep_dialled(market: Market, cmd: String) {
     }
 }
 
-/// `~/.outsource/provider.toml`: a `ProviderConfig` plus index YAMLs to import at start.
+/// `~/.outsource/provider.toml`: this host's `ProviderConfig`, index YAMLs to import at start, and
+/// one `[[cluster]]` per Slurm cluster this process fronts over ssh.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct ProviderFile {
     #[serde(flatten)]
     provider: ProviderConfig,
+    imports: Vec<PathBuf>,
+    cluster: Vec<Cluster>,
+}
+
+/// One provider per cluster, so the market's picker, reviews and success rates stay per cluster.
+#[derive(Deserialize)]
+struct Cluster {
+    provider: ProviderConfig,
+    slurm: SlurmConfig,
+    #[serde(default)]
     imports: Vec<PathBuf>,
 }
 
@@ -93,41 +104,22 @@ pub async fn provider(config: Option<PathBuf>) -> anyhow::Result<()> {
     if cfg.id.is_empty() {
         cfg.id = hostname();
     }
-    let p = Provider::local(cfg);
-    for index in &file.imports {
-        p.import(index)?;
-    }
-    outsource_provider::serve(vec![p], stdio()).await
-}
-
-/// `~/.outsource/front.toml`: one `[[cluster]]` per Slurm cluster this front registers.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct FrontFile {
-    cluster: Vec<FrontCluster>,
-}
-
-#[derive(Deserialize)]
-struct FrontCluster {
-    provider: ProviderConfig,
-    slurm: SlurmConfig,
-    #[serde(default)]
-    imports: Vec<PathBuf>,
-}
-
-pub async fn front(config: Option<PathBuf>, only: Option<String>) -> anyhow::Result<()> {
-    let file: FrontFile = read_toml(&config.unwrap_or_else(|| outsource_dir().join("front.toml")))?;
-    let mut providers = Vec::new();
-    for c in file.cluster.into_iter().filter(|c| only.as_ref().is_none_or(|o| *o == c.slurm.cluster)) {
+    let mut providers = vec![(Provider::local(cfg), file.imports)];
+    for c in file.cluster {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let p = Provider::new(c.provider, Arc::new(SlurmBackend::new(c.slurm, tx)), rx);
-        for index in &c.imports {
-            p.import(index)?;
-        }
-        providers.push(p);
+        let saved = c.provider.resolved_state_dir().join("jobs.json");
+        let backend = SlurmBackend::new(c.slurm, c.provider.host(), saved, tx);
+        providers.push((Provider::new(c.provider, Arc::new(backend), rx), c.imports));
     }
-    anyhow::ensure!(!providers.is_empty(), "front.toml names no matching [[cluster]]");
-    outsource_provider::serve(providers, stdio()).await
+    // An unreachable cluster must not take the other providers down; its last import stays in state.json.
+    for (p, imports) in &providers {
+        for index in imports {
+            if let Err(e) = p.import(index).await {
+                eprintln!("outsource: {}: import {}: {e:#}", p.id(), index.display());
+            }
+        }
+    }
+    outsource_provider::serve(providers.into_iter().map(|(p, _)| p).collect(), stdio()).await
 }
 
 /// Bridges this process's stdio to the market socket, so `ssh <host> outsource connect` is a link.

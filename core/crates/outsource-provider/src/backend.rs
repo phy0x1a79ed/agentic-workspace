@@ -1,6 +1,6 @@
-//! Where a provider's jobs run. The provider turns every step into a shell script in a work dir;
-//! a backend only runs scripts. `Local` runs them detached on this host; the Slurm front runs them
-//! as job-array tasks.
+//! Where a provider's jobs run. The provider turns every compute step into a shell script; a
+//! backend writes it to the work dir as `run.sh` and runs it. `Local` runs them detached on this
+//! host; the Slurm backend runs them as job-array tasks on a cluster.
 
 use async_trait::async_trait;
 use outsource_proto::{PromiseId, Resources, RunStats};
@@ -11,9 +11,11 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub struct JobSpec {
     pub promise: PromiseId,
-    /// Holds `run.sh`. The script writes its outputs here. The backend writes `exit` here when the
+    /// Gets `run.sh`. The script writes its outputs here. The backend writes `exit` here when the
     /// script ends, holding its exit code, so a restarted provider can recover the result.
     pub workdir: PathBuf,
+    /// The content of `run.sh`.
+    pub script: String,
     pub res: Resources,
 }
 
@@ -27,9 +29,8 @@ pub type DoneTx = mpsc::UnboundedSender<Done>;
 pub const RUN_LINE: &str =
     "if [ -x /usr/bin/time ]; then /usr/bin/time -f '%M %U %S %e' -o stats sh ./run.sh; else sh ./run.sh; fi";
 
-/// The stats a job left in `workdir`, or `None` when it ran unmeasured.
-pub fn read_stats(workdir: &Path) -> Option<RunStats> {
-    let text = std::fs::read_to_string(workdir.join("stats")).ok()?;
+/// The run stats in the text of a `stats` file; `None` when it holds no figures.
+pub fn parse_stats(text: &str) -> Option<RunStats> {
     let f: Vec<&str> = text.lines().last()?.split_whitespace().collect();
     let [rss, user, sys, wall] = f[..] else { return None };
     Some(RunStats {
@@ -67,15 +68,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stats_file_parses_to_run_stats_and_absence_is_none() {
-        let d = std::env::temp_dir().join(format!("stats-{}", outsource_proto::new_id()));
-        std::fs::create_dir_all(&d).unwrap();
-        assert_eq!(read_stats(&d), None);
+    fn stats_text_parses_to_run_stats_and_absence_is_none() {
+        assert_eq!(parse_stats(""), None);
         // GNU time puts a note on a failing command before the figures.
-        std::fs::write(d.join("stats"), "Command exited with non-zero status 1\n2048 1.25 0.25 3.5\n").unwrap();
-        assert_eq!(read_stats(&d), Some(RunStats { max_rss_kb: Some(2048), cpu_s: Some(1.5), wall_s: Some(3.5) }));
-        std::fs::write(d.join("stats"), "garbage").unwrap();
-        assert_eq!(read_stats(&d), None);
-        std::fs::remove_dir_all(d).unwrap();
+        assert_eq!(
+            parse_stats("Command exited with non-zero status 1\n2048 1.25 0.25 3.5\n"),
+            Some(RunStats { max_rss_kb: Some(2048), cpu_s: Some(1.5), wall_s: Some(3.5) })
+        );
+        assert_eq!(parse_stats("garbage"), None);
     }
 }

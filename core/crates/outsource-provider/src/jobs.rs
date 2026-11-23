@@ -1,4 +1,4 @@
-//! Pure helpers for job kinds: shell quoting, globs, filesystem sizes and cargo discovery.
+//! Pure helpers for job kinds: shell quoting, globs, a caller's material sizes and cargo discovery.
 
 use std::path::{Path, PathBuf};
 
@@ -36,27 +36,6 @@ pub fn glob_match(pat: &str, text: &str) -> bool {
     go(pat.as_bytes(), text.as_bytes())
 }
 
-/// Relative paths of the regular files under `root`; symlinks are skipped.
-pub fn walk_files(root: &Path) -> Vec<String> {
-    fn go(root: &Path, dir: &Path, out: &mut Vec<String>) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
-            let Ok(ft) = e.file_type() else { continue };
-            if ft.is_dir() {
-                go(root, &e.path(), out);
-            } else if ft.is_file() {
-                if let Ok(rel) = e.path().strip_prefix(root) {
-                    out.push(rel.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-    let mut out = vec![];
-    go(root, root, &mut out);
-    out.sort();
-    out
-}
-
 /// True size from filesystem metadata; a directory sums its files. Never reads bytes.
 pub fn disk_size(path: &Path) -> u64 {
     let Ok(md) = std::fs::symlink_metadata(path) else { return 0 };
@@ -68,14 +47,6 @@ pub fn disk_size(path: &Path) -> u64 {
         md.len()
     } else {
         0
-    }
-}
-
-pub fn remove_path(path: &Path) {
-    match std::fs::symlink_metadata(path) {
-        Ok(md) if md.is_dir() => drop(std::fs::remove_dir_all(path)),
-        Ok(_) => drop(std::fs::remove_file(path)),
-        Err(_) => {}
     }
 }
 

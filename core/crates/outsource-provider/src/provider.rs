@@ -1,10 +1,11 @@
 //! The provider: prices offer sets against its cache and queue, runs awarded sets through its
 //! backend, and keeps promises, instances and reviews on disk so a restart recovers.
 
-use crate::backend::{read_stats, Backend, Done, JobSpec};
+use crate::backend::{parse_stats, Backend, Done, JobSpec};
 use crate::config::ProviderConfig;
+use crate::host::Host;
 use crate::index::{normalize, Entry, Flight, Found, Index, Pair};
-use crate::jobs::{disk_size, find_cargo, find_on_path, glob_match, is_local_route, q, remove_path, walk_files};
+use crate::jobs::{find_cargo, find_on_path, glob_match, is_local_route, q};
 use crate::local::LocalBackend;
 use outsource_proto::*;
 use serde::{Deserialize, Serialize};
@@ -29,9 +30,10 @@ pub(crate) struct Instance {
 }
 
 impl Instance {
-    pub fn new(path: PathBuf, listing: Vec<String>) -> Instance {
-        let size = disk_size(&path);
-        Instance { path, listing, size }
+    /// From `Host::files` of `path`: the bytes of every file, listing those `keep` accepts.
+    pub fn of(path: PathBuf, files: &[(String, u64)], keep: impl Fn(&str) -> bool) -> Instance {
+        let listing = files.iter().map(|f| &f.0).filter(|f| keep(f)).cloned().collect();
+        Instance { path, listing, size: files.iter().map(|f| f.1).sum() }
     }
 }
 
@@ -82,10 +84,11 @@ pub(crate) struct State {
 pub(crate) struct Inner {
     pub(crate) cfg: ProviderConfig,
     state_dir: PathBuf,
+    /// Holds the work dirs and instances, and runs prep and placement steps: a move needs no queue slot.
+    pub host: Host,
+    work_dir: PathBuf,
     /// Runs compute steps.
     backend: Arc<dyn Backend>,
-    /// Runs placement steps on this host: a move needs no queue slot.
-    local: LocalBackend,
     pub state: Mutex<State>,
     out: Mutex<Option<mpsc::UnboundedSender<Envelope>>>,
     peer: Mutex<String>,
@@ -183,16 +186,21 @@ impl Provider {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        let host = cfg.host();
+        // A remote host's tools are taken on trust: a bid cannot afford the ssh to check them.
+        let trusted = |p: &PathBuf| (!host.is_local() || p.exists()).then(|| p.clone());
         let cargo = match &cfg.cargo {
-            Some(p) => p.exists().then(|| p.clone()),
-            None => find_cargo(),
+            Some(p) => trusted(p),
+            None if host.is_local() => find_cargo(),
+            None => None,
         };
         let apptainer = match &cfg.apptainer {
-            Some(p) => p.exists().then(|| p.clone()),
-            None => find_on_path("apptainer", &[]),
+            Some(p) => trusted(p),
+            None if host.is_local() => find_on_path("apptainer", &[]),
+            None => None,
         };
+        let work_dir = if cfg.work_dir.as_os_str().is_empty() { state_dir.join("work") } else { cfg.work_dir.clone() };
         let jobs: JobWaiters = Default::default();
-        let (local_tx, local_rx) = mpsc::unbounded_channel();
         let state = State {
             promises: saved.promises,
             instances: saved.instances,
@@ -203,8 +211,9 @@ impl Provider {
         let inner = Arc::new(Inner {
             cfg,
             state_dir,
+            host,
+            work_dir,
             backend,
-            local: LocalBackend::new(local_tx),
             state: Mutex::new(state),
             out: Mutex::new(None),
             peer: Mutex::new("market".into()),
@@ -213,8 +222,7 @@ impl Provider {
             apptainer,
             cargo_ver: OnceCell::new(),
         });
-        tokio::spawn(route_done(done, jobs.clone()));
-        tokio::spawn(route_done(local_rx, jobs));
+        tokio::spawn(route_done(done, jobs));
         let me = Provider { inner };
         me.resume();
         me
@@ -286,9 +294,9 @@ impl Provider {
             Msg::Event(s) => me.on_event(s),
             Msg::Status(r) => me.on_status(&env, r).await,
             Msg::Cancel(r) => me.on_cancel(&env, r).await,
-            Msg::Dispose(a) => me.on_dispose(&env, a),
+            Msg::Dispose(a) => me.on_dispose(&env, a).await,
             Msg::Import(a) => {
-                let reply = match self.import_materials(&a.materials) {
+                let reply = match self.import_materials(&a.materials).await {
                     Ok(v) => Msg::Return(v),
                     Err(e) => raise_msg(raise::BAD_ARGS, e),
                 };
@@ -410,7 +418,7 @@ impl Inner {
     /// Seconds a bid adds for pulling the step's environment, zero when cached or absent.
     fn pull_secs(&self, step: &Step) -> Result<f64, String> {
         Ok(match self.env_of(step)? {
-            Some(env) if !self.sif(&env.id).exists() => self.cfg.env_pull_secs,
+            Some(env) if !(self.host.is_local() && self.sif(&env.id).exists()) => self.cfg.env_pull_secs,
             _ => 0.0,
         })
     }
@@ -649,12 +657,8 @@ impl Inner {
         let path = self.cargo.as_ref().ok_or("no cargo")?;
         self.cargo_ver
             .get_or_try_init(|| async {
-                let out = tokio::process::Command::new(path)
-                    .arg("--version")
-                    .output()
-                    .await
-                    .map_err(|e| format!("cargo --version: {e}"))?;
-                Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+                let out = self.host.sh(&format!("{} --version", q(&path.to_string_lossy()))).await;
+                Ok(out.map_err(|e| format!("cargo --version: {e}"))?.trim().to_string())
             })
             .await
             .cloned()
@@ -749,67 +753,49 @@ impl Inner {
         set: &OfferSet,
         resolved: &Resolved,
     ) -> Result<Vec<(Id, Instance)>, String> {
-        let workdir = self.state_dir.join("work").join(format!("{promise}-{idx}"));
-        if !workdir.join("run.sh").exists() {
-            std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
-            let script = match step.op.as_str() {
-                "cargo" => self.compile_cargo(step)?,
-                _ => self.compile_task(set, step, resolved, &workdir)?,
-            };
-            std::fs::write(workdir.join("run.sh"), script).map_err(|e| e.to_string())?;
-        }
-        let code = self.exec(&*self.backend, promise, &workdir, &set.resources).await?;
-        if let Some(run) = read_stats(&workdir) {
+        let workdir = self.work_dir.join(format!("{promise}-{idx}"));
+        let script = match step.op.as_str() {
+            "cargo" => self.compile_cargo(step)?,
+            _ => self.compile_task(set, step, resolved, &workdir)?,
+        };
+        let code = self.exec(promise, &workdir, script, &set.resources).await?;
+        let stats = self.host.sh(&format!("cat {} 2>/dev/null || true", q(&workdir.join("stats").to_string_lossy()))).await;
+        if let Some(run) = stats.ok().as_deref().and_then(parse_stats) {
             self.state.lock().unwrap().run_stats.entry(promise.to_string()).or_default().merge(&run);
         }
         if code != 0 {
             return Err(format!("{} exited {code}", step.op));
         }
         let slots = step.slot_ids();
-        match step.op.as_str() {
-            "cargo" => {
-                let bin = workdir.join("bin");
-                if !bin.is_file() {
-                    return Err("build produced no binary".into());
-                }
-                let made = Instance::new(bin, vec![]);
-                Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).collect())
-            }
-            _ => {
-                let globs: Vec<&str> = step.spec["outputs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                const BOOKKEEPING: [&str; 6] = ["run.sh", "exit", "exit.tmp", "pid", "log", "stats"];
-                let listing: Vec<String> = walk_files(&workdir)
-                    .into_iter()
-                    .filter(|f| !BOOKKEEPING.contains(&f.as_str()) && globs.iter().any(|g| glob_match(g, f)))
-                    .collect();
-                if !globs.is_empty() && listing.is_empty() {
-                    return Err("task made none of its outputs".into());
-                }
-                let mut kept = vec![];
-                for (id, _, path) in typed_outputs(step) {
-                    let at = workdir.join(&path);
-                    if !at.exists() {
-                        return Err(format!("task made no {path}, typed output"));
-                    }
-                    let files = if at.is_dir() { walk_files(&at) } else { vec![] };
-                    kept.push((id, Instance::new(at, files)));
-                }
-                let made = Instance::new(workdir, listing);
-                Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).chain(kept).collect())
-            }
+        if step.op == "cargo" {
+            let bin = workdir.join("bin");
+            let files = self.host.files(&bin).await.map_err(|_| "build produced no binary".to_string())?;
+            let made = Instance::of(bin, &files, |_| false);
+            return Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).collect());
         }
+        let globs: Vec<&str> = step.spec["outputs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        const BOOKKEEPING: [&str; 6] = ["run.sh", "exit", "exit.tmp", "pid", "log", "stats"];
+        let files = self.host.files(&workdir).await.map_err(|e| format!("listing outputs: {e}"))?;
+        let made = Instance::of(workdir.clone(), &files, |f| !BOOKKEEPING.contains(&f) && globs.iter().any(|g| glob_match(g, f)));
+        if !globs.is_empty() && made.listing.is_empty() {
+            return Err("task made none of its outputs".into());
+        }
+        let mut kept = vec![];
+        for (id, _, path) in typed_outputs(step) {
+            let at = workdir.join(&path);
+            let files = self.host.files(&at).await.map_err(|_| format!("task made no {path}, typed output"))?;
+            kept.push((id, Instance::of(at, &files, |f| !f.is_empty())));
+        }
+        Ok(slots.into_iter().map(|(_, id)| (id, made.clone())).chain(kept).collect())
     }
 
-    /// Runs `run.sh` in `workdir` through the backend and returns its exit code. A work dir that
-    /// already holds `exit` (a job from before a restart) is not launched again.
-    async fn exec(&self, backend: &dyn Backend, promise: &str, workdir: &Path, res: &Resources) -> Result<i32, String> {
-        if let Some(code) = std::fs::read_to_string(workdir.join("exit")).ok().and_then(|s| s.trim().parse().ok()) {
-            return Ok(code);
-        }
+    /// Hands `script` to the backend as `workdir/run.sh` and returns its exit code. Backends
+    /// report a work dir that already holds `exit` (a job from before a restart) without rerunning it.
+    async fn exec(&self, promise: &str, workdir: &Path, script: String, res: &Resources) -> Result<i32, String> {
         let (tx, rx) = oneshot::channel();
         self.jobs.lock().unwrap().insert(promise.to_string(), tx);
-        let spec = JobSpec { promise: promise.to_string(), workdir: workdir.to_path_buf(), res: res.clone() };
-        if let Err(e) = backend.launch(spec).await {
+        let spec = JobSpec { promise: promise.to_string(), workdir: workdir.to_path_buf(), script, res: res.clone() };
+        if let Err(e) = self.backend.launch(spec).await {
             self.jobs.lock().unwrap().remove(promise);
             return Err(format!("launch failed: {e}"));
         }
@@ -859,14 +845,14 @@ impl Inner {
 
     /// Where the pulled image for an environment id is cached.
     fn sif(&self, id: &str) -> PathBuf {
-        self.state_dir.join("env").join(format!("{id}.sif"))
+        self.work_dir.with_file_name("env").join(format!("{id}.sif"))
     }
 
     /// Shell lines that pull the environment's image into the cache unless it is there.
     fn pull_lines(&self, env: &Env, apptainer: &Path) -> Vec<String> {
         let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
         vec![
-            format!("mkdir -p {}", q(&self.state_dir.join("env").to_string_lossy())),
+            format!("mkdir -p {}", q(&self.work_dir.with_file_name("env").to_string_lossy())),
             format!("[ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif}; }}", q(&env.container)),
         ]
     }
@@ -927,7 +913,7 @@ impl Inner {
     /// holds it, and pulls the environment image. Returns the ids now held here.
     async fn prep(self: &Arc<Self>, promise: &str, idx: usize, step: &Step, set: &OfferSet, resolved: &mut Resolved) -> Result<Vec<Id>, String> {
         self.resolve_staged(step, resolved).await;
-        let mut lines = vec!["set -e".to_string(), "cd \"$(dirname \"$0\")\"".to_string()];
+        let mut lines = self.script_head(promise, idx);
         let (mut ids, mut fetched) = (vec![], vec![]);
         {
             let mut st = self.state.lock().unwrap();
@@ -940,7 +926,7 @@ impl Inner {
                 }
                 let (_, route, held_at) = self.nearest(set, id, 0.0).ok_or_else(|| format!("cannot stage {id}: no route to a holder"))?;
                 let src = item["src"].as_str().or(held_at).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
-                let dir = self.state_dir.join("held").join(id);
+                let dir = self.work_dir.with_file_name("held").join(id);
                 lines.push(format!("mkdir -p {}", q(&dir.to_string_lossy())));
                 lines.push(if is_local_route(route) {
                     format!("cp -a {} {}/", q(src), q(&dir.to_string_lossy()))
@@ -958,34 +944,35 @@ impl Inner {
         if let (Some(env), Some(apptainer)) = (self.env_of(step)?, &self.apptainer) {
             lines.extend(self.pull_lines(&env, apptainer));
         }
-        let ran = if lines.len() > 2 {
-            let workdir = self.state_dir.join("work").join(format!("{promise}-{idx}"));
-            std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
-            if !workdir.join("run.sh").exists() {
-                std::fs::write(workdir.join("run.sh"), lines.join("\n") + "\n").map_err(|e| e.to_string())?;
-            }
-            match self.exec(&self.local, promise, &workdir, &set.resources).await {
-                Ok(0) => Ok(()),
-                Ok(code) => Err(format!("prep exited {code}")),
-                Err(e) => Err(e),
-            }
-        } else {
-            Ok(())
-        };
-        let mut st = self.state.lock().unwrap();
-        for (id, path, eid) in fetched {
-            match &ran {
-                Ok(()) => {
-                    let listing = if path.is_dir() { walk_files(&path) } else { vec![] };
-                    st.instances.insert(id, Instance::new(path, listing));
-                    st.index.finish(eid);
+        let mut ran = if lines.len() > 2 { self.host.sh(&(lines.join("\n") + "\n")).await.map(drop).map_err(|e| format!("prep failed: {e}")) } else { Ok(()) };
+        let mut made = vec![];
+        for (id, path, _) in &fetched {
+            if ran.is_ok() {
+                match self.host.files(path).await {
+                    Ok(files) => made.push((id.clone(), Instance::of(path.clone(), &files, |f| !f.is_empty()))),
+                    Err(e) => ran = Err(format!("prep: {e}")),
                 }
+            }
+        }
+        let mut st = self.state.lock().unwrap();
+        if ran.is_ok() {
+            st.instances.extend(made);
+        }
+        for (_, _, eid) in fetched {
+            match &ran {
+                Ok(()) => st.index.finish(eid),
                 Err(_) => st.index.remove(eid),
             }
             st.waiters.remove(&eid);
         }
         self.persist(&st);
         ran.map(|()| ids)
+    }
+
+    /// The first lines of a script run on the host: stop at the first failure, in the step's work dir.
+    fn script_head(&self, promise: &str, idx: usize) -> Vec<String> {
+        let w = q(&self.work_dir.join(format!("{promise}-{idx}")).to_string_lossy());
+        vec!["set -e".to_string(), format!("mkdir -p {w} && cd {w}")]
     }
 
     async fn place(
@@ -1004,19 +991,18 @@ impl Inner {
             self.cfg.routes.get(to).ok_or_else(|| format!("no route to {to}"))?.as_str()
         };
         let ids: Vec<Id> = step.inputs.iter().map(|i| resolve(resolved, i)).collect();
-        let workdir = self.state_dir.join("work").join(format!("{promise}-{idx}"));
-        let mut lines = vec!["set -e".to_string(), "cd \"$(dirname \"$0\")\"".to_string()];
+        let workdir = self.work_dir.join(format!("{promise}-{idx}"));
+        let mut lines = self.script_head(promise, idx);
         let mut placed = vec![];
         let files_only = step.spec["files"].as_bool().unwrap_or(false);
-        std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
         {
             let st = self.state.lock().unwrap();
             for (n, id) in ids.iter().enumerate() {
                 if files_only {
                     let inst = st.instances.get(id).ok_or_else(|| format!("{id} is not held here"))?;
-                    let list = workdir.join(format!("files-{n}.txt"));
-                    std::fs::write(&list, inst.listing.join("\n") + "\n").map_err(|e| e.to_string())?;
-                    let (from, list) = (q(&inst.path.to_string_lossy()), q(&list.to_string_lossy()));
+                    let list = q(&workdir.join(format!("files-{n}.txt")).to_string_lossy());
+                    lines.push(format!("printf '%s\\n' {} > {list}", inst.listing.iter().map(|f| q(f)).collect::<Vec<_>>().join(" ")));
+                    let from = q(&inst.path.to_string_lossy());
                     if is_local_route(route) {
                         lines.push(format!("mkdir -p {d} && tar -C {from} -cf - -T {list} | tar -C {d} -xf -", d = q(dest)));
                     } else {
@@ -1045,13 +1031,9 @@ impl Inner {
                 placed.push((id.clone(), format!("{dest}/{name}")));
             }
         }
-        if !workdir.join("run.sh").exists() {
-            std::fs::create_dir_all(&workdir).map_err(|e| e.to_string())?;
-            std::fs::write(workdir.join("run.sh"), lines.join("\n") + "\n").map_err(|e| e.to_string())?;
-        }
-        match self.exec(&self.local, promise, &workdir, &set.resources).await? {
-            0 => Ok(placed),
-            code => Err(format!("place exited {code}")),
+        match self.host.sh(&(lines.join("\n") + "\n")).await {
+            Ok(_) => Ok(placed),
+            Err(e) => Err(format!("place failed: {e}")),
         }
     }
 
@@ -1062,8 +1044,11 @@ impl Inner {
         let Some((phase, moves_only)) = rec else {
             return self.reply_env(env.reply(&raise_msg(raise::UNKNOWN_PROMISE, r.promise)));
         };
-        let runner: &dyn Backend = if moves_only { &self.local } else { &*self.backend };
-        let life = if phase.is_final() { None } else { Some(runner.life(&r.promise).await) };
+        let life = match (phase.is_final(), moves_only) {
+            (true, _) => None,
+            (false, true) => Some(json!({"backend": "place"})),
+            (false, false) => Some(self.backend.life(&r.promise).await),
+        };
         let status = PromiseStatus { promise: r.promise, phase, life };
         self.reply_env(env.reply(&Msg::Return(serde_json::to_value(status).expect("status serializes"))));
     }
@@ -1090,11 +1075,10 @@ impl Inner {
         }
         self.jobs.lock().unwrap().remove(&r.promise);
         self.backend.kill(&r.promise).await;
-        self.local.kill(&r.promise).await;
         self.reply_env(env.reply(&Msg::Return(Value::Null)));
     }
 
-    fn on_dispose(&self, env: &Envelope, a: DisposeArgs) {
+    async fn on_dispose(&self, env: &Envelope, a: DisposeArgs) {
         let paths: Vec<PathBuf> = {
             let mut st = self.state.lock().unwrap();
             let held: Vec<Id> = a.ids.iter().filter(|i| st.instances.contains_key(*i)).cloned().collect();
@@ -1103,8 +1087,11 @@ impl Inner {
             self.persist(&st);
             paths
         };
-        for p in paths {
-            remove_path(&p);
+        if !paths.is_empty() {
+            let rm: Vec<String> = paths.iter().map(|p| q(&p.to_string_lossy())).collect();
+            if let Err(e) = self.host.sh(&format!("rm -rf {}", rm.join(" "))).await {
+                tracing::warn!("dispose: {e}");
+            }
         }
         self.reply_env(env.reply(&Msg::Return(Value::Null)));
     }

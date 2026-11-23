@@ -212,7 +212,7 @@ async fn a3_inputs_priced_from_the_nearest_place() {
     c3.routes = [("far".into(), "user@far".into())].into();
     c3.bandwidth = 1e6;
     let (p2, p3) = (Provider::local(c2), Provider::local(c3));
-    let ids = p1.import(&write_library(&d.path().join("lib"), &[("data.txt", "1", "hello")])).unwrap();
+    let ids = p1.import(&write_library(&d.path().join("lib"), &[("data.txt", "1", "hello")])).await.unwrap();
 
     let mut set = set_of(vec![task(&[("contract", "use")], "true", ids.clone())]);
     set.start = vec![Fact::at(&ids[0], "p1"), Fact::at(&ids[0], "far")];
@@ -285,7 +285,7 @@ async fn a5_imports_agree_across_providers_and_rebuilds_hit() {
     let ib = write_library(&lb, &[("db.dmnd", "2.1", "BBBBBBBB")]);
     std::fs::File::options().write(true).open(la.join("db.dmnd")).unwrap()
         .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1000)).unwrap();
-    let (ida, idb) = (a.import(&ia).unwrap(), b.import(&ib).unwrap());
+    let (ida, idb) = (a.import(&ia).await.unwrap(), b.import(&ib).await.unwrap());
     assert_eq!(ida, idb, "same declared set, same id; mtime and bytes never enter identity");
 
     let count = d.path().join("count");
@@ -576,7 +576,7 @@ async fn env_task_pulls_once_prices_the_pull_and_runs_the_protocol_inside() {
     let mut c = cfg(d.path(), "p");
     c.apptainer = Some(fake);
     let p = Provider::local(c);
-    let ids = p.import(&write_library(&d.path().join("lib"), &[("e.env", "1", "container: docker://x/y:1\n")])).unwrap();
+    let ids = p.import(&write_library(&d.path().join("lib"), &[("e.env", "1", "container: docker://x/y:1\n")])).await.unwrap();
     // A material the caller's own provider holds is named by a `start` fact alone.
     let data = d.path().join("data.txt");
     std::fs::write(&data, "mine").unwrap();
@@ -730,6 +730,6 @@ async fn a_second_prep_of_a_typed_material_waits_on_the_transfer_in_flight() {
     }
     assert!(kept_ids(&settled["one"]).contains(&id) && kept_ids(&settled["two"]) == [id]);
     let work = d.path().join("p2/work");
-    assert!(work.join("one-0/run.sh").exists() && !work.join("two-0").exists(), "the second prep ran no transfer");
+    assert!(work.join("one-0").exists() && !work.join("two-0").exists(), "the second prep ran no transfer");
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1, "one image pull");
 }
