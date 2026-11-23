@@ -1,5 +1,5 @@
 # The outsource core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/outsource.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=outsource-e5600b53bf9f
-file=awm-plugin-outsource-e5600b53bf9f-linux-x86_64-musl
-sha256=670913db0680bc42d44b9363c1ea5dc349867a8f82abccc961a24d55caee853d
+version=outsource-0732d558cbf5
+file=awm-plugin-outsource-0732d558cbf5-linux-x86_64-musl
+sha256=aafab3d22b14ceab951d28d462d5884fa35086b4231b065eec7c1d25336678ed
