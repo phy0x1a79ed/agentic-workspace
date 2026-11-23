@@ -14,7 +14,7 @@ pub fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<(Msg, Vec<String
     }
     if verb == "offer" || verb == "prep" {
         let Compiled { set, warnings } = if verb == "offer" { offer::compile(args, site)? } else { offer::compile_prep(args, site)? };
-        return Ok((Msg::Offer(OfferArgs { set, promise: None }), warnings));
+        return Ok((Msg::Offer(OfferArgs { set, promise: None, inbound: vec![] }), warnings));
     }
     let msg = serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())?;
     Ok((msg, vec![]))

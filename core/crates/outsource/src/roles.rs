@@ -152,3 +152,56 @@ pub fn local_client(market: &Market, name: &str) -> Client {
     tokio::spawn(async move { m.serve(to_client, from_client).await });
     Client::new(name, to_market, from_market)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offer::{compile, Site};
+    use outsource_proto::{Msg, OfferArgs, Phase, WatchArgs};
+    use serde_json::json;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    /// `far` has no route to `near`, which holds the input and the destination, but `near` reaches
+    /// `far`: `near` pushes the input and pulls the result, both through the market.
+    #[tokio::test]
+    async fn a_holder_pushes_to_a_provider_that_cannot_reach_it() {
+        let d = tempfile::tempdir().unwrap();
+        let cfg = |id: &str, routes: &[(&str, &str)]| ProviderConfig {
+            state_dir: d.path().join(id),
+            routes: routes.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..ProviderConfig::new(id)
+        };
+        let market = Market::new("market");
+        for p in [Provider::local(cfg("near", &[("far", "local")])), Provider::local(cfg("far", &[]))] {
+            let ((to_market, from_link), (to_link, from_market)) = (unbounded_channel(), unbounded_channel());
+            let m = market.clone();
+            tokio::spawn(async move { m.serve(to_link, from_link).await });
+            tokio::spawn(outsource_provider::serve(vec![p], Link { tx: to_market, rx: from_market }));
+        }
+        let work = d.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("in.txt"), "data").unwrap();
+        let site = Site { node: "near".into(), cwd: work.clone() };
+        let offer = json!({"requires": ["in.txt"], "produces": ["res"], "protocol": "mkdir res && cp in.txt res/copy.txt", "dest": "dest", "to": "far"});
+        let set = compile(offer, &site).unwrap().set;
+
+        let client = local_client(&market, "caller");
+        let mut events = client.events().unwrap();
+        client.ask(Msg::Watch(WatchArgs { promises: vec![] })).await.unwrap();
+        let phase = loop {
+            client.ask(Msg::Offer(OfferArgs { set: set.clone(), promise: None, inbound: vec![] })).await.unwrap();
+            let phase = loop {
+                let Some(Msg::Event(s)) = events.recv().await else { panic!("market link closed") };
+                if matches!(s.phase, Phase::Settled { .. } | Phase::Failed { .. }) {
+                    break s.phase;
+                }
+            };
+            // The providers may not have registered yet.
+            if !matches!(&phase, Phase::Failed { message, .. } if message == "no eligible provider") {
+                break phase;
+            }
+        };
+        assert!(matches!(&phase, Phase::Settled { provider, .. } if provider == "far"), "{phase:?}");
+        assert_eq!(std::fs::read_to_string(work.join("dest/res/copy.txt")).unwrap(), "data");
+    }
+}

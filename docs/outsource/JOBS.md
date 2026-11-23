@@ -8,9 +8,9 @@ This file is the contract between the outsource market, providers and callers th
 
 Every message is an `Envelope` from `outsource-proto`. `to` names a provider id or a caller id. Each `ask` gets exactly one reply: `return`, `raise` or `doesNotUnderstand`. A `send` gets no reply. The market replies to an unknown promise with `raise UnknownPromise`.
 
-1. A provider link sends one `register` ask per provider it hosts. The market returns `null`.
+1. A provider link sends one `register` ask per provider it hosts, with `routes`: the providers its rsync reaches. The market returns `null`.
 2. A caller sends an `offer` ask with `{set}`. The market returns `{"promise": <id>}` at once.
-3. The market sends `offer` with `{set, promise}` to each eligible provider. A provider is eligible when its link is up, its version range holds the offer envelope's `v`, and the set's `place` is a subset of its registered `props`.
+3. The market sends `offer` with `{set, promise, inbound}` to each eligible provider. `inbound` names the providers whose registered `routes` reach that provider. A provider is eligible when its link is up, its version range holds the offer envelope's `v`, and the set's `place` is a subset of its registered `props`.
 4. Each provider answers with a `bid` ask. `values: null` is a decline with a `reason`. The market returns `null`.
 5. The round closes `window_ms` after the offers go out, or earlier when every eligible provider answered. With no bid that carries values, the promise fails with `NoBids`.
 6. The market sends `award` with `{promise, set}` to the winner. It sends `event` with phase `awarded` to every other bidder, so they release the capacity they priced in.
@@ -20,7 +20,8 @@ Every message is an `Envelope` from `outsource-proto`. `to` names a provider id 
 10. A caller's `dispose` with `{ids, holder?}` groups the ids by holder: `holder` when given, else the provider whose settle named the id. The market asks each holder `dispose` with `{ids}` and returns once all holders return. An id with no known holder counts as done.
 11. A caller's `review` on a settled promise is sent on to the provider that settled it. The market also records the per-axis error for that provider and contract.
 12. A caller's `watch` makes the market send `event` with the `PromiseStatus` to that link on every phase change of the named promises, or of all promises.
-13. When a link drops, its providers become ineligible. Their awarded promises stay awarded. When a provider id registers again, the market asks it `status` for each open promise awarded to it and applies each answer. `raise UnknownPromise` counts as a broken promise.
+13. A provider that must move data between itself and a provider it has no route to asks the market `transfer` with `{from, to, src, dest, files?}`. The market asks the other end the same `transfer` and relays its reply. That end runs rsync over its own route to the asker: it pushes when it is `from` and pulls when it is `to`. `src` lands in the directory `dest` under its base name, or each path in `files`, relative to `src`, lands at that path under `dest`.
+14. When a link drops, its providers become ineligible. Their awarded promises stay awarded. When a provider id registers again, the market asks it `status` for each open promise awarded to it and applies each answer. `raise UnknownPromise` counts as a broken promise.
 
 The contract of a set, for history and corrections, is the `contract` prop of its first compute step, else that step's `op`.
 
@@ -49,4 +50,5 @@ A step's `op` picks the kind. The provider writes each kind as a `run.sh` in a f
 - A provider runs `place` as one shell script on the host that holds its instances, never through its backend. A cluster provider therefore moves data from the login node over one ssh call and queues nothing for it.
 - A provider without cargo declines `cargo`. A placement-only provider declines every set that holds a non-placement step.
 - A placement step's inputs are slot ids of earlier steps in the same set, or ids the provider holds. A provider resolves a slot id that a cache hit replaced to the stored id.
-- A step whose input the provider does not hold is fetched from the nearest place in the set's `start` facts. The fetch time goes into the bid.
+- A step whose input the provider does not hold is fetched from the nearest place in the set's `start` facts. The fetch time goes into the bid. A holder the provider has no route to, but that is `inbound`, prices and moves like a pull: at run time the provider asks a `transfer` into `held/<id>/` and holds the result before the step runs.
+- A `place` whose `to` the provider has no route to, but that is `inbound`, asks a `transfer`, so `to` pulls.

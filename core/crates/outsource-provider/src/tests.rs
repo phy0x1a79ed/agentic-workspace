@@ -45,7 +45,7 @@ impl Mkt {
     }
 
     async fn bid(&mut self, to: &str, promise: &str, set: &OfferSet) -> BidArgs {
-        self.send(to, Msg::Offer(OfferArgs { set: set.clone(), promise: Some(promise.into()) }));
+        self.send(to, Msg::Offer(OfferArgs { set: set.clone(), promise: Some(promise.into()), inbound: vec![] }));
         let (to, promise) = (to.to_string(), promise.to_string());
         self.wait(move |_, m| match m {
             Msg::Bid(b) if b.provider == to && b.promise == promise => Some(b),
@@ -531,7 +531,7 @@ async fn a17_one_link_hosts_two_providers() {
     seen.sort();
     assert_eq!(seen, ["a", "b"]);
     let set = set_of(vec![task(&[("contract", "x")], "true", vec![])]);
-    m.send("b", Msg::Offer(OfferArgs { set, promise: Some("p".into()) }));
+    m.send("b", Msg::Offer(OfferArgs { set, promise: Some("p".into()), inbound: vec![] }));
     let who = m.wait(|_, msg| if let Msg::Bid(b) = msg { Some(b.provider) } else { None }).await;
     assert_eq!(who, "b");
 }

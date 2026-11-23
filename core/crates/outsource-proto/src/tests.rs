@@ -26,8 +26,8 @@ fn build_set() -> OfferSet {
 fn every_msg_round_trips() {
     let set = build_set();
     let msgs = vec![
-        Msg::Offer(OfferArgs { set: set.clone(), promise: None }),
-        Msg::Offer(OfferArgs { set: set.clone(), promise: Some("p1".into()) }),
+        Msg::Offer(OfferArgs { set: set.clone(), promise: None, inbound: vec![] }),
+        Msg::Offer(OfferArgs { set: set.clone(), promise: Some("p1".into()), inbound: vec!["mizar".into()] }),
         Msg::Status(PromiseRef { promise: "p1".into() }),
         Msg::Cancel(PromiseRef { promise: "p1".into() }),
         Msg::Dispose(DisposeArgs { ids: vec!["i1".into()], holder: Some("capella".into()) }),
@@ -37,7 +37,8 @@ fn every_msg_round_trips() {
         }),
         Msg::Review(ReviewArgs { promise: "p1".into(), scores: [("completeness".into(), 0.9)].into() }),
         Msg::Watch(WatchArgs { promises: vec![] }),
-        Msg::Register(RegisterArgs { provider: "capella".into(), versions: [1, 1], props: props([("cargo", "1")]) }),
+        Msg::Register(RegisterArgs { provider: "capella".into(), versions: [1, 1], props: props([("cargo", "1")]), routes: vec!["altair".into()] }),
+        Msg::Transfer(TransferArgs { from: "mizar".into(), to: "altair".into(), src: "/w/in".into(), dest: "/h/held/i1".into(), files: vec!["a.txt".into()] }),
         Msg::Bid(BidArgs {
             promise: "p1".into(),
             provider: "capella".into(),
@@ -89,7 +90,7 @@ fn refusal_table() {
     let env = Envelope::decode(&with(&|v| v["args"]["extra"] = json!(1))).unwrap();
     assert!(matches!(env.msg(), Err(Refusal::BadArgs(_))));
     // An unknown key deep in an offer set is refused.
-    let mut offer = serde_json::to_value(Envelope::new("c", "m", &Msg::Offer(OfferArgs { set: build_set(), promise: None }))).unwrap();
+    let mut offer = serde_json::to_value(Envelope::new("c", "m", &Msg::Offer(OfferArgs { set: build_set(), promise: None, inbound: vec![] }))).unwrap();
     offer["args"]["set"]["steps"][0]["bogus"] = json!(true);
     assert!(matches!(Envelope::decode(&offer.to_string()).unwrap().msg(), Err(Refusal::BadArgs(_))));
     // An unknown selector is doesNotUnderstand.

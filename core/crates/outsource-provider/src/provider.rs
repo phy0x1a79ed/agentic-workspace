@@ -93,6 +93,8 @@ pub(crate) struct Inner {
     out: Mutex<Option<mpsc::UnboundedSender<Envelope>>>,
     peer: Mutex<String>,
     jobs: Arc<Mutex<HashMap<PromiseId, oneshot::Sender<i32>>>>,
+    /// This provider's own asks to the market, by envelope id, awaiting replies.
+    asks: Mutex<HashMap<String, oneshot::Sender<Msg>>>,
     cargo: Option<PathBuf>,
     apptainer: Option<PathBuf>,
     cargo_ver: OnceCell<String>,
@@ -120,6 +122,17 @@ struct Env {
 
 type Resolved = HashMap<Id, Id>;
 
+/// Whether a holder with no route here can push to this provider.
+type Pushes<'a> = &'a dyn Fn(&str) -> bool;
+
+/// Where a material comes from: `route` is `None` when the holder must push it.
+struct Source<'a> {
+    cost: f64,
+    holder: &'a str,
+    route: Option<&'a str>,
+    path: Option<&'a str>,
+}
+
 fn resolve(resolved: &Resolved, id: &str) -> Id {
     resolved.get(id).cloned().unwrap_or_else(|| id.to_string())
 }
@@ -135,6 +148,21 @@ fn request_pairs(step: &Step, inputs: &[Id]) -> Vec<Pair> {
 }
 
 const OUT: &str = "out";
+const TRANSFER_FAILED: &str = "TransferFailed";
+
+/// The shell line that copies `src` into the directory `dest`: both on this host over a local
+/// route, else from this host to `route` (`push`) or from `route` to this host. With `list`, a
+/// shell word naming a file of relative paths under `src`, only those paths are copied.
+fn copy_line(route: &str, push: bool, src: &str, dest: &str, list: Option<&str>) -> String {
+    let (d, src) = (q(dest), if list.is_some() { format!("{}/", src.trim_end_matches('/')) } else { src.to_string() });
+    let only = list.map(|l| format!(" --files-from={l}")).unwrap_or_default();
+    match (is_local_route(route), list) {
+        (true, Some(l)) => format!("mkdir -p {d} && tar -C {} -cf - -T {l} | tar -C {d} -xf -", q(&src)),
+        (true, None) => format!("mkdir -p {d} && cp -a {} {d}/", q(&src)),
+        _ if push => format!("rsync -a{only} --rsync-path={} {} {}", q(&format!("mkdir -p {d} && rsync")), q(&src), q(&format!("{route}:{dest}/"))),
+        _ => format!("mkdir -p {d} && rsync -a{only} {} {d}/", q(&format!("{route}:{src}"))),
+    }
+}
 
 /// The index pairs a staged material answers to: its type's properties when it has one (a
 /// held instance with more properties still hits), else its own id.
@@ -143,6 +171,19 @@ fn stage_pairs(item: &Value, id: &str) -> Vec<Pair> {
         Ok(ty) => normalize(ty),
         Err(_) => vec![("id".into(), id.into())],
     }
+}
+
+/// The `(id, src, pairs)` of each material a step stages, with ids as `resolved` maps them.
+fn stage_sources(step: &Step, resolved: &Resolved) -> Vec<(Id, Option<String>, Vec<Pair>)> {
+    step.spec["stage"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|item| {
+            let id = item["id"].as_str()?;
+            Some((resolve(resolved, id), item["src"].as_str().map(String::from), stage_pairs(item, id)))
+        })
+        .collect()
 }
 
 /// The `(id, pairs)` of each material a step stages.
@@ -218,6 +259,7 @@ impl Provider {
             out: Mutex::new(None),
             peer: Mutex::new("market".into()),
             jobs: jobs.clone(),
+            asks: Mutex::default(),
             cargo,
             apptainer,
             cargo_ver: OnceCell::new(),
@@ -253,13 +295,14 @@ impl Provider {
 
     pub(crate) fn detach(&self) {
         *self.inner.out.lock().unwrap() = None;
+        self.inner.asks.lock().unwrap().clear();
     }
 
     pub(crate) fn register(&self) {
         let c = &self.inner.cfg;
         self.inner.send(
             "market",
-            Msg::Register(RegisterArgs { provider: c.id.clone(), versions: c.versions, props: c.props.clone() }),
+            Msg::Register(RegisterArgs { provider: c.id.clone(), versions: c.versions, props: c.props.clone(), routes: c.routes.keys().cloned().collect() }),
         );
     }
 
@@ -288,7 +331,18 @@ impl Provider {
             Ok(m) => m,
             Err(r) => return me.reply_env(env.refusal_reply(&r)),
         };
+        if let Some(waiter) = env.reply_to.as_ref().and_then(|id| me.asks.lock().unwrap().remove(id)) {
+            let _ = waiter.send(msg);
+            return;
+        }
         match msg {
+            Msg::Transfer(a) => {
+                let p = self.clone();
+                tokio::spawn(async move {
+                    let reply = p.inner.on_transfer(a).await;
+                    p.inner.reply_env(env.reply(&reply));
+                });
+            }
             Msg::Offer(a) => me.on_offer(&env, a).await,
             Msg::Award(a) => me.on_award(a),
             Msg::Event(s) => me.on_event(s),
@@ -352,23 +406,26 @@ impl Inner {
         step.spec.get("est").and_then(Value::as_f64).unwrap_or(self.cfg.default_secs)
     }
 
-    fn transfer_secs(&self, route: &str, bytes: f64) -> f64 {
-        if is_local_route(route) {
-            bytes / LOCAL_BANDWIDTH
-        } else {
-            bytes / self.cfg.bandwidth + self.cfg.route_overhead_s
+    /// Seconds to move `bytes` over `route`; `None` is a holder pushing over its own route.
+    fn transfer_secs(&self, route: Option<&str>, bytes: f64) -> f64 {
+        match route {
+            Some(r) if is_local_route(r) => bytes / LOCAL_BANDWIDTH,
+            _ => bytes / self.cfg.bandwidth + self.cfg.route_overhead_s,
         }
     }
 
-    /// The reachable holder listed in `start` for `id` that costs least to fetch from: its cost,
-    /// route and the path its fact names.
-    fn nearest<'a>(&'a self, set: &'a OfferSet, id: &str, bytes: f64) -> Option<(f64, &'a str, Option<&'a str>)> {
+    /// The holder listed in `start` for `id` that costs least to move from, preferring one this
+    /// provider pulls from over one that `pushes` says can push to it.
+    fn nearest<'a>(&'a self, set: &'a OfferSet, id: &str, bytes: f64, pushes: Pushes) -> Option<Source<'a>> {
         set.start
             .iter()
-            .filter_map(|f| f.as_at().map(|(i, p)| (i, p, f.path())))
-            .filter(|(i, p, _)| *i == id && *p != self.cfg.id)
-            .filter_map(|(_, p, path)| self.cfg.routes.get(p).map(|r| (self.transfer_secs(r, bytes), r.as_str(), path)))
-            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .filter_map(|f| f.as_at().map(|(i, holder)| (i, holder, f.path())))
+            .filter(|(i, holder, _)| *i == id && *holder != self.cfg.id)
+            .filter_map(|(_, holder, path)| {
+                let route = self.cfg.routes.get(holder).map(String::as_str);
+                (route.is_some() || pushes(holder)).then(|| Source { cost: self.transfer_secs(route, bytes), holder, route, path })
+            })
+            .min_by(|a, b| a.route.is_none().cmp(&b.route.is_none()).then(a.cost.total_cmp(&b.cost)))
     }
 
     /// The path a `start` fact gives for `id` on this provider's own filesystem.
@@ -423,24 +480,27 @@ impl Inner {
         })
     }
 
-    fn fetch_cost(&self, st: &State, set: &OfferSet, inputs: &[Id], made: &HashSet<Id>) -> Result<f64, String> {
+    fn fetch_cost(&self, st: &State, set: &OfferSet, inputs: &[Id], made: &HashSet<Id>, pushes: Pushes) -> Result<f64, String> {
         let each = set.size.unwrap_or(0) as f64 / inputs.len().max(1) as f64;
         let mut total = 0.0;
         for id in inputs {
             if made.contains(id) || st.instances.contains_key(id) || self.held_here(set, id).is_some() {
                 continue;
             }
-            total += self.nearest(set, id, each).ok_or_else(|| format!("no source for input {id}"))?.0;
+            total += self.nearest(set, id, each, pushes).ok_or_else(|| format!("no source for input {id}"))?.cost;
         }
         Ok(total)
     }
 
-    fn place_cost(&self, st: &State, set: &OfferSet, step: &Step, inputs: &[Id]) -> Result<f64, String> {
+    fn place_cost(&self, st: &State, set: &OfferSet, step: &Step, inputs: &[Id], pushes: Pushes) -> Result<f64, String> {
         let to = step.to.as_deref().ok_or("place without a destination")?;
         if to == self.cfg.id {
             return Ok(0.0);
         }
-        let route = self.cfg.routes.get(to).ok_or_else(|| format!("no route to {to}"))?;
+        let route = self.cfg.routes.get(to).map(String::as_str);
+        if route.is_none() && !pushes(to) {
+            return Err(format!("no route to {to}"));
+        }
         let each = set.size.unwrap_or(0) as f64 / inputs.len().max(1) as f64;
         let bytes: f64 = inputs
             .iter()
@@ -449,7 +509,9 @@ impl Inner {
         Ok(self.transfer_secs(route, bytes))
     }
 
-    fn quote(&self, promise: &str, set: &OfferSet) -> Result<Quote, String> {
+    /// `inbound` names the providers that can push to this one.
+    fn quote(&self, promise: &str, set: &OfferSet, inbound: &[ProviderId]) -> Result<Quote, String> {
+        let pushes: Pushes = &|p| inbound.iter().any(|i| i == p);
         if set.steps.is_empty() {
             return Err("empty set".into());
         }
@@ -474,14 +536,14 @@ impl Inner {
                     if lacks || pull > 0.0 {
                         all_hit = false;
                         all_done = false;
-                        fetch += self.fetch_cost(&st, set, &inputs, &made)?;
+                        fetch += self.fetch_cost(&st, set, &inputs, &made, pushes)?;
                         seq += pull;
                     }
                 }
                 "place" => {
                     places = true;
-                    fetch += self.fetch_cost(&st, set, &inputs, &made)?;
-                    seq += self.place_cost(&st, set, step, &inputs)?;
+                    fetch += self.fetch_cost(&st, set, &inputs, &made, pushes)?;
+                    seq += self.place_cost(&st, set, step, &inputs, pushes)?;
                 }
                 "task" | "cargo" => {
                     if step.op == "cargo" && self.cargo.is_none() {
@@ -510,7 +572,7 @@ impl Inner {
                         let e = self.est(step) + self.pull_secs(step)?;
                         work += e;
                         seq += e;
-                        fetch += self.fetch_cost(&st, set, &inputs, &made)?;
+                        fetch += self.fetch_cost(&st, set, &inputs, &made, pushes)?;
                     }
                 }
                 other => return Err(format!("unknown op {other}")),
@@ -529,7 +591,7 @@ impl Inner {
         let Some(promise) = a.promise else {
             return self.reply_env(env.reply(&raise_msg(raise::BAD_ARGS, "offer carries no promise")));
         };
-        let bid = match self.quote(&promise, &a.set) {
+        let bid = match self.quote(&promise, &a.set, &a.inbound) {
             Ok(Quote { time, hit, work }) => {
                 let eta = if work > 0.0 { self.backend.start_eta(&a.set.resources).await } else { 0.0 };
                 let mut values: BTreeMap<String, f64> = a.set.axes.iter().map(|x| (x.name.clone(), 0.0)).collect();
@@ -726,7 +788,10 @@ impl Inner {
                 }
                 Act::Wait(mut rx) => while rx.changed().await.is_ok() {},
                 Act::Run(eid, typed) => {
-                    let made = self.run_job(promise, idx, step, set, resolved).await;
+                    let made = match self.receive(set, stage_sources(step, resolved)).await {
+                        Ok(()) => self.run_job(promise, idx, step, set, resolved).await,
+                        Err(e) => Err(e),
+                    };
                     let mut st = self.state.lock().unwrap();
                     for e in std::iter::once(&eid).chain(&typed) {
                         match &made {
@@ -820,8 +885,10 @@ impl Inner {
         if let Some(path) = self.held_here(set, id) {
             return Ok(path.to_string());
         }
-        let (_, route, held_at) = self.nearest(set, id, 0.0).ok_or_else(|| format!("cannot stage {id}: no route to a holder"))?;
-        let src = src.or(held_at).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
+        let Some(Source { route: Some(route), path, .. }) = self.nearest(set, id, 0.0, &|_| false) else {
+            return Err(format!("cannot stage {id}: no route to a holder"));
+        };
+        let src = src.or(path).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
         if is_local_route(route) {
             return Ok(src.to_string());
         }
@@ -909,10 +976,45 @@ impl Inner {
         ))
     }
 
+    fn held_dir(&self, id: &str) -> PathBuf {
+        self.work_dir.with_file_name("held").join(id)
+    }
+
+    /// Has each holder this provider has no route to push its material into `held/<id>/` here,
+    /// through the market, and holds it under `pairs`. Items are `(id, src, pairs)`.
+    async fn receive(&self, set: &OfferSet, items: Vec<(Id, Option<String>, Vec<Pair>)>) -> Result<(), String> {
+        for (id, src, pairs) in items {
+            let (holder, src) = {
+                let st = self.state.lock().unwrap();
+                if st.instances.contains_key(&id) || self.held_here(set, &id).is_some() {
+                    continue;
+                }
+                match self.nearest(set, &id, 0.0, &|_| true) {
+                    Some(Source { route: None, holder, path, .. }) => {
+                        let src = src.or(path.map(String::from)).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
+                        (holder.to_string(), src)
+                    }
+                    _ => continue,
+                }
+            };
+            let dir = self.held_dir(&id);
+            let ask = TransferArgs { from: holder, to: self.cfg.id.clone(), src: src.clone(), dest: dir.to_string_lossy().into(), files: vec![] };
+            self.ask_market(Msg::Transfer(ask)).await.map_err(|e| format!("cannot stage {id}: {e}"))?;
+            let path = dir.join(Path::new(src.trim_end_matches('/')).file_name().ok_or_else(|| format!("{src} has no base name"))?);
+            let files = self.host.files(&path).await.map_err(|e| format!("cannot stage {id}: {e}"))?;
+            let mut st = self.state.lock().unwrap();
+            st.index.insert(Entry { pairs, slots: [(OUT.to_string(), id.clone())].into(), flight: None });
+            st.instances.insert(id, Instance::of(path, &files, |f| !f.is_empty()));
+            self.persist(&st);
+        }
+        Ok(())
+    }
+
     /// Settles a `prep` step: fetches each staged material not already held into `held/<id>/`,
     /// holds it, and pulls the environment image. Returns the ids now held here.
     async fn prep(self: &Arc<Self>, promise: &str, idx: usize, step: &Step, set: &OfferSet, resolved: &mut Resolved) -> Result<Vec<Id>, String> {
         self.resolve_staged(step, resolved).await;
+        self.receive(set, stage_sources(step, resolved)).await?;
         let mut lines = self.script_head(promise, idx);
         let (mut ids, mut fetched) = (vec![], vec![]);
         {
@@ -924,9 +1026,11 @@ impl Inner {
                 if st.instances.contains_key(&held) || self.held_here(set, id).is_some() {
                     continue;
                 }
-                let (_, route, held_at) = self.nearest(set, id, 0.0).ok_or_else(|| format!("cannot stage {id}: no route to a holder"))?;
-                let src = item["src"].as_str().or(held_at).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
-                let dir = self.work_dir.with_file_name("held").join(id);
+                let Some(Source { route: Some(route), path, .. }) = self.nearest(set, id, 0.0, &|_| false) else {
+                    return Err(format!("cannot stage {id}: no route to a holder"));
+                };
+                let src = item["src"].as_str().or(path).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
+                let dir = self.held_dir(id);
                 lines.push(format!("mkdir -p {}", q(&dir.to_string_lossy())));
                 lines.push(if is_local_route(route) {
                     format!("cp -a {} {}/", q(src), q(&dir.to_string_lossy()))
@@ -985,55 +1089,82 @@ impl Inner {
     ) -> Result<Vec<(Id, String)>, String> {
         let to = step.to.as_deref().ok_or("place without a destination")?;
         let dest = step.spec["path"].as_str().ok_or("place needs a path")?;
-        let route = if to == self.cfg.id {
-            ""
-        } else {
-            self.cfg.routes.get(to).ok_or_else(|| format!("no route to {to}"))?.as_str()
-        };
+        let route = if to == self.cfg.id { Some("") } else { self.cfg.routes.get(to).map(String::as_str) };
         let ids: Vec<Id> = step.inputs.iter().map(|i| resolve(resolved, i)).collect();
+        let files_only = step.spec["files"].as_bool().unwrap_or(false);
+        if !files_only {
+            let items = ids.iter().map(|id| (id.clone(), step.spec["src"][id].as_str().map(String::from), stage_pairs(&Value::Null, id))).collect();
+            self.receive(set, items).await?;
+        }
         let workdir = self.work_dir.join(format!("{promise}-{idx}"));
         let mut lines = self.script_head(promise, idx);
-        let mut placed = vec![];
-        let files_only = step.spec["files"].as_bool().unwrap_or(false);
+        let (mut placed, mut pulls) = (vec![], vec![]);
         {
             let st = self.state.lock().unwrap();
             for (n, id) in ids.iter().enumerate() {
-                if files_only {
+                let (from, files) = if files_only {
                     let inst = st.instances.get(id).ok_or_else(|| format!("{id} is not held here"))?;
-                    let list = q(&workdir.join(format!("files-{n}.txt")).to_string_lossy());
-                    lines.push(format!("printf '%s\\n' {} > {list}", inst.listing.iter().map(|f| q(f)).collect::<Vec<_>>().join(" ")));
-                    let from = q(&inst.path.to_string_lossy());
-                    if is_local_route(route) {
-                        lines.push(format!("mkdir -p {d} && tar -C {from} -cf - -T {list} | tar -C {d} -xf -", d = q(dest)));
-                    } else {
-                        lines.push(format!(
-                            "rsync -a --files-from={list} --rsync-path={} {from}/ {}",
-                            q(&format!("mkdir -p {} && rsync", q(dest))),
-                            q(&format!("{route}:{dest}/"))
-                        ));
-                    }
                     placed.push((id.clone(), dest.to_string()));
-                    continue;
-                }
-                let src = step.spec["src"][id].as_str();
-                let from = self.locate(&st, set, id, src, &workdir.join("in").join(id), &mut lines)?;
-                if is_local_route(route) {
-                    lines.push(format!("mkdir -p {d} && cp -a {} {d}/", q(&from), d = q(dest)));
+                    if inst.listing.is_empty() {
+                        continue;
+                    }
+                    (inst.path.to_string_lossy().into_owned(), inst.listing.clone())
                 } else {
-                    lines.push(format!(
-                        "rsync -a --rsync-path={} {} {}",
-                        q(&format!("mkdir -p {} && rsync", q(dest))),
-                        q(&from),
-                        q(&format!("{route}:{dest}/"))
-                    ));
+                    let from = self.locate(&st, set, id, step.spec["src"][id].as_str(), &workdir.join("in").join(id), &mut lines)?;
+                    let name = Path::new(&from).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    placed.push((id.clone(), format!("{dest}/{name}")));
+                    (from, vec![])
+                };
+                let Some(route) = route else {
+                    pulls.push(TransferArgs { from: self.cfg.id.clone(), to: to.into(), src: from, dest: dest.into(), files });
+                    continue;
+                };
+                let list = (!files.is_empty()).then(|| q(&workdir.join(format!("files-{n}.txt")).to_string_lossy()));
+                if let Some(list) = &list {
+                    lines.push(format!("printf '%s\\n' {} > {list}", files.iter().map(|f| q(f)).collect::<Vec<_>>().join(" ")));
                 }
-                let name = Path::new(&from).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                placed.push((id.clone(), format!("{dest}/{name}")));
+                lines.push(copy_line(route, true, &from, dest, list.as_deref()));
             }
         }
+        self.host.sh(&(lines.join("\n") + "\n")).await.map_err(|e| format!("place failed: {e}"))?;
+        for pull in pulls {
+            self.ask_market(Msg::Transfer(pull)).await.map_err(|e| format!("place failed: {e}"))?;
+        }
+        Ok(placed)
+    }
+
+    /// Runs the copy a transfer asks of this provider, over its own route to the other end.
+    async fn on_transfer(&self, a: TransferArgs) -> Msg {
+        let me = self.cfg.id.as_str();
+        let (other, push) = match me {
+            m if m == a.from => (&a.to, true),
+            m if m == a.to => (&a.from, false),
+            _ => return raise_msg(raise::BAD_ARGS, format!("{me} is neither end of the transfer")),
+        };
+        let Some(route) = self.cfg.routes.get(other) else { return raise_msg(TRANSFER_FAILED, format!("{me} has no route to {other}")) };
+        let mut lines = vec!["set -e".to_string()];
+        if !a.files.is_empty() {
+            lines.push("l=$(mktemp) && trap 'rm -f \"$l\"' EXIT".into());
+            lines.push(format!("printf '%s\\n' {} > \"$l\"", a.files.iter().map(|f| q(f)).collect::<Vec<_>>().join(" ")));
+        }
+        lines.push(copy_line(route, push, &a.src, &a.dest, (!a.files.is_empty()).then_some("\"$l\"")));
         match self.host.sh(&(lines.join("\n") + "\n")).await {
-            Ok(_) => Ok(placed),
-            Err(e) => Err(format!("place failed: {e}")),
+            Ok(_) => Msg::Return(Value::Null),
+            Err(e) => raise_msg(TRANSFER_FAILED, e.to_string()),
+        }
+    }
+
+    /// Asks the market and waits for its reply; `Ok` holds a `return`'s value.
+    async fn ask_market(&self, msg: Msg) -> Result<Value, String> {
+        let env = Envelope::new(&self.cfg.id, &self.peer(), &msg);
+        let (tx, rx) = oneshot::channel();
+        self.asks.lock().unwrap().insert(env.id.clone(), tx);
+        self.reply_env(env);
+        match rx.await {
+            Ok(Msg::Return(v)) => Ok(v),
+            Ok(Msg::Raise(r)) => Err(format!("{}: {}", r.name, r.message)),
+            Ok(other) => Err(format!("market answered {other:?}")),
+            Err(_) => Err("market link dropped".into()),
         }
     }
 
