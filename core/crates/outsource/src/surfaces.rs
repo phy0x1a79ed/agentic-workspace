@@ -1,7 +1,7 @@
 //! The caller surfaces generated from `CALLER_VERBS`: CLI subcommands, a stdio MCP server and `POST /invoke`.
 
 use crate::client::Client;
-use crate::offer::{self, Compiled, Site};
+use crate::offer::{self, Site};
 use outsource_proto::{Msg, OfferArgs, CALLER_VERBS};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -13,7 +13,7 @@ pub async fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<Msg, Strin
         return Err(format!("unknown verb {verb}"));
     }
     if verb == "offer" || verb == "prep" {
-        let Compiled { set } = if verb == "offer" { offer::compile(args, site).await? } else { offer::compile_prep(args, site).await? };
+        let set = if verb == "offer" { offer::compile(args, site).await? } else { offer::compile_prep(args, site).await? };
         return Ok(Msg::Offer(OfferArgs { set, promise: None, inbound: vec![] }));
     }
     let msg = serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())?;

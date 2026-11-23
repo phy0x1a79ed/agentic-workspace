@@ -1,8 +1,14 @@
 //! The `outsource` binary. With the `awm` feature, `outsource awm-plugin` runs the node's service under awm,
 //! with the entry's reach taken from the edge list. outsource's own crates never import awm.
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let r = rt.block_on(async_main());
+    rt.shutdown_background();
+    r
+}
+
+async fn async_main() -> anyhow::Result<()> {
     let cmd = outsource::cli::command();
     #[cfg(feature = "awm")]
     let cmd = cmd.subcommand(clap::Command::new("awm-plugin").about("Run as the awm outsource service."));

@@ -1,7 +1,7 @@
 //! The local backend: each job runs detached from the provider in its own session, so a job
 //! outlives a dropped link or a restarted provider.
 
-use crate::backend::{Backend, DoneTx, JobSpec, RUN_LINE};
+use crate::backend::{Backend, DoneTx, JobSpec, RUN_JOB};
 use async_trait::async_trait;
 use outsource_proto::{PromiseId, Resources};
 use serde_json::{json, Value};
@@ -93,7 +93,7 @@ impl Backend for LocalBackend {
         std::fs::write(workdir.join("run.sh"), script)?;
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
-            .arg(format!("{{ {RUN_LINE}; }} >log 2>&1; echo $? > exit.tmp; mv exit.tmp exit"))
+            .arg(RUN_JOB)
             .current_dir(&workdir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
