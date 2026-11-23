@@ -378,7 +378,7 @@ pub struct OfferSet {
     pub size: Option<u64>,
 }
 
-/// `op` names the job kind; `docs/dex-poc/JOBS.md` defines each kind's `spec` and slots. `props` is the declared request set:
+/// `op` names the job kind; `docs/outsource/JOBS.md` defines each kind's `spec` and slots. `props` is the declared request set:
 /// contract, version when it matters, output-affecting params. `inputs` are exact ids; a
 /// placement step names the slot ids of earlier steps. `spec` is the job payload, opaque to the
 /// market. `to` is the destination provider of a placement step.

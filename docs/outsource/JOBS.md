@@ -1,12 +1,12 @@
-# baitan wire flow and job kinds
+# outsource wire flow and job kinds
 
 ## Purpose & Contents
 
-This file is the contract between the baitan market, providers, fronts and callers that the types in `core/crates/baitan-proto` cannot express alone: the order of messages, who answers what, and the `spec` and slots of each job kind. Design reasons are in `DECISIONS.md`.
+This file is the contract between the outsource market, providers, fronts and callers that the types in `core/crates/outsource-proto` cannot express alone: the order of messages, who answers what, and the `spec` and slots of each job kind. Design reasons are in `DECISIONS.md` here and in `docs/dex-poc/DECISIONS.md`.
 
 ## Message flow
 
-Every message is an `Envelope` from `baitan-proto`. `to` names a provider id or a caller id. Each `ask` gets exactly one reply: `return`, `raise` or `doesNotUnderstand`. A `send` gets no reply. The market replies to an unknown promise with `raise UnknownPromise`.
+Every message is an `Envelope` from `outsource-proto`. `to` names a provider id or a caller id. Each `ask` gets exactly one reply: `return`, `raise` or `doesNotUnderstand`. A `send` gets no reply. The market replies to an unknown promise with `raise UnknownPromise`.
 
 1. A provider link sends one `register` ask per provider it hosts. The market returns `null`.
 2. A caller sends an `offer` ask with `{set}`. The market returns `{"promise": <id>}` at once.
@@ -29,7 +29,7 @@ The contract of a set, for history and corrections, is the `contract` prop of it
 - A compute step's slot id is `slot_id(step.key(), slot)`. The requester can compute it before the award.
 - A provider indexes each result under its expanded set: the step's `props`, the pair `op=<op>`, one pair `input=<id>` per input, and any dependency versions it used. A request hits when its own pairs (the same construction without the provider's extras) are a subset of a stored entry's pairs. A hit settles with the stored instance ids, not the request's slot ids.
 - An imported instance's id is `instance_id(props)` of the property set its index YAML declares.
-- A leaf file that no baitan step produced has the id `instance_id({path, origin})`, where `origin` names the provider that holds it.
+- A leaf file that no outsource step produced has the id `instance_id({path, origin})`, where `origin` names the provider that holds it.
 
 ## Job kinds
 
@@ -39,8 +39,10 @@ A step's `op` picks the kind. The provider writes each kind as a `run.sh` in a f
 |---|---|---|---|
 | `task` | `{script, stage, outputs}` | `["out"]` | `out` is the work dir after the script exits 0. Its listing holds the relative paths that match `outputs` |
 | `cargo` | `{git, rev, bin, target?, features?}` | `["bin"]` | `bin` is the built binary file |
-| `place` | `{path, src?}` | none | each input id is copied into `path` at the provider `to`, under the base name of its source |
+| `place` | `{path, src?}` | none | each input id is copied into `path` at the provider `to`, under the base name of its source. With `files: true`, only the listed relative paths are copied, keeping those paths |
+| `prep` | `{}` | none | each input id the provider lacks is fetched into its holdings. A `.env` input's image is pulled into the env cache |
 
+- `task.env` is `{stage, container}`. The provider pulls `container` once into its env cache, keyed by the staged `.env`'s id, and runs `script` inside it with apptainer. A provider without apptainer declines.
 - `task.script` is the shell body to run. `task.stage` maps a name in the work dir to `{id, path?, src?}`. `path` selects a file inside a directory instance. `task.outputs` is a list of globs.
 - `src` (per stage item, or `place.src` keyed by id) is the absolute path at the input's place. Give it only when the input's `start` fact names no `path`.
 - A settled `at` fact names the holder's path in `o.path`. Copy settled facts into a later set's `start`, and the next provider fetches without `src`.

@@ -2,7 +2,7 @@
 
 ## Purpose & Contents
 
-outsource is a compute market. Callers post offer sets, providers bid, and the market awards each set to the best bid. This file covers how the market is deployed and how to add a provider. The design and its reasons are in `docs/dex-poc/DECISIONS.md`. The wire flow and the job kinds are in `docs/dex-poc/JOBS.md`. Run `outsource --help` for the roles and verbs.
+outsource is a compute market. Callers post offer sets, providers bid, and the market awards each set to the best bid. This file covers how the market is deployed and how to add a provider. The design and its reasons are in `docs/dex-poc/DECISIONS.md`. The wire flow and the job kinds are in `docs/outsource/JOBS.md`. Run `outsource --help` for the roles and verbs.
 
 ## Topology
 
