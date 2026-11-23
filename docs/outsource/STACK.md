@@ -6,7 +6,7 @@
 
 ## Current
 
-`ontology`: controlled vocabulary for properties.
+`discovery`: how agents learn to use outsource.
 
 ## Waiting on the user
 
@@ -20,7 +20,6 @@ Nothing.
 
 ## Stack
 
-- `ontology`: "we need some controlled ontology for types or rather properties".
 - `discovery`: agents can't find outsource (no AGENTS.md or skill; describe example now in catalog). Agents must pass absolute paths (plugin has no per-call cwd).
 - `tune`: "I want to tune the Baitan service."
 - `deploy`: try a real job live after deploy ("need to try for real"). Also build runtime stats (peak memory, CPU time) per settle, from `resources-model`. one deploy of the rename plus walkthrough changes. Migration (from the rename worker): move `~/.baitan` → `~/.outsource` and `baitan.toml` → `outsource.toml` on every node; fix link commands naming `bin/baitan`; install `outsource`, remove `baitan` binary and old socket; `BAITAN_*` → `OUTSOURCE_*`; refresh pins; restart awm. Outside the repo: metasmith nf-baitan executor still says baitan and posts raw sets, which the public surface no longer takes. JOBS.md needs `task.env` and `place.files`.
@@ -33,6 +32,7 @@ Nothing.
 ## Closed
 
 - `rename`: baitan → outsource, landed 0385a219, deploys with `deploy`; scope now awm/outsource. e2e `far` failure is pre-existing and environmental.
+- `ontology`: market-held vocabulary, descriptions, optional allowed values, unknown keys rejected, `property_add`, lowercase values. Build queued after prep worker.
 - `node-prep`: closed through its children.
 - `globus`: rsync only natively; agents may run Globus themselves; `import` verb registers material already at a provider.
 - `remote-fetch`: download = directed compute offer with typed produces; requires by type alone; `source` recipes deferred.

@@ -102,3 +102,17 @@ Child of `node-prep`, which closes with it.
 - A new `import {to, materials: [{path, type?}]}` verb registers material that already sits at a provider. It goes straight to that provider, with no bid round (like `dispose`). The provider checks each path exists, records it under its type (or its stat or commit identity), and returns the ids; a missing path is an error. It reuses the provider's existing index-YAML importer. `prep` does; `import` checks.
 
 **Landed.** Pending build, with `prep-verb` and `remote-fetch`.
+
+## ontology (2026-11-22)
+
+**Question.** Where does the controlled vocabulary for material properties live, and how strict is it?
+
+**User's words.** "we need some controlled ontology for types or rather properties" / "a"
+
+**Decided.**
+- The market holds the vocabulary: each property key has a description and an optional list of allowed values.
+- An offer, prep or import with an unknown key, or a value outside a key's list, is rejected; the error names the closest known keys.
+- `property_add(name, description, values?)` adds a key at runtime. The vocabulary is outsource's own (standalone of awm), modelled on awm's shared journal-tag vocabulary.
+- Values are case-folded to lowercase before identity.
+
+**Landed.** Build after the prep worker (both touch outsource-proto and the market).
