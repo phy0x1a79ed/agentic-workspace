@@ -20,9 +20,10 @@ Send a job to `outsource` when you expect it to take over about 10 minutes or ov
 3. Commit before you post when the result must reflect your edits. A repo with uncommitted changes keeps its commit identity, so a prior result may come back. The reply warns when that happens.
 4. Put the environment in `requires` as one metasmith-style `.env` file with a `container:` line. The protocol then runs inside that container.
 5. Write `protocol` against base names. Each material lands in the work dir under its base name.
-6. List in `produces` only the files you need back. A folder brings its files.
-7. Set `resources` to the size the job needs. The provider meets it or declines.
-8. Poll `status` with the promise id. A settled status carries the run stats.
+6. Write every output inside the work dir, never inside a material. A material is a shared copy that later jobs reuse, and the provider looks for `produces` only in the work dir. Point build output there, for example `cargo build --manifest-path release/src/x/Cargo.toml --target-dir $PWD/target`.
+7. List in `produces` only the files you need back. A folder brings its files.
+8. Set `resources` to the size the job needs. The provider meets it or declines.
+9. Poll `status` with the promise id. A settled status carries the run stats.
 
 ## Shared reference data
 
