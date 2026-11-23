@@ -1,0 +1,8 @@
+[data-stage='table'] { --stage: #9898a8; }
+[data-stage='question'] { --stage: #3b82f6; }
+[data-stage='figure'] { --stage: #a855f7; }
+[data-stage='interpretation'] { --stage: #14b8a6; }
+[data-stage='point'] { --stage: #ec4899; }
+[data-stage='prose'] { --stage: #e8e8ec; }
+
+* { box-sizing: border-box; }

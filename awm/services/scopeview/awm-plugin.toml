@@ -12,6 +12,10 @@ name = "scopeview"
 major = 1
 tier = "on"
 
+[[page]]
+name = "scopeview"
+dir = "pages/scopeview/dist"
+
 [needs]
 secrets = []
 network = []
