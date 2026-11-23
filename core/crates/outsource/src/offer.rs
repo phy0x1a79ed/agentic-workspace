@@ -91,7 +91,6 @@ impl Site {
 #[derive(Debug)]
 pub struct Compiled {
     pub set: OfferSet,
-    pub warnings: Vec<String>,
 }
 
 struct Material {
@@ -110,10 +109,10 @@ struct Materials {
 }
 
 impl Materials {
-    async fn gather(reqs: &[Req], site: &Site, warnings: &mut Vec<String>) -> Result<Materials, String> {
+    async fn gather(reqs: &[Req], site: &Site) -> Result<Materials, String> {
         let mut all: Vec<Material> = vec![];
         for req in reqs {
-            let m = material(req, site, warnings).await?;
+            let m = material(req, site).await?;
             if all.iter().any(|o| o.name == m.name) {
                 return Err(format!("two requires share the name {}", m.name));
             }
@@ -164,8 +163,7 @@ fn new_set(steps: Vec<Step>, mats: &Materials, site: &Site, to: Option<String>) 
 
 pub async fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
     let t: Transform = serde_json::from_value(args).map_err(|e| e.to_string())?;
-    let mut warnings = vec![];
-    let mats = Materials::gather(&t.requires, site, &mut warnings).await?;
+    let mats = Materials::gather(&t.requires, site).await?;
 
     let (mut copied, mut kept) = (vec![], vec![]);
     for out in &t.produces {
@@ -230,14 +228,13 @@ pub async fn compile(args: Value, site: &Site) -> Result<Compiled, String> {
     let mut set = new_set(steps, &mats, site, t.to);
     set.axes = axes.into_iter().map(|name| Axis { name, weight: 1.0, higher_better: false }).collect();
     set.resources = t.resources.unwrap_or_default();
-    Ok(Compiled { set, warnings })
+    Ok(Compiled { set })
 }
 
 /// A directed offer with no protocol: one `prep` step that stages the materials at `to`.
 pub async fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> {
     let p: Prep = serde_json::from_value(args).map_err(|e| e.to_string())?;
-    let mut warnings = vec![];
-    let mats = Materials::gather(&p.requires, site, &mut warnings).await?;
+    let mats = Materials::gather(&p.requires, site).await?;
     let mut spec = json!({"stage": mats.stage()});
     if let Some(env) = mats.env.clone() {
         spec["env"] = env;
@@ -250,7 +247,7 @@ pub async fn compile_prep(args: Value, site: &Site) -> Result<Compiled, String> 
         spec,
         to: None,
     };
-    Ok(Compiled { set: new_set(vec![step], &mats, site, Some(p.to)), warnings })
+    Ok(Compiled { set: new_set(vec![step], &mats, site, Some(p.to)) })
 }
 
 async fn container_of(env: &Path, site: &Site) -> Result<String, String> {
@@ -263,8 +260,9 @@ async fn container_of(env: &Path, site: &Site) -> Result<String, String> {
 }
 
 /// A typed material's id is its type's id, wherever it sits. Otherwise a file or a plain folder
-/// is `{path, mtime_ns, origin}` and a folder holding `.git` is `{git: HEAD, origin}`.
-async fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<Material, String> {
+/// is `{path, mtime_ns, origin}`, a plain folder `{path, tree-hash, origin}` over every file's name, size and mtime beneath it,
+/// and a folder holding `.git` is `{git: HEAD, origin}` plus a hash of its dirty files when it has any.
+async fn material(req: &Req, site: &Site) -> Result<Material, String> {
     let (raw, ty, name) = match req {
         Req::Path(p) => (Some(p.as_str()), None, None),
         Req::Material(m) => (m.path.as_deref(), m.ty.as_ref().map(fold_type), m.name.clone()),
@@ -278,7 +276,7 @@ async fn material(req: &Req, site: &Site, warnings: &mut Vec<String>) -> Result<
     let probed = match raw {
         Some(raw) => {
             let path = site.path(raw, "requires")?;
-            let probed = identify(&Host::default(), &path.to_string_lossy(), &site.node, true, warnings).await;
+            let probed = identify(&Host::default(), &path.to_string_lossy(), &site.node, true).await;
             Some(probed.map_err(|e| format!("requires {raw} on {}: {e}", site.node))?)
         }
         None => None,
@@ -347,7 +345,6 @@ mod tests {
         assert_eq!(c.set.start.len(), 4);
         let counts = d.join("counts.tsv");
         assert!(c.set.start.contains(&Fact::at_path(&stage_id(&c, "counts.tsv"), "mine", &counts.to_string_lossy())));
-        assert!(c.warnings.is_empty());
 
         let two = {
             std::fs::write(d.join("b.env"), "container: docker://y\n").unwrap();
@@ -380,13 +377,23 @@ mod tests {
         assert_ne!(key(&base), key(&touched));
         assert_eq!(stage_id(&base, "a"), stage_id(&touched, "a"));
 
-        // A repo is its commit: a clone elsewhere agrees, a new commit moves it, a dirty tree only warns.
+        // A folder is its whole tree: a file added in a nested subfolder moves its id.
+        std::fs::create_dir_all(d.join("tree/x/y")).unwrap();
+        let tree = compile(job(&["tree"], "p"), &site(&d)).await.unwrap();
+        std::fs::write(d.join("tree/x/y/new"), "n").unwrap();
+        assert_ne!(stage_id(&tree, "tree"), stage_id(&compile(job(&["tree"], "p"), &site(&d)).await.unwrap(), "tree"));
+
+        // A repo is its commit: a clone elsewhere agrees, a new commit moves it, a dirty tree moves it with its dirty files.
         sh(&d, "git clone -q a b");
         assert_eq!(stage_id(&base, "a"), stage_id(&compile(job(&["b"], "p"), &site(&d)).await.unwrap(), "b"));
         std::fs::write(a.join("f"), "dirty").unwrap();
         let dirty = compiled!("p");
-        assert_eq!(stage_id(&base, "a"), stage_id(&dirty, "a"));
-        assert_eq!(dirty.warnings, [format!("repo {} has uncommitted changes; a prior cached result may be reused", a.display())]);
+        assert_ne!(stage_id(&base, "a"), stage_id(&dirty, "a"));
+        std::fs::write(a.join("f"), "dirtier").unwrap();
+        assert_ne!(stage_id(&dirty, "a"), stage_id(&compiled!("p"), "a"));
+        sh(&a, "git checkout -q f");
+        assert_eq!(stage_id(&base, "a"), stage_id(&compiled!("p"), "a"));
+        std::fs::write(a.join("f"), "dirty").unwrap();
         sh(&a, "git -c user.name=t -c user.email=t@t commit -qam c2");
         assert_ne!(stage_id(&base, "a"), stage_id(&compiled!("p"), "a"));
 

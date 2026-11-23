@@ -6,7 +6,7 @@
 
 ## Current
 
-Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). T6 done 2026-11-23: nibi and trillium are providers on altair (hand-added `[[cluster]]` blocks; trillium whole_node, node_cpus 192, walltime caps 24 h); test offers settled on c474.nibi and tri0089. Masters are awm `ssh` scopes with ControlPersist no: they live until the connection drops, and `ssh connect` reopens them through the 2fa service with no human. T7 done: nf-outsource on metasmith feat/engine/outsource-executor (ba2190aa, d513332e, unpushed), stub tests green on altair (build copy ~/.cache/nf-outsource-build; JDK ~/.local/jdk/jdk-21.0.13+9; nextflow 26.04.1 in msm env). Never run live. Config: plugins nf-outsource@0.1.0, process.executor='outsource', outsource{node='altair'}, ext.outsource=[to:..]. T9 done (deneb held): alcor's telemetry watch folded into cloud inventory (e32194e); mizar and alcor applied, rerun changed=0; cloud dev and release at 225740c, pushed github. Next: T10.
+Executing plan /home/tony/.claude/plans/abstract-munching-magpie-of-b55cc06f-c89c-4147-bf15-d0c8c81ebce5.md (T1–T17; the todo list tracks progress). T1–T4 done: release 5.1 = awm release 98c26809 (feat/outsource 3fefbe58), live on mizar, alcor, shogun, altair; capella and lyra asleep, take it at next refresh. Live-check: altair offer `to: fir` settled (o.txt = fc30554). T6 done 2026-11-23: nibi and trillium are providers on altair (hand-added `[[cluster]]` blocks; trillium whole_node, node_cpus 192, walltime caps 24 h); test offers settled on c474.nibi and tri0089. Masters are awm `ssh` scopes with ControlPersist no: they live until the connection drops, and `ssh connect` reopens them through the 2fa service with no human. T7 done: nf-outsource on metasmith feat/engine/outsource-executor (ba2190aa, d513332e, unpushed), stub tests green on altair (build copy ~/.cache/nf-outsource-build; JDK ~/.local/jdk/jdk-21.0.13+9; nextflow 26.04.1 in msm env). Never run live. Config: plugins nf-outsource@0.1.0, process.executor='outsource', outsource{node='altair'}, ext.outsource=[to:..]. T9 done (deneb held): alcor's telemetry watch folded into cloud inventory (e32194e); mizar and alcor applied, rerun changed=0; cloud dev and release at 225740c, pushed github. T10 done: a cache-hit rerun reused yesterday's instance; a fresh build (--locked) settled on altair (wall 42 s, cpu 83 s, rss 412 MB). Release 5.2 = awm release 7d4ed8ad (feat 0bf4fb21): local jobs drop the gateway egress proxy (cargo got CONNECT 403), a break reason carries the log tail. T12 done: nf-outsource ran live from altair. Unhinted, all 21 tasks went to altair (queue-delay bids). With per-task `ext.outsource = {[to: ...]}` one workflow ran on fir, nibi, sockeye and altair at once (1 min 2 s). T11: round 1 (12 MCP offers from altair, no `to`) settled on altair, fir and nibi, but the tests failed for want of the msm_solver binary in the git-archive export; round 2 (CLI) reused round 1's results (stale identity, below). Round 3 (msm touched) passed: 12 shards, junit back for all, ~3150 passed, 9 environmental failures (perf timing under contention, 3 git-metadata tests vs git-archive export, 5 relay-lifecycle tests lacking msm_relay); wall 8 min 21 s vs 27-29 min local gate; all 12 on altair (sif cached). Kit: altair ~/.cache/outsource-t11 (msm export + T10 solver, pydeps=pytest, kit/shard.sh N, msm.env = quay.io/hallamlab/metasmith:0.25.1); T12 kit: altair ~/.cache/outsource-t12 (main.nf, spread.config, --salt N). Next: T14 (triage the findings below, one worker per independent fix, ship, rerun T11 with trillium in and T12 unhinted/hinted with trillium).
 
 Found during T4, for T14:
 - An offer `to: fir` posted on mizar got `NoBids`; the same offer on altair settles. mizar's entry may not reach altair's provider host.
@@ -15,10 +15,24 @@ Found during T4, for T14:
 - nf-outsource re-implements the client `compile()` (OfferSet, stat ids, .env, task+place steps) in Groovy, because the entry accepts only `{set}`; drift breaks it silently. Fix: entry accepts the transform shape, or compile moves to a shared crate.
 - `resources` has no time field; the plugin sends task time as `spec.est`.
 - nf-outsource unverified live: status `{promise, phase}` shape, `from` routing after reconnect, dispose, a `place` to the caller's node, `-resume` session id.
+- Found in T10/T11 (2026-11-23):
+  - First offer of a large unseen material (metasmith/release, 187 MB) after mizar's market starts drops every link at once (alcor, altair, shogun) and fails NoBids; the identical repeat works, and a 3000-file folder does not trigger it. Seen at 11:00:15 and 11:23:13 UTC.
+  - 12 shards on one node each `apptainer pull` the same 4 GB image at once: /tmp fills ("no space left on device"), 10 break. Fix: one pull per image under a lock, APPTAINER_TMPDIR off /tmp.
+  - Two shards staging one material on trillium race: `find` saw the other's rsync temp file ("cannot stage"). Fix: one stage per material at a time.
+  - robust-z picker amplifies a small time spread among HPC bids (~1090 s): trillium's 92 s lead (z 1.35) beats its clamped waste penalty (-1), so trillium won re-awarded 2-cpu shards. Picker design question.
+  - Offers from mizar never reach an HPC: "no source for input" (push goes only along mizar's edges, altair does not relay to its clusters).
+  - `resources` without `mem_mb` is rejected (BadArgs) though the schema says it defaults.
+  - **Silent stale result**: a folder material's identity follows only its top-level stat. Adding src/metasmith/engine/msm_solver under msm/ left msm's mtime unchanged, so round 2 of T11 reused round 1's instances (same failures, no stats). Fix first: identity must cover the tree (max mtime/size over files, or a listing hash).
+  - trillium breaks every container job (exit 255): compute nodes cannot write /home, and apptainer wants ~/.apptainer/cache. Fix with the /tmp one: APPTAINER_CACHEDIR and APPTAINER_TMPDIR under the provider's state dir.
+  - Slurm jobs leave no `log` in the work dir (output goes to batch-*/slurm-*.out), so the 5.2 log tail is empty for HPC breaks.
+  - A bid after the round window is logged ("trillium bids ...") but dropped, and a directed round (`to`, one eligible provider) then fails NoBids: 3 of 4 trillium T12 tasks. A directed round should wait for its one provider; a late bid should log as late.
+  - nibi settles with no run stats (no /usr/bin/time on its compute nodes?).
+  - Instance size counts the whole work dir (107 MB for a 1.3 MB binary): confirmed again.
 - A dead slot is requeued only for groups with no `#sbatch` line (cac78807); a slot that dies after `sbatch` ran but before echo can still double-submit. Accepted.
 
 ## Waiting on the user
 
+- `picker-waste` (paged 2026-11-23): robust-z lets trillium's small time lead beat its waste penalty. (a) ratio/log time scoring, recommended; (b) waste weight ~2; (c) decline waste > 0.9 unless directed.
 - `deneb-entry` (paged 2026-11-23): deneb carries board/relay/genai drift from other scopes, and a provider there breaks fleet R79 (public box calls out to nothing; tree test pins its plugin set). Options: drop, do anyway (amend R79 + test), defer. Recommended drop or defer.
 
 ## Preferences
@@ -49,7 +63,12 @@ Found during T4, for T14:
 
 ## Workers
 
-None.
+T14 triage (2026-11-23). Fix now, one sonnet worker each on branch t14-<name> off feat/outsource:
+- `ident`: folder identity covers the tree (listing hash); dirty repo id includes its dirt; `resources` fields default (mem_mb).
+- `prov`: one apptainer pull per image under a lock, APPTAINER_CACHEDIR/TMPDIR under the provider root (trillium /home); one stage per material; Slurm tasks write `<workdir>/log` so breaks carry a tail; instance size counts produces only (if cheap).
+- `round`: a directed round waits for its one provider (ceiling, reason names it); late bids log as late.
+- `linkdrop`: diagnosis only, first large material after market start drops every link.
+Stacked: picker vs waste (paged Tony, options a/b/c, recommended ratio scoring); mizar offers cannot reach HPCs (relay design); nibi run stats; nf-outsource compile duplication and unverified items.
 
 ## Closed
 

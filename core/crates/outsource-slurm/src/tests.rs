@@ -222,7 +222,7 @@ async fn whole_node_bids_waste_the_idle_cores() {
 #[tokio::test(start_paused = true)]
 async fn every_job_reports_its_exit_code() {
     let mut r = rig();
-    for (name, script) in [("ok", "exit 0"), ("bad", "exit 3"), ("ok2", "echo hi")] {
+    for (name, script) in [("ok", "exit 0"), ("bad", "echo boom; exit 3"), ("ok2", "echo hi")] {
         let j = r.job(name, 1, 1024, script);
         r.be.launch(j).await.unwrap();
     }
@@ -232,6 +232,8 @@ async fn every_job_reports_its_exit_code() {
         got.insert(p, c);
     }
     assert_eq!(got, HashMap::from([("ok".into(), 0), ("bad".into(), 3), ("ok2".into(), 0)]));
+    // A task's output lands in `<workdir>/log`, where the provider reads a break reason from.
+    assert_eq!(std::fs::read_to_string(r.dir.path().join("work/bad/log")).unwrap().trim(), "boom");
     // Each job reported once.
     sleep(GATE * 3).await;
     assert!(r.rx.try_recv().is_err());

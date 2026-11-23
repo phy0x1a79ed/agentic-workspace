@@ -317,6 +317,42 @@ async fn a10_window_and_no_bids() {
     assert!(p1.none_pending() && p2.none_pending(), "no retry");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a10b_directed_round_waits_for_its_provider() {
+    let m = Market::new("market");
+    let (mut c, mut slow, mut other) = (Peer::new(&m, "c"), Peer::new(&m, "slow"), Peer::new(&m, "other"));
+    slow.reg([1, 1], &[]).await;
+    other.reg([1, 1], &[]).await;
+
+    // A bid after the normal window still wins a directed round.
+    let id = c.offer(set(json!({"to": "slow", "window_ms": 500}))).await;
+    slow.expect_offer().await;
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert!(matches!(c.status(&id).await.phase, Phase::Open));
+    slow.bid(&id, Some(t(1.0))).await;
+    assert_eq!(slow.expect_award().await, id);
+
+    // A provider that never answers fails the round at the ceiling, by name.
+    let id = c.offer(set(json!({"to": "slow", "window_ms": 500}))).await;
+    slow.expect_offer().await;
+    tokio::time::sleep(Duration::from_millis(DIRECTED_WINDOW_MS - 1000)).await;
+    assert!(matches!(c.status(&id).await.phase, Phase::Open));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    match c.status(&id).await.phase {
+        Phase::Failed { name, message } => assert_eq!((name.as_str(), message.as_str()), (raise::NO_BIDS, "slow did not bid within 300 s")),
+        p => panic!("{p:?}"),
+    }
+
+    // An undirected round still closes on the normal window; the late bid is dropped.
+    let id = c.offer(set(json!({"window_ms": 500}))).await;
+    slow.expect_offer().await;
+    other.expect_offer().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(failed_name(&c.status(&id).await), raise::NO_BIDS);
+    slow.bid(&id, Some(t(1.0))).await;
+    assert!(slow.none_pending());
+}
+
 #[derive(Default)]
 struct Shared {
     live: HashMap<String, u32>,

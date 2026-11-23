@@ -86,10 +86,9 @@ impl Provider {
     }
 
     /// The `import` verb: every path must exist (absolute, on the provider's host) or nothing is
-    /// held. Returns the ids, the `at` facts naming each path, and any repo warnings.
+    /// held. Returns the ids, the `at` facts naming each path.
     pub(crate) async fn import_materials(&self, items: &[ImportItem]) -> Result<Value, String> {
         let (host, me) = (&self.inner.host, self.inner.cfg.id.as_str());
-        let mut warnings = vec![];
         let mut staged = vec![];
         for item in items {
             if !Path::new(&item.path).is_absolute() {
@@ -98,7 +97,7 @@ impl Provider {
             if item.ty.as_ref().is_some_and(PropSet::is_empty) {
                 return Err(format!("{} has an empty type", item.path));
             }
-            let probed = identify(host, &item.path, me, false, &mut warnings).await.map_err(|_| format!("{} does not exist", item.path))?;
+            let probed = identify(host, &item.path, me, false).await.map_err(|_| format!("{} does not exist", item.path))?;
             let (path, id) = (PathBuf::from(probed.path), item.ty.as_ref().map_or(probed.id, instance_id));
             let files = if self.inner.state.lock().unwrap().holds(&id, &path) {
                 None
@@ -116,6 +115,6 @@ impl Provider {
         self.inner.persist(&st);
         let ids: Vec<&Id> = staged.iter().map(|s| &s.0).collect();
         let facts: Vec<Fact> = staged.iter().map(|(id, path, ..)| Fact::at_path(id, me, &path.to_string_lossy())).collect();
-        Ok(json!({"ids": ids, "facts": facts, "warnings": warnings}))
+        Ok(json!({"ids": ids, "facts": facts}))
     }
 }

@@ -7,17 +7,17 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// Builds the typed message for a caller verb, refusing provider verbs and unknown args. An
-/// `offer` or `prep` is compiled from its transform shape; its warnings come back beside the message.
-pub async fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<(Msg, Vec<String>), String> {
+/// `offer` or `prep` is compiled from its transform shape.
+pub async fn verb_msg(verb: &str, args: Value, site: &Site) -> Result<Msg, String> {
     if !CALLER_VERBS.iter().any(|v| v.name == verb) {
         return Err(format!("unknown verb {verb}"));
     }
     if verb == "offer" || verb == "prep" {
-        let Compiled { set, warnings } = if verb == "offer" { offer::compile(args, site).await? } else { offer::compile_prep(args, site).await? };
-        return Ok((Msg::Offer(OfferArgs { set, promise: None, inbound: vec![] }), warnings));
+        let Compiled { set } = if verb == "offer" { offer::compile(args, site).await? } else { offer::compile_prep(args, site).await? };
+        return Ok(Msg::Offer(OfferArgs { set, promise: None, inbound: vec![] }));
     }
     let msg = serde_json::from_value(json!({"selector": verb, "args": args})).map_err(|e| e.to_string())?;
-    Ok((msg, vec![]))
+    Ok(msg)
 }
 
 /// The reply as the surfaces show it: `return` unwrapped, anything else as an error object.
@@ -30,12 +30,8 @@ pub fn shown(reply: Msg) -> Result<Value, Value> {
 
 /// Runs a caller verb; an offer's materials are read at `site`.
 pub async fn invoke(client: &Client, verb: &str, args: Value, site: &Site) -> Result<Value, Value> {
-    let (msg, warnings) = verb_msg(verb, args, site).await.map_err(|e| json!({"selector": "raise", "args": {"name": "BadArgs", "message": e}}))?;
-    let mut reply = shown(client.ask(msg).await.map_err(|e| json!({"selector": "raise", "args": {"name": "Unavailable", "message": e}}))?)?;
-    if let (false, Some(obj)) = (warnings.is_empty(), reply.as_object_mut()) {
-        obj.insert("warnings".into(), json!(warnings));
-    }
-    Ok(reply)
+    let msg = verb_msg(verb, args, site).await.map_err(|e| json!({"selector": "raise", "args": {"name": "BadArgs", "message": e}}))?;
+    shown(client.ask(msg).await.map_err(|e| json!({"selector": "raise", "args": {"name": "Unavailable", "message": e}}))?)
 }
 
 /// The verbs MCP and HTTP expose: every caller verb but the CLI-only ones.

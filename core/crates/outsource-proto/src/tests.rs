@@ -130,6 +130,8 @@ fn offer_set_defaults() {
     assert_eq!(set.axes[0].name, TIME_AXIS);
     assert!(set.window_ms < 1000);
     assert_eq!(set.resources, Resources::default());
+    let part: Resources = serde_json::from_value(json!({"cpus": 2})).unwrap();
+    assert_eq!(part, Resources { cpus: 2, mem_mb: 2048 });
 }
 
 #[test]
