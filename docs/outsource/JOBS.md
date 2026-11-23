@@ -8,13 +8,13 @@ This file is the contract between the outsource entries, providers and callers t
 
 Every message is an `Envelope` from `outsource-proto`. `to` names a provider id, an entry or a caller id. Each `ask` gets exactly one reply: `return`, `raise` or `doesNotUnderstand`. A `send` gets no reply. The market replies to an unknown promise with `raise UnknownPromise`.
 
-The market is one, with an entry on every node. Each entry is a market of its own with its own promises and watchers, named by its node. Below, "the market" is the entry a promise was posted at. Each node runs one host process for its providers. Every entry that reaches the node attaches to it: its own entry in process, another node's entry through `outsource attach` over ssh, which joins stdio to `~/.outsource/provider.sock`.
+The market is one, with an entry on every node. Each entry is a market of its own with its own promises and watchers, named by its node. Below, "the market" is the entry a promise was posted at. Each node runs one host process for its providers. Every entry that reaches the node attaches to it: its own entry in process, another node's entry through `outsource attach` over ssh, which joins stdio to `~/.outsource/provider.sock`. A local caller that speaks the wire itself, such as the Nextflow plugin, runs `outsource connect`, which joins stdio to the entry's socket. Both bridges exit when either side closes, so a remote restart drops the link at once.
 
 1. An entry opens each link to a node's providers with a `vocab` send `{properties}`: its whole vocabulary. The first `vocab` on a link names the entry by its `from`. The host merges it, sends the merged vocabulary back, then sends one `register` ask per provider it hosts to that entry, with `routes`: the providers its rsync reaches. The entry returns `null`.
 2. A caller sends an `offer` ask with `{set}`. The market returns `{"promise": <id>}` at once.
 3. The market sends `offer` with `{set, promise, inbound}` to each eligible provider. `inbound` names the providers whose registered `routes` reach that provider. A provider is eligible when its link is up, its version range holds the offer envelope's `v`, and the set's `place` is a subset of its registered `props`.
-4. Each provider answers with a `bid` ask. `values: null` is a decline with a `reason`. The market returns `null`.
-5. The round closes `window_ms` after the offers go out, or earlier when every eligible provider answered. With no bid that carries values, the promise fails with `NoBids`.
+4. Each provider answers with a `bid` ask. `values` carries `time` and `waste` (the share of allocated cores the job leaves idle). `values: null` is a decline with a `reason`. The market returns `null`.
+5. The round closes `window_ms` after the offers go out, or earlier when every eligible provider answered. A directed round (`to`) waits up to 300 s for its one provider. A bid after its round closed is logged as late and dropped. With no bid that carries values, the promise fails with `NoBids`.
 6. The market sends `award` with `{promise, set}` to the winner. It sends `event` with phase `awarded` to every other bidder, so they release the capacity they priced in.
 7. The winner sends a `started` ask, then a `settle` ask. `kept` settles the promise. `broken` starts a fresh round without every provider that broke this promise. A fresh round with no bids fails the promise with `NoBids`.
 8. A caller's `status` on an awarded or started promise makes the market ask the provider `status` with `{promise}`. The provider returns a `PromiseStatus` as it sees it, with `life` from its backend. The market applies a settled or failed answer as if a `settle` had arrived. It returns its own `PromiseStatus` with the provider's `life`. A provider whose link is down gives `life: "unavailable"`.
@@ -34,7 +34,11 @@ The contract of a set, for history and corrections, is the `contract` prop of it
 - A compute step's slot id is `slot_id(step.key(), slot)`. The requester can compute it before the award.
 - A provider indexes each result under its expanded set: the step's `props`, the pair `op=<op>`, one pair `input=<id>` per input, and any dependency versions it used. A request hits when its own pairs (the same construction without the provider's extras) are a subset of a stored entry's pairs. A hit settles with the stored instance ids, not the request's slot ids.
 - An imported instance's id is `instance_id(props)` of the property set its index YAML declares.
-- A leaf file that no outsource step produced has the id `instance_id({path, origin})`, where `origin` names the provider that holds it.
+- A material that no outsource step produced is identified without reading its content, with `origin` naming the node that holds it:
+  - a file by `{path, mtime_ns, origin}`;
+  - a git repo by `{git: HEAD, origin}`, plus a hash of its uncommitted changes when it has any;
+  - any other folder by `{path, mtime_ns: <hash of the sorted listing of name, size and mtime>, origin}`.
+- **CAUTION** The probe runs as one shell call on the holder. A folder's hash walks the whole tree, so a very large plain folder makes every offer slower. Type it or make it a repo.
 
 ## Job kinds
 
@@ -47,7 +51,8 @@ A step's `op` picks the kind. The provider writes each kind as a `run.sh` in a f
 | `place` | `{path, src?}` | none | each input id is copied into `path` at the provider `to`, under the base name of its source. With `files: true`, only the listed relative paths are copied, keeping those paths |
 | `prep` | `{}` | none | each input id the provider lacks is fetched into its holdings. A `.env` input's image is pulled into the env cache |
 
-- `task.env` is `{stage, container}`. The provider pulls `container` once into its env cache, keyed by the staged `.env`'s id, and runs `script` inside it with apptainer. A provider without apptainer declines.
+- `task.env` is `{stage, container}`. The provider pulls `container` into its env cache, keyed by the staged `.env`'s id, and runs `script` inside it with apptainer. A provider without apptainer declines.
+- The pull runs on the provider's host (a cluster's login node) before the job, one pull per image at a time under a lock. Compute nodes may have no route to a registry. `APPTAINER_TMPDIR` and `APPTAINER_CACHEDIR` sit beside the env cache, because a compute node may not write `/tmp` or `$HOME`.
 - `task.script` is the shell body to run. `task.stage` maps a name in the work dir to `{id, path?, src?}`. `path` selects a file inside a directory instance. `task.outputs` is a list of globs.
 - `src` (per stage item, or `place.src` keyed by id) is the absolute path at the input's place. Give it only when the input's `start` fact names no `path`.
 - A settled `at` fact names the holder's path in `o.path`. Copy settled facts into a later set's `start`, and the next provider fetches without `src`.
