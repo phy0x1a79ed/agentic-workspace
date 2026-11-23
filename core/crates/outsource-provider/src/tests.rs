@@ -633,6 +633,43 @@ async fn env_task_pulls_once_prices_the_pull_and_runs_the_protocol_inside() {
 }
 
 #[tokio::test]
+async fn concurrent_env_jobs_pull_one_image_once_with_apptainer_dirs_under_the_provider_root() {
+    let d = tempfile::tempdir().unwrap();
+    let (log, fake) = fake_apptainer(d.path());
+    let mut c = cfg(d.path(), "p");
+    c.apptainer = Some(fake);
+    let p = Provider::local(c);
+    let ids = p.import(&write_library(&d.path().join("lib"), &[("e.env", "1", "container: docker://x/y:1\n")])).await.unwrap();
+    let job = |tag: &str| {
+        let mut s = task(&[("job", tag)], "", ids.clone());
+        s.spec = json!({"script": "echo $APPTAINER_CACHEDIR $APPTAINER_TMPDIR > out.txt", "stage": {"e.env": {"id": ids[0]}}, "outputs": ["out.txt"],
+                        "env": {"stage": "e.env", "container": "docker://x/y:1"}});
+        set_of(vec![s])
+    };
+    let mut m = Mkt::start(vec![p]);
+    std::fs::write(d.path().join("hold"), "").unwrap();
+    let (a, b) = (job("a"), job("b"));
+    for (n, set) in [("a", &a), ("b", &b)] {
+        m.bid("p", n, set).await;
+        m.award("p", n, set);
+    }
+    until(&log).await;
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    let mut settled = std::collections::BTreeMap::new();
+    while settled.len() < 2 {
+        let (p, o) = m.wait(|_, msg| match msg { Msg::Settle(s) => Some((s.promise, s.outcome)), _ => None }).await;
+        settled.insert(p, o);
+    }
+    for o in settled.values() {
+        let dir = kept(o).0.iter().find_map(Fact::path).map(PathBuf::from).unwrap();
+        let env = d.path().join("p/env");
+        assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap().trim(), format!("{0}/cache {0}/tmp", env.display()));
+    }
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(log.lines().filter(|l| l.starts_with("pull")).count(), 1, "{log}");
+}
+
+#[tokio::test]
 async fn typed_outputs_are_held_by_type_and_a_prep_sees_them_in_flight_then_done() {
     let d = tempfile::tempdir().unwrap();
     let t = [("db", "uniref50"), ("release", "1")];

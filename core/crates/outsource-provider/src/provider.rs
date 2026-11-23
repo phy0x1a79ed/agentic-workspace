@@ -30,10 +30,10 @@ pub(crate) struct Instance {
 }
 
 impl Instance {
-    /// From `Host::files` of `path`: the bytes of every file, listing those `keep` accepts.
+    /// From `Host::files` of `path`: listing and counting the bytes of the files `keep` accepts (a lone file, named "", always counts).
     pub fn of(path: PathBuf, files: &[(String, u64)], keep: impl Fn(&str) -> bool) -> Instance {
         let listing = files.iter().map(|f| &f.0).filter(|f| keep(f)).cloned().collect();
-        Instance { path, listing, size: files.iter().map(|f| f.1).sum() }
+        Instance { path, listing, size: files.iter().filter(|f| f.0.is_empty() || keep(&f.0)).map(|f| f.1).sum() }
     }
 }
 
@@ -958,12 +958,20 @@ impl Inner {
         self.work_dir.with_file_name("env").join(format!("{id}.sif"))
     }
 
-    /// Shell lines that pull the environment's image into the cache unless it is there.
+    /// Shell lines that pull the environment's image into the cache unless it is there. One pull
+    /// per image at a time, and apptainer's scratch and cache sit beside the images, never in
+    /// /tmp or $HOME (a compute node may not write there). The exports serve the later `exec` too.
     fn pull_lines(&self, env: &Env, apptainer: &Path) -> Vec<String> {
         let (app, sif) = (q(&apptainer.to_string_lossy()), q(&self.sif(&env.id).to_string_lossy()));
+        let dir = self.work_dir.with_file_name("env");
+        let sub = |n: &str| q(&dir.join(n).to_string_lossy());
         vec![
-            format!("mkdir -p {}", q(&self.work_dir.with_file_name("env").to_string_lossy())),
-            format!("[ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif}; }}", q(&env.container)),
+            format!("mkdir -p {} {}", sub("tmp"), sub("cache")),
+            format!("export APPTAINER_TMPDIR={} APPTAINER_CACHEDIR={}", sub("tmp"), sub("cache")),
+            format!(
+                "[ -f {sif} ] || ( flock 9; [ -f {sif} ] || {{ {app} pull --force {sif}.$$ {} && mv {sif}.$$ {sif} || {{ rm -f {sif}.$$; exit 1; }}; }} ) 9>{sif}.lock",
+                q(&env.container)
+            ),
         ]
     }
 
@@ -1074,12 +1082,15 @@ impl Inner {
                 };
                 let src = item["src"].as_str().or(path).ok_or_else(|| format!("cannot stage {id}: no path in its fact or spec"))?;
                 let dir = self.held_dir(id);
-                lines.push(format!("mkdir -p {}", q(&dir.to_string_lossy())));
-                lines.push(if is_local_route(route) {
-                    format!("cp -a {} {}/", q(src), q(&dir.to_string_lossy()))
+                lines.push(format!("mkdir -p {}", q(&self.work_dir.with_file_name("held").to_string_lossy())));
+                let d = q(&dir.to_string_lossy());
+                let tmp = format!("{d}.$$");
+                let copy = if is_local_route(route) {
+                    format!("cp -a {} {tmp}/", q(src))
                 } else {
-                    format!("rsync -a {} {}/", q(&format!("{route}:{src}")), q(&dir.to_string_lossy()))
-                });
+                    format!("rsync -a {} {tmp}/", q(&format!("{route}:{src}")))
+                };
+                lines.push(format!("( flock 9; [ -d {d} ] || {{ rm -rf {tmp} && mkdir -p {tmp} && {copy} && mv {tmp} {d}; }} ) 9>{d}.lock"));
                 let base = Path::new(src.trim_end_matches('/')).file_name().ok_or_else(|| format!("{src} has no base name"))?;
                 let pairs = stage_pairs(item, id);
                 let flight = Some(Flight { since: Instant::now(), est: self.est(step, &set.resources), owner: promise.into() });

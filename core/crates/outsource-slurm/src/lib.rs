@@ -304,7 +304,7 @@ impl Inner {
         // A task whose work dir already holds `exit` (resubmitted
         // after a restart) keeps it rather than running again.
         let task = format!(
-            "#!/bin/sh\nd=$(sed -n \"$((SLURM_ARRAY_TASK_ID + 1))p\" {})\ncd \"$d\" || exit 1\n[ -f exit ] && exit 0\n{}\necho $? > exit.tmp && mv exit.tmp exit\n",
+            "#!/bin/sh\nd=$(sed -n \"$((SLURM_ARRAY_TASK_ID + 1))p\" {})\ncd \"$d\" || exit 1\n[ -f exit ] && exit 0\n{{ {}; }} >log 2>&1\necho $? > exit.tmp && mv exit.tmp exit\n",
             q(&list_path.to_string_lossy()),
             RUN_LINE
         );
