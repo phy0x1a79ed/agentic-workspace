@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from awm.scopeview import chain, layout
+from awm.scopeview import chain, layout, trace
 from awm.scopeview.hub_adapter import API_MANIFEST, HANDLERS
 from awm.scopeview.tree import Tree
 
@@ -50,7 +50,7 @@ def scope(tmp_path):
     (root / ".gitignore").write_text("/data/ds\n/data/chain\n.dvc/config.local\n")
     pin_dir(root, cache, "ds", {
         "samples.tsv": b"sample_id\nS1\n",
-        "tables/mags.tsv": b"bin\tcompleteness\nS1.a.001\t90\n",
+        "tables/mags.tsv": b"bin\tphylum\tcompleteness\nS1.a.001\tBacteroidota\t90\nS1.a.002\tChloroflexota\t60\nS1.a.003\tBacteroidota\t95\n",
         "binning/checkm2_a/S1.tsv": b"bin\tc\n",
         "assembly/stats_a/S1.json": b'{"n50": 1200}',
         "_logs/gaps.tsv": b"product\tstem\treason\ncheckm2_a\tS2\tnot_run\n",
@@ -90,6 +90,49 @@ def test_a_non_tabular_file_previews_as_text(scope):
     root, _ = scope
     pv = chain.node(Tree(root), "table:ds/assembly/stats_a")["preview"]
     assert pv["text"] == '{\n  "n50": 1200\n}'
+
+
+def write_body(root, made, body, **meta_extra):
+    f = root / made["path"]
+    meta, _ = chain.split(f.read_text())
+    meta.update(meta_extra)
+    f.write_text(chain.join(meta, body))
+
+
+def test_a_sentence_traces_through_its_citations_to_table_rows(scope):
+    root, _ = scope
+    t = "table:ds/tables/mags.tsv"
+    q = chain.new(root, "question", [t], "Which phyla?")
+    f = chain.new(root, "figure", [q["id"], t], "MAGs by phylum")
+    write_body(root, f, "", rows={"table": t, "key": "bin"})
+    i = chain.new(root, "interpretation", [f["id"]], "Bacteroidota lead")
+    write_body(root, i, "- Bacteroidota hold two MAGs [[%s?bin=S1.a.001,S1.a.003]].\n- One is small.\n" % f["id"])
+    p = chain.new(root, "point", [i["id"]], "P")
+    write_body(root, p, "Bacteroidota dominate [[%s#1]]. Chloroflexota is rare [[%s?phylum=Chloroflexota]].\n" % (i["id"], t))
+    g = chain.build(Tree(root))
+    assert not [x for x in g["problems"] if x["code"] == "bad_cite"], g["problems"]
+
+    out = trace.trace(Tree(root), g, ["%s#1" % i["id"]])
+    assert out["steps"][0]["text"].startswith("Bacteroidota hold two")
+    assert [r["bin"] for r in out["rows"][0]["rows"]] == ["S1.a.001", "S1.a.003"] and out["rows"][0]["via"] == f["id"]
+    assert {t, q["id"], f["id"], i["id"]} <= set(out["lit"])
+    rows = trace.trace(Tree(root), g, ["%s?phylum=Chloroflexota" % t])["rows"][0]
+    assert rows["total"] == 1 and rows["rows"][0]["completeness"] == 60
+    rows = trace.trace(Tree(root), g, ["%s?phylum=Bacteroidota&completeness>=92" % t])["rows"][0]
+    assert [r["bin"] for r in rows["rows"]] == ["S1.a.003"]
+
+
+def test_check_reports_each_bad_citation(scope):
+    root, _ = scope
+    t = "table:ds/tables/mags.tsv"
+    q = chain.new(root, "question", [t], "Q")
+    f = chain.new(root, "figure", [q["id"], t], "F")
+    other = chain.new(root, "question", ["table:ds/samples.tsv"], "other")
+    i = chain.new(root, "interpretation", [f["id"]], "I")
+    write_body(root, i, "[[nope]] [[%s]] [[%s#3]] [[%s?bin=x]] [[%s?colour=red]] [[%s?a=b]] [[%s?completeness~9]]\n"
+               % (other["id"], q["id"], f["id"], t, q["id"], t))
+    msgs = [x["message"] for x in chain.build(Tree(root))["problems"] if x["code"] == "bad_cite"]
+    assert len(msgs) == 7, msgs
 
 
 def test_check_reports_each_broken_rule(scope):

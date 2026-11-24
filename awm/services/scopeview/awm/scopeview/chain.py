@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 
+from awm.scopeview import trace
 from awm.scopeview.tree import Tree
 
 STAGES = ["table", "question", "figure", "interpretation", "point", "prose"]
@@ -111,7 +112,7 @@ def chain_nodes(tree: Tree) -> tuple[list[dict], list[dict]]:
         nodes.append({
             "id": str(meta["id"]), "stage": stage, "title": meta.get("title") or meta["id"], "path": path,
             "from": [str(f) for f in (frm if isinstance(frm, list) else [frm])],
-            "artifact": meta.get("artifact"), "made_by": meta.get("made_by"),
+            "artifact": meta.get("artifact"), "made_by": meta.get("made_by"), "rows": meta.get("rows"),
             "status": meta.get("status", "draft"), "review": meta.get("review"), "stale_ok": meta.get("stale_ok"),
             "seen": meta.get("seen") or {}, "body": body,
             "hash": digest(meta.get("title"), sorted(map(str, frm if isinstance(frm, list) else [frm])), body,
@@ -160,6 +161,17 @@ def build(tree: Tree, gate: bool = False) -> dict:
             if tree.exists(n["artifact"]):
                 problems.append({"node": n["id"], "code": "artifact_unpinned", "message": f"{n['artifact']} is in git; put it under a DVC pin"})
         n["stale"] = bool(n["stale_inputs"])
+
+    up: dict[str, set] = {}
+
+    def ancestors(v: str) -> set:
+        if v not in up:
+            up[v] = {v}
+            for r in by_id.get(v, {}).get("from", []):
+                up[v] |= ancestors(r)
+        return up[v]
+
+    problems += trace.problems(tree, chain, by_id, ancestors)
 
     for c in cycles(chain):
         problems.append({"node": c[0], "code": "cycle", "message": " → ".join(c)})
