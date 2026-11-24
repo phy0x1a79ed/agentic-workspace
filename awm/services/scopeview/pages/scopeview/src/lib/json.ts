@@ -1,6 +1,6 @@
 /** Pretty-printed JSON as HTML with its keys, strings, numbers and atoms wrapped for colour. Every character is escaped. */
 
-const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+import { esc } from './format';
 
 const TOKEN = /("(?:[^"\\]|\\.)*")(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from './api';
   import Figure from './Figure.svelte';
+  import { cell } from './format';
   import { colourJson } from './json';
   import { citeNode, renderMarkdown } from './markdown';
   import { markTarget, type Target } from './trace';
@@ -86,7 +87,6 @@
     if (pinned != null) content.querySelector(`.unit[data-t="${CSS.escape(pinned)}"]`)?.classList.add('pinned');
   });
 
-  const cell = (v: unknown) => (v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 </script>
 
 <header data-stage={node.stage}>

@@ -85,31 +85,44 @@ class Tree:
         return self.cache_dir / "files" / "md5" / md5[:2] / md5[2:]
 
     @cached_property
-    def pins(self) -> dict[str, str]:
-        """Every DVC-tracked file at this ref: path to md5."""
-        out = {}
+    def _pinned(self) -> tuple[dict[str, str], set[str]]:
+        pins, unlisted = {}, set()
         for pin in self.files("data/"):
             if not pin.endswith(".dvc"):
                 continue
             base = pin.rsplit("/", 1)[0]
             for o in (yaml.safe_load(self._read_git(pin)) or {}).get("outs", []):
                 top = f"{base}/{o['path']}"
-                if o["md5"].endswith(".dir"):
-                    obj = self._object(o["md5"])
-                    if not obj.exists():
-                        out[top + "/"] = None  # pinned folder whose listing is not in this cache
-                        continue
-                    for e in json.loads(obj.read_text()):
-                        out[f"{top}/{e['relpath']}"] = e["md5"]
+                if not o["md5"].endswith(".dir"):
+                    pins[top] = o["md5"]
+                elif (obj := self._object(o["md5"])).exists():
+                    pins.update({f"{top}/{e['relpath']}": e["md5"] for e in json.loads(obj.read_text())})
                 else:
-                    out[top] = o["md5"]
-        return out
+                    unlisted.add(top)
+        return pins, unlisted
+
+    @property
+    def pins(self) -> dict[str, str]:
+        """Every DVC-tracked file at this ref whose md5 is known: path to md5."""
+        return self._pinned[0]
+
+    @property
+    def unlisted(self) -> set[str]:
+        """Pinned folders whose listing is not in this cache."""
+        return self._pinned[1]
+
+    @cached_property
+    def stamp(self) -> str:
+        """Changes whenever what the graph reads changes: the commit, plus in the worktree each chain file and pin."""
+        if self.ref:
+            return self.commit
+        st = [(p, s.st_mtime_ns, s.st_size) for p in self._git_files
+              if (p.startswith("chain/") or p.endswith(".dvc")) and (s := (self.root / p).stat())]
+        return hashlib.sha1(repr((self.commit, st)).encode()).hexdigest()
 
     def local(self, path: str) -> Path:
         """A readable file holding a pinned path's bytes at this ref."""
         md5 = self.pins[path]
-        if md5 is None:
-            raise FileNotFoundError(f"{path}: the pin's folder listing is not in the DVC cache")
         obj = self._object(md5)
         if obj.exists():
             return obj

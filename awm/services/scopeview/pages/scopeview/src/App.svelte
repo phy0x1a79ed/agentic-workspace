@@ -8,6 +8,7 @@
   import { theme, toggleTheme } from './lib/theme.svelte';
   import type { Target } from './lib/trace';
   import { buildTree } from './lib/tree';
+  import { message } from './lib/format';
 
   const WORKTREE = 'worktree';
 
@@ -39,7 +40,6 @@
   let infoWidth = $state(340);
   let chatWidth = $state(340);
 
-  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   $effect(() => {
     const state = { node: peer, project, scope, ref, id, tab: tab === 'history' ? tab : '', trace: tracing ? '1' : '', chat: chatting ? '1' : '' };
@@ -258,8 +258,10 @@
     <span class="spacer"></span>
     {#if graph}
       <code title={graph.commit}>{graph.commit.slice(0, 7)}</code>
-      <button class="plain" onclick={() => (showProblems = !showProblems)} disabled={graph.ok}>
-        <Tag tone={graph.ok ? 'ok' : 'danger'}>{graph.ok ? 'ok' : `${graph.problems.length} problems`}</Tag>
+      <button class="plain" onclick={() => (showProblems = !showProblems)} disabled={!graph.problems.length}>
+        <Tag tone={!graph.problems.length ? 'ok' : graph.ok ? 'warn' : 'danger'}>
+          {!graph.problems.length ? 'ok' : graph.ok ? `${graph.problems.length} stale` : `${graph.problems.length} problems`}
+        </Tag>
       </button>
     {/if}
     <button class="plain theme" class:on={chatting} aria-pressed={chatting} onclick={() => (chatting = !chatting)} title="Talk to this study's curator">
@@ -271,7 +273,7 @@
   </header>
 
   {#if error}<p class="error">{error}</p>{/if}
-  {#if graph && showProblems && !graph.ok}
+  {#if graph && showProblems && graph.problems.length}
     <ul class="problems">
       {#each graph.problems as p}
         <li>

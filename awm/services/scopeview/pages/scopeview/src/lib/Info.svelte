@@ -3,6 +3,7 @@
   import * as api from './api';
   import Badges from './Badges.svelte';
   import Dag from './Dag.svelte';
+  import { cell, message } from './format';
   import type { Target } from './trace';
   import { STAGE_LABEL } from './tree';
 
@@ -35,7 +36,6 @@
   let commits = $state.raw<api.Commit[] | null>(null);
   let historyError = $state<string | null>(null);
 
-  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   $effect(() => {
     if (!node) {
@@ -79,7 +79,6 @@
   });
 
   const lit = $derived(target && traced?.trace ? new Set([id, ...traced.trace.lit]) : undefined);
-  const cell = (v: unknown) => (v === null || v === undefined ? '∅' : typeof v === 'object' ? JSON.stringify(v) : String(v));
   const uncited = (text: string) => text.replace(/\s*\[\[[^\[\]\s]+\]\]/g, '');
 
   const hover = (ref: string) => {
@@ -131,12 +130,12 @@
               {#if r.error}
                 <p class="meta error">{r.error}</p>
               {:else if r.rows?.length === 1}
-                <dl>{#each r.columns ?? [] as c (c)}<dt>{c}</dt><dd>{cell(r.rows[0][c])}</dd>{/each}</dl>
+                <dl>{#each r.columns ?? [] as c (c)}<dt>{c}</dt><dd>{cell(r.rows[0][c], '∅')}</dd>{/each}</dl>
               {:else if r.rows?.length}
                 <div class="grid">
                   <table>
                     <thead><tr>{#each r.columns ?? [] as c (c)}<th>{c}</th>{/each}</tr></thead>
-                    <tbody>{#each r.rows as row}<tr>{#each r.columns ?? [] as c (c)}<td>{cell(row[c])}</td>{/each}</tr>{/each}</tbody>
+                    <tbody>{#each r.rows as row}<tr>{#each r.columns ?? [] as c (c)}<td>{cell(row[c], '∅')}</td>{/each}</tr>{/each}</tbody>
                   </table>
                 </div>
               {/if}

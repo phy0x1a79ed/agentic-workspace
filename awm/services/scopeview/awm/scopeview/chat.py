@@ -11,6 +11,7 @@ import httpx
 from awm.gatewayclient import call
 
 _links: dict[str, str] = {}
+_http = httpx.AsyncClient(timeout=40)
 
 
 async def room(project: str, scope: str) -> str:
@@ -23,18 +24,24 @@ async def room(project: str, scope: str) -> str:
     return _links[key]
 
 
-async def read(project: str, scope: str, after: int, wait: float) -> dict:
+async def relay(project: str, scope: str, method: str, path: str, **kw) -> tuple[str, dict]:
+    """One call to the room's relay endpoint. A failed call forgets the link, so the next one asks seats again."""
     link = await room(project, scope)
-    async with httpx.AsyncClient(timeout=40) as cli:
-        r = await cli.get(f"{link}/recv", params={"after": after, "wait": int(min(wait, 25))})
-    r.raise_for_status()
-    return {"room": link.rsplit("/", 1)[1], **r.json()}
+    try:
+        r = await _http.request(method, f"{link}/{path}", **kw)
+        r.raise_for_status()
+    except httpx.HTTPError:
+        _links.pop(f"{project}/{scope}", None)
+        raise
+    return link, r.json()
+
+
+async def read(project: str, scope: str, after: int, wait: float) -> dict:
+    link, body = await relay(project, scope, "GET", "recv", params={"after": after, "wait": int(min(wait, 25))})
+    return {"room": link.rsplit("/", 1)[1], **body}
 
 
 async def say(project: str, scope: str, text: str, context: dict) -> dict:
-    link = await room(project, scope)
     about = " ".join(f"{k}={v}" for k, v in context.items() if v)
-    async with httpx.AsyncClient(timeout=30) as cli:
-        r = await cli.post(f"{link}/send", json={"from": "scopeview", "text": f"[{about}]\n{text}" if about else text})
-    r.raise_for_status()
-    return r.json()
+    return (await relay(project, scope, "POST", "send",
+                        json={"from": "scopeview", "text": f"[{about}]\n{text}" if about else text}))[1]

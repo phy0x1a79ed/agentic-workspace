@@ -37,11 +37,10 @@ def provenance(g: dict, node_id: str, max_label_chars: int = 26) -> dict:
     lay = r.layout(None)
     geo = r.geometry(lay, font_size=13.0, max_label_chars=max_label_chars)
     return {
-        "width": geo.width, "height": geo.height, "marker_d": geo.marker_d,
-        "row_pitch": geo.row_pitch, "lane_pitch": geo.lane_pitch, "font_size": geo.font_size,
+        "width": geo.width, "height": geo.height, "row_pitch": geo.row_pitch, "font_size": geo.font_size,
         "nodes": [{"id": n.name, "stage": by_id[n.name]["stage"], "kind": n.kind.name.lower(),
                    "cx": n.cx, "cy": n.cy, "label_x": n.label_x, "marker_w": n.marker_w, "marker_h": n.marker_h,
-                   "label": n.label, "truncated": n.truncated,
+                   "label": n.label,
                    "stale": bool(by_id[n.name].get("stale")), "focus": n.name == node_id}
                   for n in geo.nodes],
         "edges": [{"from": e.src, "to": e.dst, "back": e.back, "d": e.d} for e in geo.edges],
