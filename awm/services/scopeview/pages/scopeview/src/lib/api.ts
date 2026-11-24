@@ -62,6 +62,8 @@ export interface Preview {
   bytes?: number;
   columns?: { name: string; type?: string }[];
   head?: Record<string, unknown>[];
+  /** Any non-tabular file small enough to send; JSON arrives pretty-printed. */
+  text?: string;
 }
 
 export interface PlotlyFigure {
@@ -86,6 +88,28 @@ export interface Commit {
   subject: string;
 }
 
+/** Metasmith DAG geometry: a node's ancestors down to raw tables, plus its direct children. */
+export interface Layout {
+  width: number;
+  height: number;
+  row_pitch: number;
+  font_size: number;
+  nodes: {
+    id: string;
+    stage: Stage;
+    kind: 'given' | 'data' | 'transform' | 'target';
+    cx: number;
+    cy: number;
+    label_x: number;
+    marker_w: number;
+    marker_h: number;
+    label: string;
+    stale: boolean;
+    focus: boolean;
+  }[];
+  edges: { from: string; to: string; back: boolean; d: string }[];
+}
+
 /** Where a call reads: a scope on one node, at a ref ('' is the worktree as it stands). */
 export interface Ctx {
   peer: string;
@@ -101,6 +125,7 @@ export const scopes = (peer: string) =>
   scopeview.call<{ scopes: ScopeInfo[] }>('scopes', {}, opts({ peer })).then((r) => r.scopes);
 export const graph = (c: Ctx) => scopeview.call<Graph>('graph', at(c), opts(c));
 export const node = (c: Ctx, id: string) => scopeview.call<NodeDetail>('node', { ...at(c), id }, opts(c));
+export const layout = (c: Ctx, id: string) => scopeview.call<Layout>('layout', { ...at(c), id }, opts(c));
 export const history = (c: Ctx, id?: string) =>
   scopeview
     .call<{ commits: Commit[] }>('history', { ...at(c), ...(id ? { id } : {}) }, opts(c))

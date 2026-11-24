@@ -1,8 +1,73 @@
-[data-stage='table'] { --stage: #9898a8; }
-[data-stage='question'] { --stage: #3b82f6; }
-[data-stage='figure'] { --stage: #a855f7; }
-[data-stage='interpretation'] { --stage: #14b8a6; }
-[data-stage='point'] { --stage: #ec4899; }
-[data-stage='prose'] { --stage: #e8e8ec; }
+/* Dark is the tokens' own palette (`@awm/primitives/tokens.css`); light replaces its colours here. */
+:root {
+  color-scheme: dark;
+  --stage-table: #9898a8;
+  --stage-question: #3b82f6;
+  --stage-figure: #a855f7;
+  --stage-interpretation: #14b8a6;
+  --stage-point: #ec4899;
+  --stage-prose: #e8e8ec;
 
-* { box-sizing: border-box; }
+  /* Metasmith's DAG ink (`metasmith.models.dag_renderer` DARK). */
+  --dag-edge: #8d97a8;
+  --dag-step: #dfe3ea;
+  --dag-data: #8d97a8;
+  --dag-solid: #dfe3ea;
+  --dag-solid-stroke: #dfe3ea;
+
+  --json-key: #7cb7ff;
+  --json-string: #8fd19e;
+  --json-number: #e5b567;
+  --json-atom: #c792ea;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f4f6;
+  --surface: #ffffff;
+  --surface2: #eeeef2;
+  --surface3: #e3e3e9;
+  --border: #dcdce3;
+  --border2: #c2c2cc;
+  --text: #17171c;
+  --text2: #5a5a68;
+  --text3: #9696a3;
+  --atomizer: #2563eb;
+  --recording: #9333ea;
+  --ok: #059669;
+  --warn: #a16207;
+  --danger: #dc2626;
+  --mgr: #b45309;
+
+  --stage-table: #6b6b7a;
+  --stage-question: #2563eb;
+  --stage-figure: #9333ea;
+  --stage-interpretation: #0d9488;
+  --stage-point: #db2777;
+  --stage-prose: #17171c;
+
+  /* `dag_renderer` LIGHT. */
+  --dag-edge: #666666;
+  --dag-step: #111111;
+  --dag-data: #7a7a7a;
+  --dag-solid: #212121;
+  --dag-solid-stroke: #2b2b2b;
+
+  --json-key: #1d4ed8;
+  --json-string: #15803d;
+  --json-number: #b45309;
+  --json-atom: #7e22ce;
+}
+
+[data-stage='table'] { --stage: var(--stage-table); }
+[data-stage='question'] { --stage: var(--stage-question); }
+[data-stage='figure'] { --stage: var(--stage-figure); }
+[data-stage='interpretation'] { --stage: var(--stage-interpretation); }
+[data-stage='point'] { --stage: var(--stage-point); }
+[data-stage='prose'] { --stage: var(--stage-prose); }
+
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--text3); }

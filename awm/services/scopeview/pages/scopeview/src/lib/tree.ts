@@ -1,4 +1,4 @@
-/** The left tree and the lineage strip, both derived from the graph result on every read. */
+/** The left tree, derived from the graph result on every read. */
 import type { Graph, GraphNode, Stage } from './api.ts';
 
 export const STAGE_LABEL: Record<Stage, string> = {
@@ -26,14 +26,12 @@ export interface TreeItem {
   children: TreeItem[];
 }
 
-const byId = (g: Graph) => new Map(g.nodes.map((n) => [n.id, n]));
-
 /**
  * Stage groups in stage order. Each node has one row in its stage group, and under it one link
  * row per direct child, so a node with several parents shows under each of them.
  */
 export function buildTree(g: Graph, filter = ''): TreeItem[] {
-  const ids = byId(g);
+  const ids = new Map(g.nodes.map((n) => [n.id, n]));
   const q = filter.trim().toLowerCase();
   const hit = (n: GraphNode) => !q || n.title.toLowerCase().includes(q) || n.id.toLowerCase().includes(q);
   const row = (n: GraphNode): TreeItem => ({
@@ -81,20 +79,4 @@ function tables(nodes: GraphNode[], row: (n: GraphNode) => TreeItem, foldProduct
       children: subjects.get(subject)!.map(row),
     })),
   }));
-}
-
-/** The node and everything it was built from, by stage, raw tables first. */
-export function lineage(g: Graph, id: string): { stage: Stage; nodes: GraphNode[] }[] {
-  const ids = byId(g);
-  const seen = new Set<string>();
-  const walk = (i: string) => {
-    const n = ids.get(i);
-    if (!n || seen.has(i)) return;
-    seen.add(i);
-    n.from?.forEach(walk);
-  };
-  walk(id);
-  return g.stages
-    .map((stage) => ({ stage, nodes: g.nodes.filter((n) => n.stage === stage && seen.has(n.id)) }))
-    .filter((s) => s.nodes.length);
 }

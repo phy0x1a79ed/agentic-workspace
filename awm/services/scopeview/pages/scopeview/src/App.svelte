@@ -1,8 +1,10 @@
 <script lang="ts">
   import { Input, Select, Tag } from '@awm/primitives';
   import * as api from './lib/api';
+  import Data from './lib/Data.svelte';
+  import Info from './lib/Info.svelte';
   import Tree from './lib/Tree.svelte';
-  import Viewer from './lib/Viewer.svelte';
+  import { theme, toggleTheme } from './lib/theme.svelte';
   import { buildTree } from './lib/tree';
 
   const WORKTREE = 'worktree';
@@ -15,24 +17,27 @@
   let scope = $state(h.get('scope') ?? '');
   let ref = $state(h.get('ref') ?? '');
   let id = $state(h.get('id') ?? '');
-  let tab = $state(h.get('tab') ?? 'view');
+  let tab = $state(h.get('tab') ?? '');
 
   let peerDraft = $state(startPeer);
   let scopes = $state.raw<api.ScopeInfo[]>([]);
   let versions = $state.raw<api.Commit[]>([]);
-  /** The graph with the context it was read in, so the viewer never reads a node across two refs. */
+  /** The graph with the context it was read in, so no panel reads a node across two refs. */
   let view = $state.raw<{ ctx: api.Ctx; graph: api.Graph } | null>(null);
+  let detail = $state.raw<api.NodeDetail | null>(null);
+  let detailError = $state<string | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reads = $state(0);
   let filter = $state('');
   let showProblems = $state(false);
-  let split = $state(340);
+  let treeWidth = $state(300);
+  let infoWidth = $state(340);
 
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   $effect(() => {
-    const state = { node: peer, project, scope, ref, id, tab: tab === 'view' ? '' : tab };
+    const state = { node: peer, project, scope, ref, id, tab: tab === 'history' ? tab : '' };
     const next = new URLSearchParams(Object.entries(state).filter(([, v]) => v));
     history.replaceState(null, '', `#${next}`);
   });
@@ -44,7 +49,7 @@
     scope = p.get('scope') ?? '';
     ref = p.get('ref') ?? '';
     id = p.get('id') ?? '';
-    tab = p.get('tab') ?? 'view';
+    tab = p.get('tab') ?? '';
   }
 
   $effect(() => {
@@ -106,6 +111,26 @@
     };
   });
 
+  const selected = $derived(view?.graph.nodes.find((n) => n.id === id));
+
+  $effect(() => {
+    detail = null;
+    detailError = null;
+    if (!view || !selected) return;
+    let live = true;
+    api
+      .node(view.ctx, selected.id)
+      .then((d) => {
+        if (live) detail = d;
+      })
+      .catch((e) => {
+        if (live) detailError = message(e);
+      });
+    return () => {
+      live = false;
+    };
+  });
+
   function pickScope(s: api.ScopeInfo) {
     project = s.project;
     scope = s.scope;
@@ -133,10 +158,11 @@
   const graph = $derived(view?.graph);
   const tree = $derived(graph ? buildTree(graph, filter) : []);
 
-  function drag(e: PointerEvent) {
+  /** Drags a column edge: `set` takes the pointer's travel from where the drag began. */
+  function drag(e: PointerEvent, start: number, set: (width: number) => void) {
     const handle = e.currentTarget as HTMLElement;
     handle.setPointerCapture(e.pointerId);
-    const move = (m: PointerEvent) => (split = Math.min(Math.max(m.clientX, 200), window.innerWidth - 320));
+    const move = (m: PointerEvent) => set(Math.min(Math.max(start + m.clientX - e.clientX, 180), 720));
     handle.addEventListener('pointermove', move);
     handle.addEventListener('pointerup', () => handle.removeEventListener('pointermove', move), { once: true });
   }
@@ -172,6 +198,9 @@
         <Tag tone={graph.ok ? 'ok' : 'danger'}>{graph.ok ? 'ok' : `${graph.problems.length} problems`}</Tag>
       </button>
     {/if}
+    <button class="plain theme" onclick={toggleTheme} title="Switch to the {theme.current === 'dark' ? 'light' : 'dark'} theme">
+      {theme.current === 'dark' ? '☀ light' : '☾ dark'}
+    </button>
   </header>
 
   {#if error}<p class="error">{error}</p>{/if}
@@ -187,29 +216,40 @@
     </ul>
   {/if}
 
-  <main style:grid-template-columns="{split}px 5px minmax(0, 1fr)">
+  <main style:grid-template-columns="{treeWidth}px 5px {infoWidth}px 5px minmax(0, 1fr)">
     <aside>
       <div class="filter"><Input bind:value={filter} type="search" placeholder="filter nodes" /></div>
       <Tree items={tree} selected={id} onselect={(next) => (id = next)} />
     </aside>
-    <div class="handle" onpointerdown={drag} role="separator" aria-orientation="vertical"></div>
-    <section>
-      {#if view}
-        <Viewer
+    <div class="handle" onpointerdown={(e) => drag(e, treeWidth, (w) => (treeWidth = w))} role="separator" aria-orientation="vertical"></div>
+    {#if view && selected}
+      <aside>
+        <Info
           ctx={view.ctx}
           graph={view.graph}
           {id}
+          {detail}
           {tab}
           onselect={(next) => (id = next)}
           onref={(commit) => (ref = commit)}
           ontab={(next) => (tab = next)}
         />
-      {:else if loading}
-        <p class="dim">reading the scope…</p>
-      {:else if !error}
-        <p class="dim">Pick a node and a scope.</p>
-      {/if}
-    </section>
+      </aside>
+      <div class="handle" onpointerdown={(e) => drag(e, infoWidth, (w) => (infoWidth = w))} role="separator" aria-orientation="vertical"></div>
+      <section>
+        <Data ctx={view.ctx} commit={view.graph.commit} node={selected} {detail} error={detailError} />
+      </section>
+    {:else}
+      <p class="dim">
+        {#if view}
+          {id ? `No node ${id} at this ref.` : 'Pick a node from the tree.'}
+        {:else if loading}
+          reading the scope…
+        {:else if !error}
+          Pick a node and a scope.
+        {/if}
+      </p>
+    {/if}
   </main>
 </div>
 
@@ -233,11 +273,13 @@
   .problems code { color: var(--danger); }
 
   main { display: grid; flex: 1; min-height: 0; }
-  aside, section { overflow: auto; min-height: 0; }
-  aside { background: var(--surface); }
+  aside, section { min-height: 0; min-width: 0; }
+  aside { overflow: auto; background: var(--surface); }
+  section { display: flex; flex-direction: column; }
   .filter { position: sticky; top: 0; z-index: 1; padding: var(--space-3); background: var(--surface); border-bottom: 1px solid var(--border); }
   .handle { cursor: col-resize; background: var(--border); touch-action: none; }
   .handle:hover { background: var(--border2); }
-  section { padding: var(--space-6); }
-  .dim { color: var(--text2); }
+  .dim { grid-column: 3 / -1; margin: 0; padding: var(--space-6); color: var(--text2); }
+  .theme { font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; padding: var(--space-0) var(--space-3); border: 1px solid var(--border2); border-radius: var(--radius-md); }
+  .theme:hover { color: var(--text); background: var(--surface2); }
 </style>
