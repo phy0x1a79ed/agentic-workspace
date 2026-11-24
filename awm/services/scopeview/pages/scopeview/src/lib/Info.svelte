@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Tag } from '@awm/primitives';
+  import { uncited } from './markdown';
   import * as api from './api';
   import Badges from './Badges.svelte';
   import Dag from './Dag.svelte';
@@ -79,7 +80,6 @@
   });
 
   const lit = $derived(target && traced?.trace ? new Set([id, ...traced.trace.lit]) : undefined);
-  const uncited = (text: string) => text.replace(/\s*\[\[[^\[\]\s]+\]\]/g, '');
 
   const hover = (ref: string) => {
     const n = nodes.get(ref);

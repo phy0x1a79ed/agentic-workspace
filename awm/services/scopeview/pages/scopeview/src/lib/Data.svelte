@@ -3,7 +3,7 @@
   import Figure from './Figure.svelte';
   import { cell } from './format';
   import { colourJson } from './json';
-  import { citeNode, renderMarkdown } from './markdown';
+  import { renderMarkdown } from './markdown';
   import { markTarget, type Target } from './trace';
 
   interface Props {
@@ -20,9 +20,8 @@
     /** The target under the pointer (null when it leaves), or with `pin` the one clicked (null to release). */
     ontrace: (target: Target | null, pin: boolean) => void;
     ontoggle: () => void;
-    onselect: (id: string) => void;
   }
-  let { ctx, commit, node, detail, error, tracing, pinned, ontrace, ontoggle, onselect }: Props = $props();
+  let { ctx, commit, node, detail, error, tracing, pinned, ontrace, ontoggle }: Props = $props();
 
   /** One line that names this node to a reader outside the page. */
   const citation = $derived(
@@ -53,11 +52,10 @@
       const rows = { table: node.id, where, total: 1, columns: p.columns?.map((c) => c.name), rows: [p.head[Number(key)]] };
       return { key, label: where, local: { lit: [node.id], steps: [], rows: [rows] } };
     }
-    const words = [...el.childNodes].filter((n) => !(n instanceof HTMLElement && n.classList.contains('cite')));
     const cites = el.dataset.cites ? el.dataset.cites.split(' ') : [node.id];
     return {
       key,
-      label: words.map((n) => n.textContent).join('').trim(),
+      label: el.textContent!.trim(),
       cites: el.dataset.item ? [`${node.id}#${el.dataset.item}`] : cites,
     };
   }
@@ -69,8 +67,6 @@
   }
 
   function onclick(e: MouseEvent) {
-    const cite = (e.target as HTMLElement).closest<HTMLElement>('.cite');
-    if (cite) return onselect(citeNode(cite.dataset.cite!));
     if (!tracing || inPlot(e)) return;
     const el = unitOf(e);
     ontrace(el && unitTarget(el), true);
@@ -164,9 +160,11 @@
 
   .tracing :global(.unit) { cursor: pointer; }
   .tracing :global(span.unit), .tracing :global(li.unit) { border-radius: var(--radius-md); }
-  .tracing :global(.unit:hover) { background: var(--surface2); }
-  .tracing :global(.unit.pinned) { background: var(--surface3); box-shadow: inset 2px 0 0 var(--atomizer); }
-  .tracing :global(span.unit.pinned) { box-shadow: 0 1px 0 var(--atomizer); }
+  .tracing :global(.unit) { transition: background-color 80ms, box-shadow 80ms; }
+  .tracing :global(.unit:hover) { background: var(--trace-hover); box-shadow: inset 0 -2px 0 var(--atomizer); }
+  .tracing :global(.unit.pinned) { background: var(--trace-pin); box-shadow: inset 0 -2px 0 var(--atomizer), 0 0 0 1px var(--atomizer); }
+  .tracing :global(li.unit:hover), .tracing :global(li.unit.pinned) { box-shadow: inset 3px 0 0 var(--atomizer); }
+  .tracing :global(tr.unit:hover), .tracing :global(tr.unit.pinned) { background: var(--trace-pin); box-shadow: inset 3px 0 0 var(--atomizer); }
   td.null::after { content: '∅'; color: var(--text3); }
 
   pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -184,6 +182,4 @@
   article :global(code) { padding: 0 var(--space-1); }
   article :global(pre) { padding: var(--space-4); overflow: auto; white-space: pre; }
   article :global(a) { color: var(--atomizer); }
-  article :global(.cite) { all: unset; cursor: pointer; margin-left: 4px; vertical-align: super; font-family: var(--mono); font-size: 9px; line-height: 1; color: var(--text3); }
-  article :global(.cite:hover), article :global(.cite:focus-visible) { color: var(--atomizer); text-decoration: underline; }
 </style>

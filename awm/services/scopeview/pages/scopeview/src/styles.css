@@ -19,6 +19,10 @@
   --json-string: #8fd19e;
   --json-number: #e5b567;
   --json-atom: #c792ea;
+
+  /* The trace highlight, tinted from the accent so it follows the theme. */
+  --trace-hover: color-mix(in srgb, var(--atomizer) 18%, transparent);
+  --trace-pin: color-mix(in srgb, var(--atomizer) 30%, transparent);
 }
 
 :root[data-theme='light'] {
