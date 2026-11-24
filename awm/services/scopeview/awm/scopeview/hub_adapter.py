@@ -13,7 +13,7 @@ from typing import Any
 from awm.config import canonical_workspace
 from awm.gatewayclient import ServiceAdapter
 
-from awm.scopeview import chain, layout, trace
+from awm.scopeview import chain, chat, layout, trace
 from awm.scopeview.tree import Tree, git
 
 log = logging.getLogger("awm.scopeview")
@@ -57,6 +57,22 @@ API_MANIFEST: dict[str, Any] = {
          "params": [P_PROJECT, P_SCOPE, P_REF,
                     {"name": "gate", "type": "boolean", "required": False, "description": "Treat stale nodes as errors, as a merge into the study branch does."}],
          "description": "Validate the chain: ids, inputs, stage order, cycles, artifact pins, and with gate, staleness."},
+        {"name": "seat", "tool": "scopeview_seat",
+         "params": [P_PROJECT, P_SCOPE,
+                    {"name": "link", "required": True, "description": "The link of the persistent room you opened with `channel open kind=room persistent=true`."},
+                    {"name": "by", "required": False, "description": "Who holds the room: your session's name."}],
+         "description": "Seat a study's curator: name the channel room the page talks to it through. The curator calls this once per room."},
+        {"name": "chat", "tool": "scopeview_chat",
+         "params": [P_PROJECT, P_SCOPE,
+                    {"name": "after", "type": "number", "required": False, "description": "Return messages after this seq. Default 0."},
+                    {"name": "wait", "type": "number", "required": False, "description": "Seconds to wait for a new message (at most 25)."}],
+         "description": "The conversation with a study's curator: its room's messages after a seq, and the next seq."},
+        {"name": "say", "tool": "scopeview_say",
+         "params": [P_PROJECT, P_SCOPE,
+                    {"name": "text", "required": True, "description": "The message to the curator."},
+                    {"name": "context", "type": "object", "required": False,
+                     "description": "What the message is about: ref, node, cite. Sent as its first line."}],
+         "description": "Write to a study's curator from the page."},
     ],
     "emitters": [],
     "sessions": [],
@@ -109,6 +125,9 @@ def check(a):
 
 
 HANDLERS = {
+    "seat": handler(lambda a: scope_root(a["project"], a["scope"]) and chat.seat(a["project"], a["scope"], a["link"], a.get("by") or "")),
+    "chat": lambda a: chat.read(a["project"], a["scope"], int(a.get("after") or 0), float(a.get("wait") or 0)),
+    "say": lambda a: chat.say(a["project"], a["scope"], a["text"], a.get("context") or {}),
     "scopes": handler(lambda a: {"scopes": find_scopes()}),
     "graph": handler(lambda a: chain.build(tree(a))),
     "node": handler(lambda a: chain.node(tree(a), a["id"])),

@@ -18,5 +18,5 @@ dir = "pages/scopeview/dist"
 
 [needs]
 secrets = []
-network = []
+network = ["nexus.tony-xy-liu.com"]
 platform = ["linux"]
