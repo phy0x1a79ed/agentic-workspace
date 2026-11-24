@@ -2,8 +2,9 @@
 
 A chain body cites inline as [[id]], [[id#n]] (the nth list item of a text node) or [[id?<conditions>]]:
 rows of a table, or the rows behind a figure, joined by `&`, each `col=v1,v2`, `col!=v` or `col>n` (also <, >=, <=).
-A figure names its rows with front matter `rows: {table: table:<path>, key: <column>}`, and its script puts
-each mark's key values in customdata.
+The value `null` matches a missing value. A figure names its rows with front matter
+`rows: {table: table:<path>, key: <column>}`, and its script puts each mark's key values in customdata;
+a selection on a figure covers only the rows its marks carry.
 """
 from __future__ import annotations
 
@@ -56,6 +57,26 @@ def read(tree: Tree, path: str, schema_only: bool = False):
     return t.schema if schema_only else t
 
 
+def figure_keys(tree: Tree, node: dict) -> list[str] | None:
+    """Every key value in the figure's customdata, or None when its marks carry none."""
+    import json
+
+    if node.get("artifact") not in tree.pins:
+        return None
+    keys: list[str] = []
+
+    def flat(v):
+        if isinstance(v, list):
+            for x in v:
+                flat(x)
+        elif v is not None and not isinstance(v, dict):
+            keys.append(str(v))
+
+    for tr in json.loads(tree.local(node["artifact"]).read_text()).get("data", []):
+        flat(tr.get("customdata"))
+    return sorted(set(keys)) or None
+
+
 def select(tree: Tree, nid: str, conds: list[tuple[str, str, list[str]]]) -> dict:
     import pyarrow as pa
     import pyarrow.compute as pc
@@ -68,7 +89,9 @@ def select(tree: Tree, nid: str, conds: list[tuple[str, str, list[str]]]) -> dic
     try:
         for col, op, vals in conds:
             if op in ("=", "!="):
-                m = pc.is_in(pc.cast(t[col], pa.string()), value_set=pa.array(vals, pa.string()))
+                m = pc.is_in(pc.cast(t[col], pa.string()), value_set=pa.array([v for v in vals if v != "null"], pa.string()))
+                if "null" in vals:
+                    m = pc.or_(m, pc.is_null(t[col]))
                 m = pc.invert(m) if op == "!=" else m
             else:
                 m = getattr(pc, COMPARE[op])(t[col], pa.scalar(float(vals[0])))
@@ -103,7 +126,10 @@ def trace(tree: Tree, g: dict, start: list[str]) -> dict:
         if node["stage"] == "figure":
             spec = node.get("rows")
             if conds and spec and table_file(tree, spec["table"]):
-                rows.append({**select(tree, spec["table"], conds), "via": nid})
+                marks = figure_keys(tree, node)
+                limit = [(spec["key"], "=", marks)] if marks else []
+                rows.append({**select(tree, spec["table"], conds + limit), "where": "&".join(
+                    f"{c}{op}{','.join(v)}" for c, op, v in conds), "via": nid})
                 lit.add(spec["table"])
             for ref in node["from"]:
                 visit(ref, depth + 1)

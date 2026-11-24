@@ -100,7 +100,7 @@ def write_body(root, made, body, **meta_extra):
 
 
 def test_a_sentence_traces_through_its_citations_to_table_rows(scope):
-    root, _ = scope
+    root, cache = scope
     t = "table:ds/tables/mags.tsv"
     q = chain.new(root, "question", [t], "Which phyla?")
     f = chain.new(root, "figure", [q["id"], t], "MAGs by phylum")
@@ -115,11 +115,17 @@ def test_a_sentence_traces_through_its_citations_to_table_rows(scope):
     out = trace.trace(Tree(root), g, ["%s#1" % i["id"]])
     assert out["steps"][0]["text"].startswith("Bacteroidota hold two")
     assert [r["bin"] for r in out["rows"][0]["rows"]] == ["S1.a.001", "S1.a.003"] and out["rows"][0]["via"] == f["id"]
+    marks = {"data": [{"customdata": [["S1.a.001"], ["S1.a.002"]]}], "layout": {}}
+    pin_dir(root, cache, "chain", {f"{f['id']}.plotly.json": json.dumps(marks).encode()})
+    only = trace.trace(Tree(root), chain.build(Tree(root)), ["%s?phylum=Bacteroidota" % f["id"]])["rows"][0]
+    assert [r["bin"] for r in only["rows"]] == ["S1.a.001"], "a figure selection covers only its own marks"
     assert {t, q["id"], f["id"], i["id"]} <= set(out["lit"])
     rows = trace.trace(Tree(root), g, ["%s?phylum=Chloroflexota" % t])["rows"][0]
     assert rows["total"] == 1 and rows["rows"][0]["completeness"] == 60
     rows = trace.trace(Tree(root), g, ["%s?phylum=Bacteroidota&completeness>=92" % t])["rows"][0]
     assert [r["bin"] for r in rows["rows"]] == ["S1.a.003"]
+    assert trace.trace(Tree(root), g, ["%s?phylum=null" % t])["rows"][0]["total"] == 0
+    assert trace.trace(Tree(root), g, ["%s?phylum!=null" % t])["rows"][0]["total"] == 3
 
 
 def test_check_reports_each_bad_citation(scope):
