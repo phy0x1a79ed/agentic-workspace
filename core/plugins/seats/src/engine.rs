@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::brief;
-use crate::store::{Decl, Failure, Latest, Queued, Seat, Seed, State, Store};
+use crate::store::{Decl, Failure, Latest, Queued, Seat, Seed, State, Store, ROOM};
 
 /// Transitions one look at a seat may take before it waits for the next tick.
 const STEPS_PER_LOOK: usize = 3;
@@ -163,6 +163,9 @@ pub struct Seats {
 
 fn label(s: &Seat) -> String {
     let d = &s.decl;
+    if s.is_room() {
+        return format!("room {}/{}", d.project, d.scope);
+    }
     let server = if d.kind == "dm" || d.server.is_empty() { d.account.clone() } else { d.server.clone() };
     let chat = match d.kind.as_str() {
         "dm" => format!("DM {}", d.slug),
@@ -220,6 +223,11 @@ impl Seats {
                 let settings = self.settings();
                 (settings.model, settings.effort)
             })
+    }
+
+    /// The project the seat's agent runs in: its own, else social's.
+    fn project(&self, s: &Seat) -> String {
+        Some(s.decl.project.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| self.settings().project)
     }
 
     /// What `seats list` and `social seats` show of the seat.
@@ -282,15 +290,23 @@ impl Seats {
     }
 
     async fn mounted(&self, s: &Seat, session: &str) {
+        if s.is_room() {
+            return;
+        }
         self.world.up("mount", json!({"account": s.account(), "channel_id": s.channel(), "channel_name": s.decl.channel_name, "session_id": session, "session_name": s.decl.name})).await;
     }
 
     async fn unbind(&self, seat: &Seat) {
+        if seat.is_room() {
+            return;
+        }
         self.world.up("unmount", json!({"account": seat.account(), "channel_id": seat.channel(), "session_id": seat.session_id})).await;
     }
 
     async fn set_line(&self, session: &str, latest: Latest, now: f64) {
-        self.world.up("line", json!({"session_id": session, "account": latest.account, "channel_id": latest.channel, "thread_id": latest.thread, "message_id": latest.message_id})).await;
+        if latest.account != ROOM {
+            self.world.up("line", json!({"session_id": session, "account": latest.account, "channel_id": latest.channel, "thread_id": latest.thread, "message_id": latest.message_id})).await;
+        }
         self.store.set_line(session, &latest, now).await;
     }
 
@@ -321,29 +337,57 @@ impl Seats {
 
     /// Take one line from social.
     pub async fn take(self: &Arc<Self>, m: Incoming) {
-        let mut seat = self.upsert(&m.seat).await;
-        let now = self.world.now();
-        if self.paused() && seat.state == State::Empty && !m.kept {
-            seat.missed += 1;
-            self.save(&seat).await;
-            return;
-        }
-        self.store.enqueue(Some(m.id), seat.account(), seat.channel(), &m.message_id, &m.thread_id, &m.line, now).await;
-        seat.last_message = now;
+        let seat = self.upsert(&m.seat).await;
+        let Some(mut seat) = self.queue(seat, Some(m.id), &m.message_id, &m.thread_id, &m.line, m.kept).await else { return };
         if !m.outside.is_empty() && seat.held != "admitted" && !seat.held.starts_with("outside") {
             seat.held = format!("outside:{}", m.outside);
             self.save(&seat).await;
             self.ask("blocked", &format!("A sender outside the lab wrote in the seat {}. Its messages wait until `seats admit account={} channel={}` on {}.", label(&seat), seat.account(), seat.channel(), seat.decl.node)).await;
             return;
         }
-        self.save(&seat).await;
         if m.new && seat.decl.kind == "dm" {
             self.world.up("tag", json!({"name": format!("user:{}", seat.decl.slug), "description": format!("journals of the seat agent for {}", seat.decl.slug)})).await;
             self.ask("review", &format!("A new DM seat opened: {} on {}. Its agent starts now.", label(&seat), seat.decl.node)).await;
         }
+        self.spawn_drive(seat.key());
+    }
+
+    /// Take one line from a room seat's channel room. False when the seat is gone.
+    pub async fn take_room(self: &Arc<Self>, key: &Key, line: &str) -> bool {
+        let Some(seat) = self.store.get(&key.0, &key.1).await else { return false };
+        if self.queue(seat, None, "", "", line, false).await.is_some() {
+            self.spawn_drive(key.clone());
+        }
+        true
+    }
+
+    /// Queue one line for the seat, or count it missed while paused with nobody seated.
+    async fn queue(&self, mut seat: Seat, origin: Option<i64>, message_id: &str, thread_id: &str, line: &str, kept: bool) -> Option<Seat> {
+        let now = self.world.now();
+        if self.paused() && seat.state == State::Empty && !kept {
+            seat.missed += 1;
+            self.save(&seat).await;
+            return None;
+        }
+        self.store.enqueue(origin, seat.account(), seat.channel(), message_id, thread_id, line, now).await;
+        seat.last_message = now;
+        self.save(&seat).await;
+        Some(seat)
+    }
+
+    fn spawn_drive(self: &Arc<Self>, key: Key) {
         let me = self.clone();
-        let key = seat.key();
         tokio::spawn(async move { me.drive(&key, None).await });
+    }
+
+    /// Record the room's link once channel gave it.
+    pub async fn set_room_link(&self, key: &Key, link: &str) {
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        if let Some(mut s) = self.store.get(&key.0, &key.1).await.filter(|s| s.room_link != link) {
+            s.room_link = link.into();
+            self.save(&s).await;
+        }
     }
 
     /// Bring one seat in line with its queue and the clock. `live` is this node's live sessions
@@ -501,6 +545,9 @@ impl Seats {
     }
 
     async fn react(&self, seat: &Seat, pending: &[Queued]) {
+        if seat.is_room() {
+            return;
+        }
         if let Some(last) = pending.iter().rev().find(|q| !q.message_id.is_empty()) {
             self.world.up("react", json!({"account": seat.account(), "channel": seat.channel(), "message_id": last.message_id, "emoji": "👀"})).await;
         }
@@ -528,11 +575,12 @@ impl Seats {
     async fn cold_start(&self, mut seat: Seat, pending: &[Queued]) {
         let now = self.world.now();
         let settings = self.settings();
-        if self.world.scope_ready(&settings.project, &seat.decl.scope).await == Some(false) {
+        let project = self.project(&seat);
+        if self.world.scope_ready(&project, &seat.decl.scope).await == Some(false) {
             if seat.held != "scope" {
                 seat.held = "scope".into();
                 self.save(&seat).await;
-                self.ask("blocked", &format!("The seat {} has no scope {}/{} on {}. Create it, then run `seats reset account={} channel={}` there.", label(&seat), settings.project, seat.decl.scope, seat.decl.node, seat.account(), seat.channel())).await;
+                self.ask("blocked", &format!("The seat {} has no scope {}/{} on {}. Create it, then run `seats reset account={} channel={}` there.", label(&seat), project, seat.decl.scope, seat.decl.node, seat.account(), seat.channel())).await;
             }
             return;
         }
@@ -544,13 +592,13 @@ impl Seats {
         let facts = brief::Facts {
             docs: &settings.docs,
             decl: &seat.decl,
-            project: &settings.project,
+            project: &project,
             previous: previous.as_ref().map(|p| (p.session_id.as_str(), p.node.as_str())),
             missed: seat.missed,
         };
         let (model, effort) = self.pair(&seat);
         let mut spec = json!({
-            "project": settings.project, "scope": seat.decl.scope, "name": seat.decl.name, "prompt": brief::brief(&facts, &lines),
+            "project": project, "scope": seat.decl.scope, "name": seat.decl.name, "prompt": brief::brief(&facts, &lines),
             "trust": seat.decl.level, "model": model, "effort": effort, "remote_control": seat.remote_control,
             "pin": true, "brief": false,
         });
@@ -744,10 +792,10 @@ impl Seats {
     }
 
     /// Forget each seat social's roster lacks, with the lines that wait for it. A live agent
-    /// keeps running, without the seat.
+    /// keeps running, without the seat. A room seat is this node's own, so social never lists it.
     pub async fn keep(&self, roster: HashSet<&str>) {
         for s in self.store.all().await {
-            if !roster.contains(s.id().as_str()) {
+            if !s.is_room() && !roster.contains(s.id().as_str()) {
                 let lock = self.lock(&s.key());
                 let _held = lock.lock().await;
                 tracing::info!("seat {}: social no longer declares it, forgotten", label(&s));

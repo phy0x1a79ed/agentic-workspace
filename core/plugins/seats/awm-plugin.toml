@@ -24,3 +24,9 @@ platform = ["linux"]
 name = "reflection"
 major = 1
 verbs = ["message", "list_other", "session_of", "start_other"]
+
+# A room seat's channel room, held over channel's direct socket.
+[[needs.tool]]
+name = "channel"
+major = 1
+verbs = ["attach"]

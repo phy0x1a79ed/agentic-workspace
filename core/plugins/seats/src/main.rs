@@ -3,6 +3,7 @@
 mod brief;
 mod engine;
 mod link;
+mod room;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -17,7 +18,8 @@ use serde_json::{json, Value};
 
 use engine::{Seats, Settings};
 use link::Link;
-use store::Seat;
+use room::Rooms;
+use store::{Decl, Seat, ROOM};
 
 /// Discord's cap on one message's content, counted in chars as twilight counts them.
 const DISCORD_MAX: usize = 2000;
@@ -37,6 +39,7 @@ fn s(v: &Value, key: &str) -> String {
 struct App {
     seats: Arc<Seats>,
     link: Arc<Link>,
+    rooms: Arc<Rooms>,
     _watch: Arc<awm_plugin_sdk::sessions::SessionWatch>,
 }
 
@@ -81,6 +84,12 @@ impl App {
         let latest = self.seats.store.line(&session).await;
         let seat = pick(&seats, &s(&call.args, "channel"), latest.as_ref())?;
         let text = s(&call.args, "text");
+        if seat.is_room() {
+            if text.is_empty() || call.args.get("files").is_some_and(|f| f.as_array().is_some_and(|a| !a.is_empty())) {
+                return Err(VerbError::value("seats send in a room seat takes text only: the room carries no files from here"));
+            }
+            return self.rooms.write(seat, &text).await.map_err(VerbError::runtime);
+        }
         let files = call.args.get("files").filter(|f| f.as_array().is_some_and(|a| !a.is_empty())).cloned();
         if text.is_empty() && files.is_none() {
             return Err(VerbError::value("seats send needs text, a file, or both"));
@@ -98,6 +107,9 @@ impl App {
         let (session, seats) = self.agent_seats(call).await?;
         let latest = self.seats.store.line(&session).await;
         let seat = pick(&seats, &s(&call.args, "channel"), latest.as_ref())?;
+        if seat.is_room() {
+            return Err(VerbError::value(format!("seats {}: a room seat's chat has no reactions or attachments. Answer with `seats send`.", call.verb)));
+        }
         let message = Some(s(&call.args, "message_id"))
             .filter(|m| !m.is_empty())
             .or_else(|| latest.filter(|l| l.account == seat.account() && l.channel == seat.channel()).map(|l| l.message_id).filter(|m| !m.is_empty()))
@@ -156,6 +168,41 @@ impl App {
         Ok(json!({"ok": true, "seat": self.public(&seat).await}))
     }
 
+    /// Declare the room seat of a scope on this node, hold its channel room, and answer its link.
+    async fn room(&self, call: Call) -> Result<Value, VerbError> {
+        let (project, scope) = (s(&call.args, "project"), s(&call.args, "scope"));
+        let plain = |v: &str| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c)) && !v.starts_with(['/', '.']);
+        if !plain(&project) || !plain(&scope) {
+            return Err(VerbError::value("seats room needs a project and a scope, each of letters, digits and - _ . /"));
+        }
+        let level = Some(s(&call.args, "level")).filter(|l| !l.is_empty()).unwrap_or_else(|| "trusted".into());
+        let wanted: Level = level.parse().map_err(|_| VerbError::value(format!("seats room: no level {level:?}")))?;
+        if call.level() < wanted {
+            return Err(VerbError::permission(format!("seats room: a {} call declares no seat above its own level, and this one asks for {level}", call.level().as_str())));
+        }
+        let node = call.ctx.env().node.clone();
+        let decl = Decl {
+            account: ROOM.into(),
+            channel_id: format!("{project}:{}", scope.replace('/', ":")),
+            channel_name: scope.clone(),
+            kind: ROOM.into(),
+            platform: ROOM.into(),
+            node,
+            scope: scope.clone(),
+            project: project.clone(),
+            level,
+            server_label: project.clone(),
+            chat_label: scope.clone(),
+            name: format!("seat:room/{project}/{scope}"),
+            ..Default::default()
+        };
+        let seat = self.seats.upsert(&decl).await;
+        let attached = self.rooms.link(&seat, std::time::Duration::from_secs(60)).await;
+        let seat = self.seats.store.get(&seat.decl.account, &seat.decl.channel_id).await.unwrap_or(seat);
+        let link = attached.clone().or_else(|| Some(seat.room_link.clone()).filter(|l| !l.is_empty()));
+        Ok(json!({"link": link, "attached": attached.is_some(), "seat": self.public(&seat).await}))
+    }
+
     /// A session's level from reflection's row, or None when it does not say.
     async fn session_level(call: &Call, session: &str) -> Option<Level> {
         holders::session_rows(call.hub(), false).await?.iter().find(|r| s(r, "session_id") == session).and_then(|r| ["trust", "level"].iter().find_map(|k| r.get(*k).and_then(Value::as_str)).and_then(|t| t.parse().ok()))
@@ -208,6 +255,13 @@ fn service(svc: Service, app: Arc<App>) -> Service {
         json!([param("message_id", "string", false), param("idx", "number", false), param("channel", "string", false)]),
         download
     );
+    let svc = verb!(
+        svc,
+        "room",
+        "Declare the room seat of a scope on this node, if it is not yet, and answer its channel room `link`. A guest talks to the seat's agent through that link; the agent starts on the first message, stops after 4 idle hours and resumes on the next. The link stays the same. Remote Control starts off. `level` (default trusted) may not pass the caller's own.",
+        json!([param("project", "string", true), param("scope", "string", true), param("level", "string", false)]),
+        room
+    );
     let svc = verb!(svc, "list", "This node's seats, whether they are paused, and the state of the link to social.", json!([]), list);
     let svc = verb!(svc, "reset", "Clear a seat's start breaker and its missing-scope hold, then look at it again. Trusted only.", account_channel(), reset);
     let svc = verb!(svc, "admit", "Let an outside sender's messages through to a seat. Trusted only.", account_channel(), admit);
@@ -237,16 +291,20 @@ async fn main() -> anyhow::Result<()> {
     let seats = Seats::new(store, settings, world);
 
     let watched = seats.clone();
-    let watch = awm_plugin_sdk::sessions::SessionWatch::new(hub, "seats", move |_node| {
+    let watch = awm_plugin_sdk::sessions::SessionWatch::new(hub.clone(), "seats", move |_node| {
         let seats = watched.clone();
         async move { seats.wake() }
     });
     let here = env.node.clone();
-    let app = Arc::new(App { seats: seats.clone(), link: link.clone(), _watch: watch.clone() });
+    let rooms = Rooms::new(hub.clone(), seats.clone());
+    let app = Arc::new(App { seats: seats.clone(), link: link.clone(), rooms: rooms.clone(), _watch: watch.clone() });
     service(svc, app)
         .on_ready(async move {
             watch.ensure(&here);
             seats.report_all().await;
+            for seat in seats.store.all().await.into_iter().filter(Seat::is_room) {
+                rooms.start(&seat);
+            }
             tokio::spawn(seats.clone().tick_forever());
             tokio::spawn(link.clone().flush_forever(seats.clone()));
             tokio::spawn(link.pull_forever(seats));

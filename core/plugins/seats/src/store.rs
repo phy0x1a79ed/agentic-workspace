@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS seat_registry (
     pick_model   TEXT NOT NULL DEFAULT '',
     pick_effort  TEXT NOT NULL DEFAULT '',
     refresh      INTEGER NOT NULL DEFAULT 0,
+    project      TEXT NOT NULL DEFAULT '',
+    room_link    TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account, channel_id)
 );
 CREATE TABLE IF NOT EXISTS seat_queue (
@@ -188,7 +190,12 @@ pub struct Decl {
     /// The seat's own model and effort. Empty means the node's `[seats]` pair.
     pub model: String,
     pub effort: String,
+    /// The seat's project. Empty means social's `project` for every seat.
+    pub project: String,
 }
+
+/// The account of a room seat: a channel room this node's seats service holds for one scope.
+pub const ROOM: &str = "room";
 
 /// A seat's state as social's database held it before seats moved to their hosts.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -234,9 +241,11 @@ pub struct Seat {
     pub pick_effort: String,
     /// The agent restarts on the seat's model and effort once it is between turns.
     pub refresh: bool,
+    /// A room seat's channel room link, the same across restarts of either side.
+    pub room_link: String,
 }
 
-const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, session_id, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort, pick_model, pick_effort, refresh";
+const COLS: &str = "account, channel_id, channel_name, kind, server, slug, node, scope, level, platform, server_label, chat_label, brief, name, state, session_id, adopted, last_message, deadline, previous, breaker, held, missed, remote_control, rc_url, model, effort, pick_model, pick_effort, refresh, project, room_link";
 
 impl Seat {
     fn from_row(r: &Row) -> rusqlite::Result<Self> {
@@ -260,6 +269,7 @@ impl Seat {
                 name: r.get(13)?,
                 model: r.get(25)?,
                 effort: r.get(26)?,
+                project: r.get(30)?,
             },
             state: State::parse(&r.get::<_, String>(14)?),
             session_id: r.get(15)?,
@@ -275,6 +285,7 @@ impl Seat {
             pick_model: r.get(27)?,
             pick_effort: r.get(28)?,
             refresh: r.get::<_, i64>(29)? != 0,
+            room_link: r.get(31)?,
         })
     }
 
@@ -318,6 +329,10 @@ impl Seat {
         self.refresh = false;
     }
 
+    pub fn is_room(&self) -> bool {
+        self.decl.account == ROOM
+    }
+
     pub fn account(&self) -> &str {
         &self.decl.account
     }
@@ -357,6 +372,7 @@ impl Seat {
             "breaker": if self.breaker.hold_until > 0.0 { json!({"hold_until": self.breaker.hold_until}) } else { Value::Null },
             "id": self.id(), "remote_control": self.remote_control, "rc_url": self.rc_url,
             "refresh": self.refresh,
+            "project": self.decl.project, "room_link": self.room_link,
         })
     }
 }
@@ -393,12 +409,12 @@ fn save(c: &Connection, s: &Seat) -> rusqlite::Result<bool> {
     let before = c.query_row(&format!("SELECT {COLS} FROM seat_registry WHERE account = ?1 AND channel_id = ?2"), params![s.decl.account, s.decl.channel_id], Seat::from_row).optional()?;
     let d = &s.decl;
     c.execute(
-        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)"),
+        &format!("INSERT OR REPLACE INTO seat_registry ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)"),
         params![
             d.account, d.channel_id, d.channel_name, d.kind, d.server, d.slug, d.node, d.scope, d.level, d.platform, d.server_label, d.chat_label, d.brief, d.name,
             s.state.as_str(), s.session_id, s.adopted as i64, s.last_message, s.deadline,
             serde_json::to_string(&s.previous).unwrap_or_default(), serde_json::to_string(&s.breaker).unwrap_or_default(),
-            s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort, s.pick_model, s.pick_effort, s.refresh as i64
+            s.held, s.missed, s.remote_control as i64, s.rc_url, d.model, d.effort, s.pick_model, s.pick_effort, s.refresh as i64, d.project, s.room_link
         ],
     )?;
     let pair = |s: &Seat| (s.decl.model.clone(), s.decl.effort.clone(), s.pick_model.clone(), s.pick_effort.clone());
@@ -424,6 +440,8 @@ impl Store {
             ("pick_model", true, "ADD COLUMN pick_model TEXT NOT NULL DEFAULT ''"),
             ("pick_effort", true, "ADD COLUMN pick_effort TEXT NOT NULL DEFAULT ''"),
             ("refresh", true, "ADD COLUMN refresh INTEGER NOT NULL DEFAULT 0"),
+            ("project", true, "ADD COLUMN project TEXT NOT NULL DEFAULT ''"),
+            ("room_link", true, "ADD COLUMN room_link TEXT NOT NULL DEFAULT ''"),
             ("done_at", false, "DROP COLUMN done_at"),
         ] {
             let has: bool = conn.query_row("SELECT COUNT(*) > 0 FROM pragma_table_info('seat_registry') WHERE name = ?1", [column], |r| r.get(0))?;
