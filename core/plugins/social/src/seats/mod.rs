@@ -19,6 +19,9 @@ use store::{Row, Seat, Store};
 
 /// How long a forward lets the receiving seat read the source chat.
 pub const READ_S: f64 = 24.0 * 3600.0;
+
+/// The account of a room seat: a host declares it itself, so the config never names it.
+pub const ROOM: &str = "room";
 /// The longest one pull is held.
 const MAX_WAIT_S: f64 = 55.0;
 /// The most rows one pull carries.
@@ -78,6 +81,9 @@ impl Seats {
 
     /// The seat's session name, worked out from the row, so a rename reaches every old row.
     pub fn name(&self, s: &Seat) -> String {
+        if s.account == ROOM {
+            return format!("seat:room/{}/{}", s.server, s.channel_name);
+        }
         self.place_of(s).session_name()
     }
 
@@ -153,7 +159,7 @@ impl Seats {
     /// then each host's roster, which also clears a seat whose drop a host missed.
     pub async fn sync(&self) {
         let mut kept = vec![];
-        for s in self.store.all().await {
+        for s in self.store.all().await.into_iter().filter(|s| s.account != ROOM) {
             if self.declares(&s, "") {
                 self.queue(Self::row(&s, "decl", json!({}))).await;
                 kept.push(s);
@@ -214,6 +220,16 @@ impl Seats {
 
     pub async fn set_refresh(&self, seat: &Seat, model: &str, effort: &str) {
         self.queue(Self::row(seat, "refresh", json!({"model": model, "effort": effort}))).await;
+    }
+
+    /// The room seat a host reports, recorded the first time. A room seat another node holds is left alone.
+    pub async fn room(&self, node: &str, channel: &str, public: &Value) {
+        if self.store.get(ROOM, channel).await.is_some() {
+            return;
+        }
+        let text = |k: &str| public[k].as_str().unwrap_or("").to_string();
+        let seat = Seat { account: ROOM.into(), channel_id: channel.into(), channel_name: text("scope"), kind: ROOM.into(), server: text("project"), node: node.into(), scope: text("scope"), level: text("level"), state: "empty".into(), ..Default::default() };
+        self.store.save(&seat).await;
     }
 
     /// Take `node`'s ack, then answer with what waits for it, holding up to `wait_s` for a row.

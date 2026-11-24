@@ -137,3 +137,18 @@ async fn a_message_from_an_excepted_sender_drops_its_stored_seat() {
     assert!(seats.store.get("opal", "D0TEST").await.is_none());
     assert_eq!(seats.pull("altair", 0, 0.0).await["rows"].as_array().unwrap().last().unwrap()["kind"], "roster");
 }
+
+#[tokio::test]
+async fn a_room_seat_a_host_reports_is_recorded_once_and_outlives_a_sync() {
+    let t = t();
+    let public = json!({"project": "cyanoverse", "scope": "engcyc-visualizer", "level": "trusted"});
+    t.seats.room("altair", "cyanoverse:engcyc-visualizer", &public).await;
+    t.seats.room("mizar", "cyanoverse:engcyc-visualizer", &public).await;
+    let s = t.seats.store.get(ROOM, "cyanoverse:engcyc-visualizer").await.unwrap();
+    assert_eq!((s.node.as_str(), s.scope.as_str()), ("altair", "engcyc-visualizer"), "another node's report takes no room seat over");
+    assert_eq!(t.seats.name(&s), "seat:room/cyanoverse/engcyc-visualizer");
+    t.seats.sync().await;
+    assert!(t.seats.store.get(ROOM, "cyanoverse:engcyc-visualizer").await.is_some(), "the config never declares a room seat, so a sync keeps it");
+    let rows = t.seats.pull("altair", 0, 0.0).await["rows"].as_array().unwrap().clone();
+    assert!(rows.iter().all(|r| r["account"] != ROOM && !r["seats"].as_array().is_some_and(|a| a.iter().any(|id| id.as_str().is_some_and(|i| i.starts_with("room/"))))), "and sends its host no decl or roster of it");
+}
