@@ -3,6 +3,7 @@
   import * as api from './api';
   import Badges from './Badges.svelte';
   import Dag from './Dag.svelte';
+  import type { Target } from './trace';
   import { STAGE_LABEL } from './tree';
 
   interface Props {
@@ -12,11 +13,18 @@
     /** The node's full read, once it lands. */
     detail: api.NodeDetail | null;
     tab: string;
+    /** Trace is on. */
+    tracing: boolean;
+    /** What the data panel points at now, and whether a click holds it. */
+    target: Target | null;
+    pinned: boolean;
+    /** The last trace to land, kept up while the next one is read. */
+    traced: { target: Target; trace?: api.Trace; error?: string } | null;
     onselect: (id: string) => void;
     onref: (commit: string) => void;
     ontab: (tab: string) => void;
   }
-  let { ctx, graph, id, detail, tab, onselect, onref, ontab }: Props = $props();
+  let { ctx, graph, id, detail, tab, tracing, target, pinned, traced, onselect, onref, ontab }: Props = $props();
 
   const nodes = $derived(new Map(graph.nodes.map((n) => [n.id, n])));
   const node = $derived(nodes.get(id));
@@ -70,6 +78,10 @@
     };
   });
 
+  const lit = $derived(target && traced?.trace ? new Set([id, ...traced.trace.lit]) : undefined);
+  const cell = (v: unknown) => (v === null || v === undefined ? '∅' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+  const uncited = (text: string) => text.replace(/\s*\[\[[^\[\]\s]+\]\]/g, '');
+
   const hover = (ref: string) => {
     const n = nodes.get(ref);
     return n ? `${n.title}\n${ref}` : ref;
@@ -85,11 +97,55 @@
 {#if node}
   <div class="dag">
     {#if geo}
-      <Dag {geo} title={hover} onpick={onselect} />
+      <Dag {geo} highlighted={lit} title={hover} onpick={onselect} />
     {:else}
       <p class="meta" class:error={geoError}>{geoError ?? 'laying out…'}</p>
     {/if}
   </div>
+
+  {#if tracing}
+    <div class="trace">
+      <h2>Trace{#if target}<span class="state">{pinned ? 'pinned · Esc releases' : 'click to pin'}</span>{/if}</h2>
+      {#if !target}
+        <p class="meta">Hover a sentence, a list item, a figure mark or a table row.</p>
+      {:else}
+        <p class="quote" class:waiting={traced?.target !== target}>{target.label}</p>
+        {#if traced?.target === target}
+          {#if traced.error}<p class="meta error">{traced.error}</p>{/if}
+          {#each traced.trace?.steps ?? [] as step (step.cite)}
+            <div class="step" data-stage={step.stage}>
+              <button class="ref" onclick={() => onselect(step.node)} title={step.cite}>{step.title}</button>
+              <span class="meta">{step.cite}</span>
+              {#if step.text}<p class="note">{uncited(step.text)}</p>{/if}
+            </div>
+          {/each}
+          {#each traced.trace?.rows ?? [] as r (`${r.via} ${r.table} ${r.where}`)}
+            <div class="rows">
+              <p class="meta">
+                <button class="ref" onclick={() => onselect(r.table)} title={r.table}>{nodes.get(r.table)?.title ?? r.table}</button>
+                {#if r.via}via {nodes.get(r.via)?.title ?? r.via}{/if}
+              </p>
+              <p class="meta">
+                {r.where}{#if r.rows && r.total != null} · {r.total > r.rows.length ? `${r.rows.length} of ${r.total.toLocaleString()}` : r.total} {r.total === 1 ? 'row' : 'rows'}{/if}
+              </p>
+              {#if r.error}
+                <p class="meta error">{r.error}</p>
+              {:else if r.rows?.length === 1}
+                <dl>{#each r.columns ?? [] as c (c)}<dt>{c}</dt><dd>{cell(r.rows[0][c])}</dd>{/each}</dl>
+              {:else if r.rows?.length}
+                <div class="grid">
+                  <table>
+                    <thead><tr>{#each r.columns ?? [] as c (c)}<th>{c}</th>{/each}</tr></thead>
+                    <tbody>{#each r.rows as row}<tr>{#each r.columns ?? [] as c (c)}<td>{cell(row[c])}</td>{/each}</tr>{/each}</tbody>
+                  </table>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      {/if}
+    </div>
+  {/if}
 
   <div class="tabs">
     {#each ['provenance', 'history'] as t (t)}
@@ -209,6 +265,23 @@
   .note { margin: 0; color: var(--text2); line-height: 1.5; }
   .ref { all: unset; cursor: pointer; color: var(--text); text-decoration: underline; }
   .ref:focus-visible { outline: 1px solid var(--atomizer); }
+
+  .trace { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+  .trace h2 { display: flex; justify-content: space-between; margin-top: 0; color: var(--atomizer); }
+  .state { color: var(--text3); }
+  .quote { margin: 0 0 var(--space-3); padding-left: var(--space-3); border-left: 2px solid var(--atomizer); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .quote.waiting { opacity: 0.6; }
+  .step { margin: var(--space-3) 0; padding-left: var(--space-3); border-left: 2px solid var(--stage); }
+  .step .meta { margin: 0; }
+  .rows { margin-top: var(--space-4); }
+  .rows .meta { margin: 0 0 var(--space-0); }
+  .grid { overflow: auto; max-height: 240px; margin-top: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+  table { border-collapse: collapse; font-family: var(--mono); font-size: 10px; }
+  th, td { padding: var(--space-0) var(--space-2); text-align: left; white-space: nowrap; max-width: 180px; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--border); }
+  th { position: sticky; top: 0; background: var(--surface2); color: var(--text2); font-weight: 500; }
+  dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-0) var(--space-3); margin: var(--space-1) 0 0; font-family: var(--mono); font-size: 10px; }
+  dt { color: var(--text3); }
+  dd { margin: 0; overflow-wrap: anywhere; }
 
   details { margin: var(--space-4) 0 0; }
   summary { cursor: pointer; color: var(--text2); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }

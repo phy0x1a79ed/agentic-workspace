@@ -2,7 +2,8 @@
   import * as api from './api';
   import Figure from './Figure.svelte';
   import { colourJson } from './json';
-  import { renderMarkdown } from './markdown';
+  import { citeNode, renderMarkdown } from './markdown';
+  import { markTarget, type Target } from './trace';
 
   interface Props {
     ctx: api.Ctx;
@@ -11,8 +12,16 @@
     node: api.GraphNode;
     detail: api.NodeDetail | null;
     error: string | null;
+    /** Trace is on: the content reports what the pointer is over. */
+    tracing: boolean;
+    /** The key of the pinned target, which stays marked. */
+    pinned: string | null;
+    /** The target under the pointer (null when it leaves), or with `pin` the one clicked (null to release). */
+    ontrace: (target: Target | null, pin: boolean) => void;
+    ontoggle: () => void;
+    onselect: (id: string) => void;
   }
-  let { ctx, commit, node, detail, error }: Props = $props();
+  let { ctx, commit, node, detail, error, tracing, pinned, ontrace, ontoggle, onselect }: Props = $props();
 
   /** One line that names this node to a reader outside the page. */
   const citation = $derived(
@@ -29,16 +38,78 @@
     }
   }
 
+  let content: HTMLDivElement;
+  let over: string | null = null;
+
+  const unitOf = (e: Event) => (e.target as HTMLElement).closest<HTMLElement>('.unit');
+  const inPlot = (e: Event) => !!(e.target as HTMLElement).closest('.js-plotly-plot');
+
+  function unitTarget(el: HTMLElement): Target {
+    const key = el.dataset.t!;
+    const p = detail?.preview;
+    if (el.tagName === 'TR' && p?.head) {
+      const where = `row ${Number(key) + 1}`;
+      const rows = { table: node.id, where, total: 1, columns: p.columns?.map((c) => c.name), rows: [p.head[Number(key)]] };
+      return { key, label: where, local: { lit: [node.id], steps: [], rows: [rows] } };
+    }
+    const words = [...el.childNodes].filter((n) => !(n instanceof HTMLElement && n.classList.contains('cite')));
+    const cites = el.dataset.cites ? el.dataset.cites.split(' ') : [node.id];
+    return {
+      key,
+      label: words.map((n) => n.textContent).join('').trim(),
+      cites: el.dataset.item ? [`${node.id}#${el.dataset.item}`] : cites,
+    };
+  }
+
+  function hover(el: HTMLElement | null) {
+    if ((el?.dataset.t ?? null) === over) return;
+    over = el?.dataset.t ?? null;
+    ontrace(el && unitTarget(el), false);
+  }
+
+  function onclick(e: MouseEvent) {
+    const cite = (e.target as HTMLElement).closest<HTMLElement>('.cite');
+    if (cite) return onselect(citeNode(cite.dataset.cite!));
+    if (!tracing || inPlot(e)) return;
+    const el = unitOf(e);
+    ontrace(el && unitTarget(el), true);
+  }
+
+  function onmark(customdata: unknown, pin: boolean) {
+    if (!tracing) return;
+    ontrace(customdata == null && !pin ? null : markTarget(node, customdata), pin);
+  }
+
+  $effect(() => {
+    void detail;
+    content.querySelector('.pinned')?.classList.remove('pinned');
+    if (pinned != null) content.querySelector(`.unit[data-t="${CSS.escape(pinned)}"]`)?.classList.add('pinned');
+  });
+
   const cell = (v: unknown) => (v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 </script>
 
 <header data-stage={node.stage}>
   <code>{node.path}</code>
   <span class="title" title={node.title}>{node.title}</span>
+  <button
+    class:on={tracing}
+    aria-pressed={tracing}
+    onclick={ontoggle}
+    title="Trace: hover a sentence, a list item, a figure mark or a table row to light what it was built from. Click pins it; Esc releases."
+  >trace</button>
   <button onclick={copy} title={citation}>{copied ? 'copied' : 'copy'}</button>
 </header>
 
-<div class="content">
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+<div
+  class="content"
+  class:tracing
+  bind:this={content}
+  {onclick}
+  onpointerover={(e) => tracing && !inPlot(e) && hover(unitOf(e))}
+  onpointerleave={() => tracing && hover(null)}
+>
   {#if error}
     <p class="error">{error}</p>
   {:else if !detail}
@@ -49,8 +120,8 @@
       <table>
         <thead><tr>{#each p.columns as c (c.name)}<th>{c.name}</th>{/each}</tr></thead>
         <tbody>
-          {#each p.head ?? [] as r}
-            <tr>{#each p.columns as c (c.name)}<td class:null={r[c.name] == null}>{cell(r[c.name])}</td>{/each}</tr>
+          {#each p.head ?? [] as r, i}
+            <tr class="unit" data-t={i}>{#each p.columns as c (c.name)}<td class:null={r[c.name] == null}>{cell(r[c.name])}</td>{/each}</tr>
           {/each}
         </tbody>
       </table>
@@ -67,7 +138,7 @@
     {/if}
   {:else}
     {#if detail.artifact_error}<p class="error">{detail.artifact_error}</p>{/if}
-    {#if detail.figure}{#key detail.id}<Figure figure={detail.figure} />{/key}{/if}
+    {#if detail.figure}{#key detail.id}<Figure figure={detail.figure} {onmark} />{/key}{/if}
     <article>{@html renderMarkdown(detail.body ?? '')}</article>
   {/if}
 </div>
@@ -78,6 +149,7 @@
   .title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   header button { all: unset; cursor: pointer; flex: none; padding: 0 var(--space-3); border: 1px solid var(--border2); border-radius: var(--radius-md); font-family: var(--mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--text2); }
   header button:hover { color: var(--text); background: var(--surface2); }
+  header button.on { color: var(--bg); background: var(--atomizer); border-color: var(--atomizer); }
   header button:focus-visible { outline: 1px solid var(--atomizer); }
 
   .content { flex: 1; min-height: 0; overflow: auto; padding: var(--space-5); }
@@ -89,6 +161,12 @@
   th, td { padding: var(--space-1) var(--space-3); text-align: left; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--border); }
   th { position: sticky; top: 0; background: var(--surface2); color: var(--text2); font-weight: 500; }
   tbody tr:hover { background: var(--surface); }
+
+  .tracing :global(.unit) { cursor: pointer; }
+  .tracing :global(span.unit), .tracing :global(li.unit) { border-radius: var(--radius-md); }
+  .tracing :global(.unit:hover) { background: var(--surface2); }
+  .tracing :global(.unit.pinned) { background: var(--surface3); box-shadow: inset 2px 0 0 var(--atomizer); }
+  .tracing :global(span.unit.pinned) { box-shadow: 0 1px 0 var(--atomizer); }
   td.null::after { content: '∅'; color: var(--text3); }
 
   pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -106,4 +184,6 @@
   article :global(code) { padding: 0 var(--space-1); }
   article :global(pre) { padding: var(--space-4); overflow: auto; white-space: pre; }
   article :global(a) { color: var(--atomizer); }
+  article :global(.cite) { all: unset; cursor: pointer; margin-left: 4px; vertical-align: super; font-family: var(--mono); font-size: 9px; line-height: 1; color: var(--text3); }
+  article :global(.cite:hover), article :global(.cite:focus-visible) { color: var(--atomizer); text-decoration: underline; }
 </style>

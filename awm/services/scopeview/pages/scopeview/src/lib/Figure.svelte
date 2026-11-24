@@ -2,7 +2,12 @@
   import type { PlotlyFigure } from './api';
   import { theme } from './theme.svelte';
 
-  let { figure }: { figure: PlotlyFigure } = $props();
+  interface Props {
+    figure: PlotlyFigure;
+    /** A mark's customdata as the pointer reaches it (null as it leaves), and `pin` when it is clicked. */
+    onmark?: (customdata: unknown, pin: boolean) => void;
+  }
+  let { figure, onmark }: Props = $props();
 
   type Plotly = typeof import('plotly.js-dist-min').default;
   let el: HTMLDivElement;
@@ -49,6 +54,12 @@
     plotly
       .react(el, figure.data, { ...themed(layout), autosize: true, uirevision: 'kept' }, { responsive: true, displaylogo: false })
       .then(() => {
+        if (!drawn) {
+          const marks = el as unknown as { on(event: string, f: (e: { points: { customdata?: unknown }[] }) => void): void };
+          marks.on('plotly_hover', (e) => onmark?.(e.points[0]?.customdata, false));
+          marks.on('plotly_unhover', () => onmark?.(null, false));
+          marks.on('plotly_click', (e) => onmark?.(e.points[0]?.customdata, true));
+        }
         drawn = true;
         error = null;
       })

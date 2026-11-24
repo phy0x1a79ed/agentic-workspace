@@ -31,6 +31,8 @@ export interface GraphNode {
   from?: string[];
   artifact?: string | null;
   made_by?: string | null;
+  /** Figures only: the table its marks are rows of, and the column each mark's customdata holds. */
+  rows?: { table: string; key: string } | null;
   status?: 'draft' | 'accepted';
   review?: { note: string; on: string } | null;
   stale?: boolean;
@@ -110,6 +112,31 @@ export interface Layout {
   edges: { from: string; to: string; back: boolean; d: string }[];
 }
 
+/** Rows of one table that a citation selects. `rows` is capped; `total` counts them all. */
+export interface TraceRows {
+  table: string;
+  where: string;
+  total?: number;
+  columns?: string[];
+  rows?: Record<string, unknown>[];
+  /** The figure whose marks the selection named. */
+  via?: string;
+  error?: string;
+}
+
+export interface Trace {
+  lit: string[];
+  steps: { cite: string; node: string; stage: Stage; title: string; text?: string }[];
+  rows: TraceRows[];
+}
+
+export interface ChatMessage {
+  seq: number;
+  by: 'guest' | 'host';
+  from: string;
+  text: string;
+}
+
 /** Where a call reads: a scope on one node, at a ref ('' is the worktree as it stands). */
 export interface Ctx {
   peer: string;
@@ -130,3 +157,15 @@ export const history = (c: Ctx, id?: string) =>
   scopeview
     .call<{ commits: Commit[] }>('history', { ...at(c), ...(id ? { id } : {}) }, opts(c))
     .then((r) => r.commits);
+export const trace = (c: Ctx, cites: string[]) => scopeview.call<Trace>('trace', { ...at(c), cites }, opts(c));
+
+type Study = Pick<Ctx, 'peer' | 'project' | 'scope'>;
+/** The curator's room after `after`. `wait` holds the call open, up to 25 s, until a message arrives. */
+export const chat = (c: Study, after: number, wait = 0) =>
+  scopeview.call<{ room: string; ended: boolean; messages: ChatMessage[]; next: number }>(
+    'chat',
+    { project: c.project, scope: c.scope, after, ...(wait ? { wait } : {}) },
+    opts(c),
+  );
+export const say = (c: Study, text: string, context: Record<string, string>) =>
+  scopeview.call<{ seq: number }>('say', { project: c.project, scope: c.scope, text, context }, opts(c));
