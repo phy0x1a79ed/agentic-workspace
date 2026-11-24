@@ -177,8 +177,14 @@
         "cli",
         "http"
       ],
-      "description": "For a plugin service that holds a persistent room: its room, opened the first time, and the loopback `port` and one-use `token` of channel's direct socket. The service then holds that socket, and the room's messages and its writes cross it, never the gateway. The room outlives the socket.",
-      "params": [],
+      "description": "For a plugin service that holds a persistent room: its room, opened the first time, and the loopback `port` and one-use `token` of channel's direct socket. The service then holds that socket, and the room's messages and its writes cross it, never the gateway. The room outlives the socket. A service that holds several rooms names each with `key`.",
+      "params": [
+        {
+          "name": "key",
+          "type": "string",
+          "description": "Which of the service's rooms, for a service that holds one per key (seats: one per room seat)."
+        }
+      ],
       "timeout": 90
     },
     {
