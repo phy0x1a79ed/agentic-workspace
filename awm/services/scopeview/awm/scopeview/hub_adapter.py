@@ -104,7 +104,7 @@ def find_scopes() -> list[dict]:
 
 
 def tree(args: dict) -> Tree:
-    return Tree(scope_root(args["project"], args["scope"]), args.get("ref"))
+    return Tree(scope_root(args["project"], args["scope"]), str(args["ref"]) if args.get("ref") else None)
 
 
 def handler(fn):
