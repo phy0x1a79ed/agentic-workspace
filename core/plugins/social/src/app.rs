@@ -20,7 +20,7 @@ use crate::connectors::{self, ChatKind, Channel, Command, Connector, Inbound, Ou
 use crate::db::{now, Db, Mount};
 use crate::seats::line::{self, Place};
 use crate::seats::store::Seat;
-use crate::seats::{Routed, Seats};
+use crate::seats::{Routed, Seats, ROOM};
 
 const SEEN_MAX: usize = 4096;
 pub const PROBE_COMMAND: &str = "__awm_probe__";
@@ -487,7 +487,7 @@ impl Social {
 
     pub async fn seats_verb(&self, call: Call) -> Result<Value, VerbError> {
         let account = s(&call.args, "account");
-        let conn = self.conn(&account)?;
+        let listed = if account == ROOM { vec![] } else { self.conn(&account)?.list_seats().await? };
         let held: HashMap<String, Mount> = self.db.mounts(Some(&account)).await.into_iter().map(|m| (m.channel_id.clone(), m)).collect();
         let mut stored: BTreeMap<String, Seat> = self.seats.store.all().await.into_iter().filter(|st| st.account == account).map(|st| (st.channel_id.clone(), st)).collect();
         let mut out = vec![];
@@ -500,7 +500,7 @@ impl Social {
             }
             out.push(row);
         };
-        for c in conn.list_seats().await? {
+        for c in listed {
             let seat = stored.remove(&c.id);
             add(&c, seat);
         }
@@ -737,6 +737,9 @@ impl Social {
     async fn apply_report(&self, node: &str, kind: &str, b: &Value) -> Value {
         let ok = json!({"ok": true});
         let (account, channel) = (s(b, "account"), Some(s(b, "channel")).filter(|c| !c.is_empty()).unwrap_or_else(|| s(b, "channel_id")));
+        if kind == "seat" && account == ROOM {
+            self.seats.room(node, &channel, &b["public"]).await;
+        }
         if matches!(kind, "seat" | "send" | "react" | "mount" | "unmount" | "line") && !self.answers(node, &account, &channel).await {
             return json!({"ok": false, "error": format!("{node} does not answer {account}/{channel}")});
         }

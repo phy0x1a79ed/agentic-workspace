@@ -78,24 +78,28 @@ fn name_arg(call: &Call) -> Option<&str> {
     call.str_arg("name").filter(|n| !n.is_empty())
 }
 
-/// The one plugin service that may hold a room itself: genai, for the Muse link.
-const SERVICE_HOLDER: &str = "genai";
+/// The plugin services that may hold rooms themselves: genai for the Muse link, seats for room seats.
+const SERVICE_HOLDERS: [&str; 2] = ["genai", "seats"];
 
 /// A plugin service on this node, with no session behind the call, that may hold a room.
-fn service_holder(call: &Call) -> Option<Holder> {
-    let (c, plugin) = (&call.caller, call.plugin.as_deref()?);
+/// Its `key` names one of several rooms it holds: holder `service:<plugin>/<key>`.
+fn service_holder(call: &Call) -> Result<Option<Holder>, VerbError> {
+    let c = &call.caller;
+    let Some(plugin) = call.plugin.as_deref() else { return Ok(None) };
     let own = c.lane == awm_plugin_sdk::Lane::Service && c.node == call.ctx.env().node && c.session.is_none();
-    (own && plugin == SERVICE_HOLDER).then(|| Holder {
-        node: c.node.clone(),
-        session: format!("{}{plugin}", channel::SERVICE_PREFIX),
-        name: plugin.to_string(),
-        level: "trusted".into(),
-        isolated: false,
-    })
+    if !own || !SERVICE_HOLDERS.contains(&plugin) {
+        return Ok(None);
+    }
+    let name = match call.str_arg("key").filter(|k| !k.is_empty()) {
+        None => plugin.to_string(),
+        Some(k) if k.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_./".contains(ch)) => format!("{plugin}/{k}"),
+        Some(k) => return Err(channel::refuse(format!("`key` takes letters, digits and - _ . /, not '{k}'"))),
+    };
+    Ok(Some(Holder { node: c.node.clone(), session: format!("{}{name}", channel::SERVICE_PREFIX), name, level: "trusted".into(), isolated: false }))
 }
 
 async fn holder(call: &Call) -> Result<Holder, VerbError> {
-    if let Some(h) = service_holder(call) {
+    if let Some(h) = service_holder(call)? {
         return Ok(h);
     }
     let h = awm_plugin_sdk::holders::caller(call, "a channel").await?;

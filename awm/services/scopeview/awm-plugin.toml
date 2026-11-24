@@ -1,0 +1,28 @@
+[plugin]
+name = "scopeview"
+refresh = "awm services restart scopeview"
+version = "0.1.0"
+
+[[service]]
+name = "scopeview"
+install = "install.sh"
+
+[[tool]]
+name = "scopeview"
+major = 1
+tier = "on"
+
+[[page]]
+name = "scopeview"
+dir = "pages/scopeview/dist"
+
+[needs]
+secrets = []
+network = ["nexus.tony-xy-liu.com"]
+platform = ["linux"]
+
+# The page's chat: the scope's room seat, declared on this node.
+[[needs.tool]]
+name = "seats"
+major = 1
+verbs = ["room"]

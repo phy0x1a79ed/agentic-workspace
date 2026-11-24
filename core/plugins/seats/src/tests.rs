@@ -965,3 +965,41 @@ async fn a_decl_row_renames_the_seat_and_a_roster_that_lacks_it_forgets_it() {
     l.link.pull_once(&l.t.seats).await.unwrap();
     assert!(l.t.store.get("opal", "D0TEST").await.is_none());
 }
+
+fn room_decl() -> Decl {
+    Decl {
+        account: store::ROOM.into(),
+        channel_id: "cyanoverse:engcyc-visualizer".into(),
+        kind: "room".into(),
+        platform: "room".into(),
+        node: "altair".into(),
+        scope: "engcyc-visualizer".into(),
+        project: "cyanoverse".into(),
+        level: "trusted".into(),
+        name: "seat:room/cyanoverse/engcyc-visualizer".into(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_room_seat_starts_in_its_own_project_and_tells_social_only_its_state() {
+    let t = T::new(false);
+    let seat = t.seats.upsert(&room_decl()).await;
+    let line = crate::room::line("engcyc-visualizer", &json!({"seq": 7, "who": "scopeview", "text": "why two MAGs?", "file": null}));
+    assert_eq!(line, "[room/engcyc-visualizer/scopeview, untrusted, msg 7] why two MAGs?");
+    assert!(t.seats.take_room(&seat.key(), &line).await);
+    t.settle().await;
+    let spec = t.world.w().specs[0].clone();
+    assert_eq!((spec["project"].as_str(), spec["scope"].as_str(), spec["remote_control"].as_bool()), (Some("cyanoverse"), Some("engcyc-visualizer"), Some(false)));
+    let prompt = spec["prompt"].as_str().unwrap();
+    assert!(prompt.contains("room seat") && prompt.contains("cyanoverse/engcyc-visualizer") && prompt.contains(&line), "{prompt}");
+    t.tick().await;
+    let w = t.world.w();
+    assert_eq!(w.got["job-1"], ["why two MAGs?"]);
+    assert!(w.reacts.is_empty() && w.mounted.is_empty() && w.latest.is_empty(), "no 👀, mount or line row: social holds no such chat");
+    assert!(!w.seat_reports.is_empty(), "but its state goes up, for the panel");
+    drop(w);
+    t.seats.keep(HashSet::new()).await;
+    assert!(t.store.get(store::ROOM, "cyanoverse:engcyc-visualizer").await.is_some(), "social's roster never lists a room seat, so it never forgets one");
+    assert!(!t.seats.take_room(&("room".into(), "gone".into()), &line).await, "a line for no seat is refused");
+}

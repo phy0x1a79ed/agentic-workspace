@@ -583,6 +583,23 @@ async fn a_service_holds_its_room_over_a_direct_socket_that_the_room_outlives() 
     assert_eq!(again.event().await.0["text"], "while genai was away", "what was acked is not sent again; what came while away is");
 }
 
+#[tokio::test]
+async fn a_service_holds_one_room_per_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(host) = Host::start(tmp.path(), 2.0) else { return };
+    let node = MemberNode::new(tmp.path(), NODE, host.door(NODE), Captured::default(), Sessions::of(&[&tester()]));
+    let seat = |key: &str| Holder { node: NODE.into(), session: format!("service:seats/{key}"), name: format!("seats/{key}"), level: "trusted".into(), isolated: false };
+    let (mut a, mut b) = (Attached::open(&node, &seat("p/a")).await, Attached::open(&node, &seat("p/b")).await);
+    assert_ne!(a.link, b.link, "each key holds its own room");
+    Guest::new(&a.link).say("to a").await;
+    Guest::new(&b.link).say("to b").await;
+    assert_eq!(a.event().await.0["text"], "to a");
+    assert_eq!(b.event().await.0["text"], "to b", "and each socket carries only its own room");
+    drop(a);
+    let again = Attached::open(&node, &seat("p/a")).await;
+    assert_eq!(again.fresh, false, "a key keeps its room across attaches");
+}
+
 /// A holding service's end of channel's direct socket, as genai holds it.
 struct Attached {
     ws: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
