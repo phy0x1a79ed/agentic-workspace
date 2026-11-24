@@ -101,6 +101,11 @@ This doc holds a session's id, the id of its task, its lifecycle from start to r
   4. **Pause.** A message to a seat while seats are paused gets no agent. The next agent's first prompt gives the count and points at `social history`. Tony: "Dropping message while paused is fine if after unpause agents can see the chat history." (2026-11-09).
   5. **Adopt.** `seats adopt` on the seat's host is the one way to hand a running session a declared seat. `social mount` refuses a declared seat.
   6. **Journals.** The agent journals in its seat scope, tagged `journal`, `seat` and `user:<slug>`. Tony: "Since we are also harmonizing the brief for seeds, we should also encourage journaling." (2026-11-09).
+  7. **Room seat.** A room seat's chat is a scope's persistent channel room, and its agent works in that scope's project. Tony: "I think this should be a new kind of seat." (2026-11-23).
+     - The host declares it, never `social.toml`. `seats room(project, scope)` on the scope's node creates the seat the first time and returns the room's link, which never changes. Opening a scope's chat in scopeview makes that call. Tony: "on the host. can start viewer for scope -> and this starts the seat locally. cna also use the 4hr timeout, but it starts again on next prompt" (2026-11-23).
+     - The seats service holds the room (`channels.md` R72 item 5). Each room message reaches the agent as an untrusted line, whatever the seat's level. The agent answers with `seats send`. `react` and `download` refuse.
+     - The host reports the seat to social like any seat, and social records the first host's row and lists it, so the Ops panel shows it. Social's sync never drops a room seat.
+     - A room seat starts with Remote Control off, as every seat does (`fleet.md` R147 item 7).
 
 ## Decisions
 
