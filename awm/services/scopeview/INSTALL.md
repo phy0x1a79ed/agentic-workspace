@@ -22,7 +22,7 @@ The chain is not a metasmith data instance library. A library's ids are a path p
 
 ## Contracts that two sides must keep
 
-- **Citations.** A body cites as `[[id]]`, `[[id#n]]` (the nth top-level list item) or `[[id?conditions]]` (table rows). `trace.py` parses them. `pages/scopeview/src/lib/markdown.ts` parses them again to draw chips. Change both together.
+- **Citations.** A body cites as `[[id]]`, `[[id#n]]` (the nth top-level list item) or `[[id?conditions]]` (table rows). `trace.py` parses them. `pages/scopeview/src/lib/markdown.ts` parses them again to bind each sentence to its citations, and draws none of them. Change both together.
 - **Figure marks.** A figure's front matter `rows: {table, key}` names its table and key column. Its `made_by` script sets each mark's `customdata[0]` to the key, or to the list of keys of an aggregated mark. Later columns are free for hover text. `trace.mark_keys` and `trace.ts` `keyValues` both read this rule. A script that breaks it traces silently to the wrong rows.
 - **Key values.** A key that holds `,` or `&` cannot be cited, because both are selection delimiters.
 

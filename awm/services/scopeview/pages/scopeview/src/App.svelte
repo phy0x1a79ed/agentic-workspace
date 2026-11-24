@@ -320,7 +320,6 @@
           pinned={pin?.key ?? null}
           ontrace={(t, hold) => (hold ? (pin = t) : (hovered = t))}
           ontoggle={() => (tracing = !tracing)}
-          onselect={(next) => (id = next)}
         />
       </section>
     {:else}

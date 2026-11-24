@@ -17,7 +17,7 @@
   const lit = (id: string) => !!highlighted?.has(id);
 </script>
 
-<div class="rail" style:width="{geo.width}px" style:height="{geo.height}px">
+<div class="rail" class:tracing={!!highlighted} style:width="{geo.width}px" style:height="{geo.height}px">
   <svg width={geo.width} height={geo.height} aria-hidden="true">
     <g fill="none" stroke-linejoin="round" stroke-linecap="round">
       {#each geo.edges as e (`${e.from} ${e.to}`)}
@@ -69,14 +69,16 @@
   svg { position: absolute; top: 0; left: 0; overflow: visible; }
 
   .edge { stroke: var(--dag-edge); stroke-width: 1.4; stroke-opacity: 0.55; }
-  .edge.lit { stroke-opacity: 0.95; stroke-width: 2.6; }
+  .edge.lit { stroke: var(--atomizer); stroke-opacity: 1; stroke-width: 2.6; }
+  .tracing .edge:not(.lit) { stroke-opacity: 0.15; }
+  .tracing .mk:not(.lit):not(.focus), .tracing .node:not(.lit):not(.focus) { opacity: 0.3; }
 
   /* A hollow marker is filled with the ground it sits on, so it reads hollow in either theme. */
   .mk { fill: var(--dag-ground, var(--surface)); stroke: var(--dag-data); stroke-width: 1.3; }
   .mk.transform { stroke: var(--dag-step); stroke-width: 2; }
   .mk.given, .mk.target { fill: var(--dag-solid); stroke: var(--dag-solid-stroke); }
   .mk.stale { stroke: var(--danger); }
-  .mk.lit { filter: drop-shadow(0 0 3px var(--atomizer)); }
+  .mk.lit { stroke: var(--atomizer); stroke-width: 2.2; filter: drop-shadow(0 0 4px var(--atomizer)); }
   .mk.focus { filter: drop-shadow(0 0 4px var(--atomizer)) drop-shadow(0 0 2px var(--atomizer)); }
 
   /* A row runs from its marker to the right edge so the whole line picks. It stays transparent
@@ -89,6 +91,7 @@
   .node:hover .text, .node.lit .text, .node.focus .text { background: var(--surface2); }
   .node.focus .text { box-shadow: inset 2px 0 0 var(--stage); }
   .node.focus .label { color: var(--text); }
-  .node.lit .text { outline: 1px solid var(--atomizer); outline-offset: -1px; }
+  .node.lit .text { background: var(--trace-pin); outline: 1px solid var(--atomizer); outline-offset: -1px; }
+  .node.lit .label { color: var(--text); font-weight: 600; }
   .node:focus-visible .text { outline: 1px solid var(--atomizer); }
 </style>

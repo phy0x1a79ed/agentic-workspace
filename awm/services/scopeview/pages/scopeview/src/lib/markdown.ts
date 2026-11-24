@@ -1,8 +1,9 @@
 /**
  * A small markdown subset rendered to HTML. Every character of the source is escaped before any tag is added.
  *
- * Citations (`[[id]]`, `[[id#n]]`, `[[id?conds]]`) become `.cite` chips. Each sentence of a paragraph and each
- * list item is a trace unit: it carries `data-t` (its key in this body) and `data-cites` (the citations inside it).
+ * Citations (`[[id]]`, `[[id#n]]`, `[[id?conds]]`) are not drawn: the trace highlight shows them. Each sentence of a
+ * paragraph and each list item is a trace unit: it carries `data-t` (its key in this body) and `data-cites` (the
+ * citations inside it).
  * A top-level list item also carries `data-item`, its 1-based place among the body's top-level items, which is
  * how the service's `id#n` counts them.
  */
@@ -12,14 +13,10 @@ import { esc } from './format';
 const CITE = /\[\[([^\[\]\s]+)\]\]/g;
 
 export const citesIn = (s: string) => [...s.matchAll(CITE)].map((m) => m[1]);
-/** The node a citation names, without its item or row selection. */
-export const citeNode = (cite: string) => cite.split(/[#?]/, 1)[0];
-/** A chip's text: the node id, the item number, and `?` standing for a row selection. */
-const citeLabel = (cite: string) => cite.replace(/\?.*$/, '?');
+export const uncited = (s: string) => s.replace(/\s*\[\[[^\[\]\s]+\]\]/g, '');
 
 const inline = (s: string) =>
-  esc(s)
-    .replace(/\s*\[\[([^\[\]\s]+)\]\]/g, (_, c) => `<button class="cite" data-cite="${c}" title="${c}">${citeLabel(c)}</button>`)
+  esc(uncited(s))
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*\w])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
