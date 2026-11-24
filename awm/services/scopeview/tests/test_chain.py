@@ -15,6 +15,10 @@ from awm.scopeview.tree import Tree
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
+def node(tree, node_id):
+    return chain.node(tree, chain.build(tree), node_id)
+
+
 def sh(root, *args):
     subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
 
@@ -88,7 +92,7 @@ def test_a_nodes_provenance_lays_out_its_ancestors_and_children(scope):
 
 def test_a_non_tabular_file_previews_as_text(scope):
     root, _ = scope
-    pv = chain.node(Tree(root), "table:ds/assembly/stats_a")["preview"]
+    pv = node(Tree(root), "table:ds/assembly/stats_a")["preview"]
     assert pv["text"] == '{\n  "n50": 1200\n}'
 
 
@@ -214,7 +218,7 @@ def test_a_figure_needs_its_artifact_pinned(scope):
     pin_dir(root, cache, "chain", {f"{f['id']}.plotly.json": b'{"data": [], "layout": {}}'})
     g = chain.build(Tree(root))
     assert g["ok"], g["problems"]
-    assert chain.node(Tree(root), f["id"])["figure"] == {"data": [], "layout": {}}
+    assert node(Tree(root), f["id"])["figure"] == {"data": [], "layout": {}}
 
 
 def test_an_old_ref_reads_text_from_git_and_data_from_the_cache(scope):
@@ -229,16 +233,22 @@ def test_an_old_ref_reads_text_from_git_and_data_from_the_cache(scope):
     sh(root, "add", "-A")
     sh(root, "commit", "-qm", "v2")
 
-    old = chain.node(Tree(root, v1), q["id"])
+    old = node(Tree(root, v1), q["id"])
     assert "first wording" in old["body"]
-    assert chain.node(Tree(root, v1), "table:ds/tables/mags.tsv")["preview"]["head"][0]["completeness"] == "90"
-    assert chain.node(Tree(root), "table:ds/tables/mags.tsv")["preview"]["head"][0]["completeness"] == "50"
+    assert node(Tree(root, v1), "table:ds/tables/mags.tsv")["preview"]["head"][0]["completeness"] == "90"
+    assert node(Tree(root), "table:ds/tables/mags.tsv")["preview"]["head"][0]["completeness"] == "50"
     assert not {n["id"]: n for n in chain.build(Tree(root, v1))["nodes"]}[q["id"]]["stale"]
     assert {n["id"]: n for n in chain.build(Tree(root))["nodes"]}[q["id"]]["stale"]
-    assert [c["subject"] for c in chain.history(Tree(root), None)] == ["v2", "v1", "data"]
+    assert [c["subject"] for c in chain.history(Tree(root), {}, None)] == ["v2", "v1", "data"]
 
 
 def test_every_function_projects_into_the_scopeview_domain():
     assert {fn["name"] for fn in API_MANIFEST["functions"]} == set(HANDLERS)
     for fn in API_MANIFEST["functions"]:
         assert fn["tool"] == f"scopeview_{fn['name']}"
+
+
+def test_a_marks_keys_are_its_first_customdata_column():
+    assert trace.mark_keys("a") == ["a"]
+    assert trace.mark_keys(["a", 5, "hover"]) == ["a"]
+    assert trace.mark_keys([["a", "b"], "hover"]) == ["a", "b"]

@@ -12,14 +12,10 @@ export interface Target {
   local?: Trace;
 }
 
-/**
- * The row-key values in a mark's customdata. A scalar is the key. A list of one type is the keys of an
- * aggregated mark. A mixed list is a Plotly Express hover row, whose first column is the key.
- */
+/** A mark's row keys: customdata[0] is the key, or the list of keys of an aggregated mark. Later columns are hover text. */
 function keyValues(customdata: unknown): string[] {
-  const list = Array.isArray(customdata) ? customdata : [customdata];
-  const uniform = list.every((v) => typeof v === typeof list[0]);
-  return (uniform ? list : list.slice(0, 1))
+  const first = Array.isArray(customdata) ? customdata[0] : customdata;
+  return (Array.isArray(first) ? first : [first])
     .filter((v) => typeof v === 'string' || typeof v === 'number')
     .map(String)
     .filter((v) => !/[,&]/.test(v));

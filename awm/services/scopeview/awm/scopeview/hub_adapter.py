@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -103,8 +104,22 @@ def find_scopes() -> list[dict]:
     return out
 
 
-def tree(args: dict) -> Tree:
-    return Tree(scope_root(args["project"], args["scope"]), str(args["ref"]) if args.get("ref") else None)
+_read: dict[tuple[Path, str], tuple[Tree, dict]] = {}
+_read_lock = threading.Lock()
+
+
+def read(args: dict) -> tuple[Tree, dict]:
+    """The scope's tree and graph at the ref, built once per commit (or worktree state) and shared by every read verb."""
+    t = Tree(scope_root(args["project"], args["scope"]), str(args["ref"]) if args.get("ref") else None)
+    key = (t.root, t.stamp)
+    if hit := _read.get(key):
+        return hit
+    built = (t, chain.build(t))
+    with _read_lock:
+        if len(_read) >= 16:
+            del _read[next(iter(_read))]
+        _read[key] = built
+    return built
 
 
 def handler(fn):
@@ -114,20 +129,32 @@ def handler(fn):
 
 
 def check(a):
-    g = chain.build(tree(a), gate=bool(a.get("gate")))
-    return {"ok": g["ok"], "commit": g["commit"], "problems": g["problems"],
+    g = read(a)[1]
+    gate = bool(a.get("gate"))
+    return {"ok": not g["problems"] if gate else g["ok"], "commit": g["commit"],
+            "problems": [p for p in g["problems"] if gate or p["code"] != "stale"],
             "stale": [n["id"] for n in g["nodes"] if n.get("stale")]}
 
 
+async def chat_read(a):
+    scope_root(a["project"], a["scope"])
+    return await chat.read(a["project"], a["scope"], int(a.get("after") or 0), float(a.get("wait") or 0))
+
+
+async def chat_say(a):
+    scope_root(a["project"], a["scope"])
+    return await chat.say(a["project"], a["scope"], a["text"], a.get("context") or {})
+
+
 HANDLERS = {
-    "chat": lambda a: scope_root(a["project"], a["scope"]) and chat.read(a["project"], a["scope"], int(a.get("after") or 0), float(a.get("wait") or 0)),
-    "say": lambda a: scope_root(a["project"], a["scope"]) and chat.say(a["project"], a["scope"], a["text"], a.get("context") or {}),
+    "chat": chat_read,
+    "say": chat_say,
     "scopes": handler(lambda a: {"scopes": find_scopes()}),
-    "graph": handler(lambda a: chain.build(tree(a))),
-    "node": handler(lambda a: chain.node(tree(a), a["id"])),
-    "layout": handler(lambda a: layout.provenance(chain.build(tree(a)), a["id"])),
-    "trace": handler(lambda a: trace.trace(t := tree(a), chain.build(t), a["cites"])),
-    "history": handler(lambda a: {"commits": chain.history(tree(a), a.get("id"))}),
+    "graph": handler(lambda a: read(a)[1]),
+    "node": handler(lambda a: chain.node(*read(a), a["id"])),
+    "layout": handler(lambda a: layout.provenance(read(a)[1], a["id"])),
+    "trace": handler(lambda a: trace.trace(*read(a), a["cites"])),
+    "history": handler(lambda a: {"commits": chain.history(*read(a), a.get("id"))}),
     "new": handler(lambda a: chain.new(scope_root(a["project"], a["scope"]), a["stage"], a["from"], a["title"], a.get("id"))),
     "accept": handler(lambda a: chain.accept(scope_root(a["project"], a["scope"]), a["id"], a["note"])),
     "check": handler(check),

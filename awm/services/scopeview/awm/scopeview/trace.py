@@ -3,13 +3,16 @@
 A chain body cites inline as [[id]], [[id#n]] (the nth list item of a text node) or [[id?<conditions>]]:
 rows of a table, or the rows behind a figure, joined by `&`, each `col=v1,v2`, `col!=v` or `col>n` (also <, >=, <=).
 The value `null` matches a missing value. A figure names its rows with front matter
-`rows: {table: table:<path>, key: <column>}`, and its script puts each mark's key values in customdata;
-a selection on a figure covers only the rows its marks carry.
+`rows: {table: table:<path>, key: <column>}`, and its script makes each mark's customdata[0] its key, or the
+list of keys of an aggregated mark; later columns are free for hover text. A selection on a figure covers
+only the rows its marks carry.
 """
 from __future__ import annotations
 
+import json
 import re
 
+from awm.scopeview.text import clip, split
 from awm.scopeview.tree import Tree
 
 CITE = re.compile(r"\[\[([^\[\]\s]+)\]\]")
@@ -57,33 +60,30 @@ def read(tree: Tree, path: str, schema_only: bool = False):
     return t.schema if schema_only else t
 
 
-def figure_keys(tree: Tree, node: dict) -> list[str] | None:
-    """Every key value in the figure's customdata, or None when its marks carry none."""
-    import json
+def mark_keys(customdata) -> list[str]:
+    """One mark's keys: customdata[0], or the list it holds."""
+    first = customdata[0] if isinstance(customdata, list) and customdata else customdata
+    return [str(k) for k in (first if isinstance(first, list) else [first]) if k is not None and not isinstance(k, dict)]
 
+
+def figure_keys(tree: Tree, node: dict) -> list[str] | None:
+    """Every mark's keys in the figure, or None when its marks carry none."""
     if node.get("artifact") not in tree.pins:
         return None
-    keys: list[str] = []
+    keys = {k for tr in json.loads(tree.local(node["artifact"]).read_text()).get("data", [])
+            if isinstance(tr.get("customdata"), list) for c in tr["customdata"] for k in mark_keys(c)}
+    return sorted(keys) or None
 
-    def flat(v):
-        if isinstance(v, list):
-            for x in v:
-                flat(x)
-        elif v is not None and not isinstance(v, dict):
-            keys.append(str(v))
 
-    for tr in json.loads(tree.local(node["artifact"]).read_text()).get("data", []):
-        flat(tr.get("customdata"))
-    return sorted(set(keys)) or None
+def where(conds: list[tuple[str, str, list[str]]]) -> str:
+    return "&".join(f"{c}{op}{','.join(v)}" for c, op, v in conds)
 
 
 def select(tree: Tree, nid: str, conds: list[tuple[str, str, list[str]]]) -> dict:
     import pyarrow as pa
     import pyarrow.compute as pc
 
-    from awm.scopeview.chain import clip
-
-    out = {"table": nid, "where": "&".join(f"{c}{op}{','.join(v)}" for c, op, v in conds)}
+    out = {"table": nid, "where": where(conds)}
     t = read(tree, table_file(tree, nid))
     mask = None
     try:
@@ -105,8 +105,6 @@ def select(tree: Tree, nid: str, conds: list[tuple[str, str, list[str]]]) -> dic
 
 def trace(tree: Tree, g: dict, start: list[str]) -> dict:
     """Follow citations from `start` down to table rows. Uncited text falls back to the node's `from`."""
-    from awm.scopeview.chain import split
-
     by_id = {n["id"]: n for n in g["nodes"]}
     lit, steps, rows, done = set(), [], [], set()
 
@@ -128,8 +126,7 @@ def trace(tree: Tree, g: dict, start: list[str]) -> dict:
             if conds and spec and table_file(tree, spec["table"]):
                 marks = figure_keys(tree, node)
                 limit = [(spec["key"], "=", marks)] if marks else []
-                rows.append({**select(tree, spec["table"], conds + limit), "where": "&".join(
-                    f"{c}{op}{','.join(v)}" for c, op, v in conds), "via": nid})
+                rows.append({**select(tree, spec["table"], conds + limit), "where": where(conds), "via": nid})
                 lit.add(spec["table"])
             for ref in node["from"]:
                 visit(ref, depth + 1)
