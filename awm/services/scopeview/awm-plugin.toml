@@ -20,3 +20,9 @@ dir = "pages/scopeview/dist"
 secrets = []
 network = ["nexus.tony-xy-liu.com"]
 platform = ["linux"]
+
+# The page's chat: the scope's room seat, declared on this node.
+[[needs.tool]]
+name = "seats"
+major = 1
+verbs = ["room"]
