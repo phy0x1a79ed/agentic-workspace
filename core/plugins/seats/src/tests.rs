@@ -55,6 +55,8 @@ struct W {
     /// The model and effort of each `resume` call.
     resumed_on: Vec<(String, String)>,
     resume_refused: bool,
+    /// The CLI prompt each stuck session waits on.
+    stuck: HashMap<String, String>,
 }
 
 impl W {
@@ -162,6 +164,7 @@ impl World for Fake {
             link: if w.rc.contains(j) { format!("https://claude.ai/code/{j}") } else { String::new() },
             busy: w.busy.contains(j),
             active_at: w.active.get(j).copied().unwrap_or(0.0),
+            stuck: w.stuck.get(j).cloned().unwrap_or_default(),
         };
         (!w.cannot_tell).then(|| w.up.iter().map(|j| (j.clone(), agent(j))).collect())
     }
@@ -256,7 +259,7 @@ impl T {
 
     fn dm(&mut self, text: &str) -> Incoming {
         self.n += 1;
-        Incoming { id: self.n, seat: decl(), message_id: format!("{}.0", self.n), line: format!("[slack/DM/tester, cooperative] {text}"), ..Default::default() }
+        Incoming { id: self.n, seat: decl(), message_id: format!("{}.0", self.n), line: format!("[slack/DM/tester, cooperative] {text}"), text: text.into(), ..Default::default() }
     }
 
     async fn send(&mut self, text: &str) {
@@ -410,6 +413,10 @@ async fn a_start_that_never_comes_up_requeues_and_trips_the_breaker() {
     }
     assert!(t.seat().await.breaker.held(t.world.now()));
     assert!(t.world.w().said.iter().any(|(c, x)| c == "NOTICE" && x.contains("could not start an agent 4 times") && x.contains("seats reset")));
+    let told: Vec<String> = t.world.w().said.iter().filter(|(c, _)| c == "D0TEST").map(|(_, x)| x.clone()).collect();
+    assert_eq!(told.len(), 2, "the chat hears the first failure and the trip: {told:?}");
+    assert!(told.iter().all(|x| x.starts_with("[seat] ") && x.contains("did not come up") && x.contains("!reset")), "{told:?}");
+    assert_eq!(t.world.w().stopped, ["job-1", "job-2", "job-3", "job-4"], "an agent that never came up is stopped, so it frees the scope");
     t.world.advance(3600.0);
     t.tick().await;
     assert_eq!(t.seat().await.state, State::Empty, "held");
@@ -1002,4 +1009,43 @@ async fn a_room_seat_starts_in_its_own_project_and_tells_social_only_its_state()
     t.seats.keep(HashSet::new()).await;
     assert!(t.store.get(store::ROOM, "cyanoverse:engcyc-visualizer").await.is_some(), "social's roster never lists a room seat, so it never forgets one");
     assert!(!t.seats.take_room(&("room".into(), "gone".into()), &line).await, "a line for no seat is refused");
+}
+
+#[tokio::test]
+async fn a_stuck_agent_is_told_to_its_chat_once_and_stopped_when_it_refuses_a_line() {
+    let mut t = T::new(false);
+    t.send("question").await;
+    t.world.w().stuck.insert("job-1".into(), "choose: retry on fallback model or edit prompt".into());
+    t.tick().await;
+    t.tick().await;
+    let told: Vec<String> = t.world.w().said.iter().filter(|(c, x)| c == "D0TEST" && x.contains("stuck")).map(|(_, x)| x.clone()).collect();
+    assert_eq!(told.len(), 1, "told once per agent: {told:?}");
+    assert!(told[0].contains("retry on fallback model") && told[0].contains("!reset"));
+
+    for _ in 0..40 {
+        t.world.w().pushes.push_back(Outcome::Retry(json!({"ok": false, "reason": "it waits on a prompt", "kind": "modal"}).to_string()));
+    }
+    t.send("hello?").await;
+    assert_eq!(t.world.w().stopped, ["job-1"], "the seat stops the agent it gives up on, so its scope is free");
+    assert!(t.world.w().said.iter().any(|(c, x)| c == "D0TEST" && x.contains("stopped taking messages (it waits on a prompt), so a new one starts")));
+}
+
+#[tokio::test]
+async fn reset_from_the_chat_stops_the_agent_and_starts_afresh_on_the_unanswered_lines() {
+    let mut t = T::new(false);
+    t.send("question").await;
+    t.world.w().pushes.push_back(Outcome::Gone);
+    t.world.w().down_on_start = true;
+    t.send("hello?").await;
+    t.world.w().down_on_start = false;
+    let s = t.seat().await;
+    assert_eq!((s.state, s.previous.session_id.as_str()), (State::Starting, "job-1"));
+
+    t.send(" !RESET ").await;
+    let s = t.seat().await;
+    assert_eq!((s.state, s.session_id.as_str()), (State::Occupied, "job-3"));
+    assert!(t.world.w().stopped.contains(&"job-2".to_string()), "the agent that never came up is stopped");
+    assert!(t.world.w().specs[2].get("replaces").is_none() && !t.world.w().specs[2]["prompt"].as_str().unwrap().contains("job-1"), "a fresh conversation");
+    assert_eq!(t.world.got("job-3"), ["hello?"], "the unanswered line goes on, and the command is no line");
+    assert!(t.world.w().said.iter().any(|(c, x)| c == "D0TEST" && x.contains("Starting over") && x.contains("unanswered messages go")));
 }

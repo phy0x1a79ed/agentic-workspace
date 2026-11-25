@@ -91,6 +91,8 @@ impl World for Live {
             link: text(&r, "rc_url"),
             busy: r.get("state").and_then(Value::as_str) == Some("working"),
             active_at: chrono::DateTime::parse_from_rfc3339(&text(&r, "active_at")).map_or(0.0, |t| t.timestamp_millis() as f64 / 1000.0),
+            // Mid-turn and blocked is the CLI's own prompt; an agent that reports itself blocked has ended its turn.
+            stuck: if text(&r, "state") == "working" && text(&r, "tempo") == "blocked" { text(&r, "needs") } else { String::new() },
         };
         Some(rows.into_iter().map(|(session, r)| (session, agent(r))).collect())
     }
