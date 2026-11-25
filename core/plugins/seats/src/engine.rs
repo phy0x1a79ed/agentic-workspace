@@ -100,7 +100,13 @@ pub struct Incoming {
     pub new: bool,
     /// A line that waited in social before seats moved here, which a pause does not discard.
     pub kept: bool,
+    /// The sender's own words, for the chat commands.
+    pub text: String,
 }
+
+/// What a chat member sends to drop the seat's conversation and start a new agent.
+pub const RESET_COMMAND: &str = "!reset";
+const RESET_HINT: &str = "Send !reset to clear this conversation and try again.";
 
 /// What a switch did to the seat's live session.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +140,8 @@ pub struct Agent {
     /// When its session last changed state, in epoch seconds, or 0 when unknown. Once it waits,
     /// this is the end of its last turn.
     pub active_at: f64,
+    /// The CLI prompt it waits on mid-turn, which nobody in a chat can answer; empty when none.
+    pub stuck: String,
 }
 
 /// Each live session here.
@@ -158,6 +166,8 @@ pub struct Seats {
     reported_live: Mutex<Option<Vec<String>>>,
     /// When each occupied seat's agent goes idle, as last seen, for the tick's timer.
     idle_at: Mutex<HashMap<Key, f64>>,
+    /// The stuck agent each seat's chat was last told of, so it is told once.
+    told_stuck: Mutex<HashMap<Key, String>>,
     wake: tokio::sync::Notify,
 }
 
@@ -177,7 +187,7 @@ fn label(s: &Seat) -> String {
 
 impl Seats {
     pub fn new(store: Store, settings: Settings, world: Arc<dyn World>) -> Arc<Self> {
-        Arc::new(Self { store, settings: RwLock::new(settings), world, locks: Mutex::new(HashMap::new()), reported_live: Mutex::new(None), idle_at: Mutex::new(HashMap::new()), wake: tokio::sync::Notify::new() })
+        Arc::new(Self { store, settings: RwLock::new(settings), world, locks: Mutex::new(HashMap::new()), reported_live: Mutex::new(None), idle_at: Mutex::new(HashMap::new()), told_stuck: Mutex::new(HashMap::new()), wake: tokio::sync::Notify::new() })
     }
 
     pub fn settings(&self) -> Settings {
@@ -289,6 +299,23 @@ impl Seats {
         self.world.up("ask", json!({"kind": kind, "text": text})).await;
     }
 
+    /// Say what went wrong in the seat's own chat, where its people wait on an answer.
+    async fn tell(&self, seat: &Seat, text: &str) {
+        if !seat.is_room() {
+            self.world.up("send", json!({"account": seat.account(), "channel": seat.channel(), "text": format!("[seat] {text}")})).await;
+        }
+    }
+
+    /// Stop an agent the seat gives up on, so it frees the scope its next agent claims.
+    async fn stop_abandoned(&self, seat: &Seat) {
+        if seat.adopted || seat.session_id.is_empty() {
+            return;
+        }
+        if let Err(why) = self.world.stop(&seat.session_id).await {
+            tracing::info!("seat {}: stopping its abandoned agent {} failed: {why}", label(seat), seat.session_id);
+        }
+    }
+
     async fn mounted(&self, s: &Seat, session: &str) {
         if s.is_room() {
             return;
@@ -338,6 +365,9 @@ impl Seats {
     /// Take one line from social.
     pub async fn take(self: &Arc<Self>, m: Incoming) {
         let seat = self.upsert(&m.seat).await;
+        if m.outside.is_empty() && m.text.trim().eq_ignore_ascii_case(RESET_COMMAND) {
+            return self.start_over(seat.key()).await;
+        }
         let Some(mut seat) = self.queue(seat, Some(m.id), &m.message_id, &m.thread_id, &m.line, m.kept).await else { return };
         if !m.outside.is_empty() && seat.held != "admitted" && !seat.held.starts_with("outside") {
             seat.held = format!("outside:{}", m.outside);
@@ -453,9 +483,18 @@ impl Seats {
                 if sync_rc(&mut seat, live) {
                     self.save(&seat).await;
                 }
-                if !pending.is_empty() && !self.pump(&mut seat, &pending).await {
-                    self.lost(&mut seat, "stopped taking messages").await;
-                    return true;
+                if let Some(prompt) = live.and_then(|l| l.get(&seat.session_id)).map(|a| a.stuck.as_str()).filter(|p| !p.is_empty()) {
+                    self.stuck(&seat, prompt).await;
+                }
+                if !pending.is_empty() {
+                    if let Err(refused) = self.pump(&mut seat, &pending).await {
+                        if let Some(why) = refused {
+                            self.stop_abandoned(&seat).await;
+                            self.tell(&seat, &format!("The agent for this chat stopped taking messages ({why}), so a new one starts on your messages now.")).await;
+                        }
+                        self.lost(&mut seat, "stopped taking messages").await;
+                        return true;
+                    }
                 }
                 self.stop_if_idle(seat, live, now).await
             }
@@ -523,6 +562,15 @@ impl Seats {
         }
     }
 
+    /// Tell the chat and Ops, once per agent, that it waits on a prompt nobody there can answer.
+    async fn stuck(&self, seat: &Seat, prompt: &str) {
+        let first = self.told_stuck.lock().unwrap().insert(seat.key(), seat.session_id.clone()).as_deref() != Some(seat.session_id.as_str());
+        if first {
+            self.tell(seat, &format!("The agent for this chat is stuck on a prompt it cannot answer here: \"{prompt}\". {RESET_HINT}")).await;
+            self.notice(&format!("the agent of the seat {} ({}@{}) is stuck on a prompt: {prompt}.", label(seat), seat.session_id, seat.decl.node)).await;
+        }
+    }
+
     /// The agent went without the seat stopping it: free the seat, with a notice unless the
     /// session was only adopted.
     async fn lost(&self, seat: &mut Seat, how: &str) {
@@ -555,6 +603,7 @@ impl Seats {
 
     async fn failed_start(&self, mut seat: Seat, why: &str) {
         let now = self.world.now();
+        self.stop_abandoned(&seat).await;
         self.unbind(&seat).await;
         self.store.unbrief(seat.account(), seat.channel()).await;
         seat.state = State::Empty;
@@ -565,8 +614,14 @@ impl Seats {
         self.save(&seat).await;
         let reset = format!("`seats reset account={} channel={}` on {}", seat.account(), seat.channel(), seat.decl.node);
         match failure {
-            Failure::Tripped => self.notice(&format!("the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until {reset}.", label(&seat))).await,
-            Failure::First => self.notice(&format!("the seat {} could not start an agent ({why}). It tries again on its own, or now with {reset}.", label(&seat))).await,
+            Failure::Tripped => {
+                self.notice(&format!("the seat {} could not start an agent 4 times in an hour ({why}). It holds its messages for 6 hours, or until {reset}.", label(&seat))).await;
+                self.tell(&seat, &format!("I could not start an agent for this chat 4 times in an hour ({why}). Your messages wait for 6 hours. {RESET_HINT}")).await;
+            }
+            Failure::First => {
+                self.notice(&format!("the seat {} could not start an agent ({why}). It tries again on its own, or now with {reset}.", label(&seat))).await;
+                self.tell(&seat, &format!("I could not start an agent for this chat ({why}). I will try again on my own. {RESET_HINT}")).await;
+            }
             Failure::Again => {}
         }
     }
@@ -648,8 +703,9 @@ impl Seats {
         }
     }
 
-    /// Push every waiting line to the seat's agent, in order. False when the agent is lost.
-    async fn pump(&self, seat: &mut Seat, pending: &[Queued]) -> bool {
+    /// Push every waiting line to the seat's agent, in order. Err when the agent is lost, with
+    /// why it refused the line unless its session is simply gone.
+    async fn pump(&self, seat: &mut Seat, pending: &[Queued]) -> Result<(), Option<String>> {
         for q in pending {
             let started = self.world.now();
             let mut delay = Backoff::doubling(2.0, 30.0);
@@ -662,18 +718,18 @@ impl Seats {
                         self.set_line(&seat.session_id, latest, now).await;
                         break;
                     }
-                    Outcome::Gone => return false,
+                    Outcome::Gone => return Err(None),
                     Outcome::Retry(why) => {
                         if self.world.now() - started >= PUSH_RETRY_S {
                             tracing::info!("seat {}: {} refused a line past the retry window: {why}", label(seat), seat.session_id);
-                            return false;
+                            return Err(Some(serde_json::from_str::<Value>(&why).ok().and_then(|v| v["reason"].as_str().map(str::to_string)).unwrap_or(why)));
                         }
                         self.world.sleep(delay.wait().as_secs_f64()).await;
                     }
                 }
             }
         }
-        true
+        Ok(())
     }
 
     /// Every seat once, and social told when the set of live sessions changed.
@@ -744,6 +800,39 @@ impl Seats {
                 _ = async { match wait { Some(w) => tokio::time::sleep(w).await, None => std::future::pending().await } } => {}
             }
         }
+    }
+
+    /// A chat member's `!reset`: stop the agent, forget its conversation and its failures, and
+    /// start a new agent on the lines still unanswered.
+    async fn start_over(self: &Arc<Self>, key: Key) {
+        {
+            let lock = self.lock(&key);
+            let _held = lock.lock().await;
+            let Some(mut seat) = self.store.get(&key.0, &key.1).await else { return };
+            if seat.adopted {
+                self.tell(&seat, "This chat's agent is a session Tony runs by hand, so !reset leaves it alone. Ask Tony to restart it.").await;
+                return;
+            }
+            self.stop_abandoned(&seat).await;
+            if !seat.session_id.is_empty() {
+                self.unbind(&seat).await;
+            }
+            seat.clear_agent();
+            seat.previous = Default::default();
+            seat.breaker = Default::default();
+            if seat.held == "scope" {
+                seat.held.clear();
+            }
+            self.store.unbrief(seat.account(), seat.channel()).await;
+            self.save(&seat).await;
+            self.told_stuck.lock().unwrap().remove(&key);
+            let text = match self.store.pending(seat.account(), seat.channel()).await.is_empty() {
+                true => "Cleared. Your next message starts a fresh conversation.",
+                false => "Starting over with a fresh conversation. Your unanswered messages go to the new agent.",
+            };
+            self.tell(&seat, text).await;
+        }
+        self.spawn_drive(key);
     }
 
     pub async fn reset(self: &Arc<Self>, account: &str, channel: &str) -> Option<Seat> {

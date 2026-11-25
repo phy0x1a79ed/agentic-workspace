@@ -188,7 +188,7 @@ impl Seats {
             return Routed::Duplicate;
         }
         let outside = if !m.outside { String::new() } else if m.sender_name.is_empty() { m.sender_id.clone() } else { m.sender_name.clone() };
-        self.queue(Row { message_id: m.message_id.clone(), thread_id: m.thread_id.clone(), line: line::push_line(m, &seat.level), ..Self::row(&seat, "line", json!({"outside": outside, "new": new})) }).await;
+        self.queue(Row { message_id: m.message_id.clone(), thread_id: m.thread_id.clone(), line: line::push_line(m, &seat.level), ..Self::row(&seat, "line", json!({"outside": outside, "new": new, "text": m.text})) }).await;
         Routed::Seat
     }
 
