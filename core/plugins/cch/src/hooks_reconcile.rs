@@ -282,7 +282,8 @@ async fn keep_report_paths(paths: &Paths) -> io::Result<()> {
     for &(event, matcher, timeout) in hook.entries {
         events.insert(event.to_string(), json!([entry(paths, hook, matcher, timeout)]));
     }
-    let doc = json!({"awaySummaryEnabled": false, "hooks": events});
+    // Holds `lifecycle::UNATTENDED_SETTINGS` too, since a restricted start passes only this file.
+    let doc = json!({"awaySummaryEnabled": false, "switchModelsOnFlag": true, "hooks": events});
     if let Some(dir) = paths.restricted_settings.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
@@ -410,6 +411,8 @@ mod tests {
         reconcile_at(&paths, Utc::now()).await;
         assert!(std::fs::read_to_string(hooks.join(LEGACY_REPORT)).unwrap().contains("hook report"), "the old path now runs cch");
         let restricted: Value = serde_json::from_str(&std::fs::read_to_string(&paths.restricted_settings).unwrap()).unwrap();
+        let unattended: Map<String, Value> = serde_json::from_str(crate::lifecycle::UNATTENDED_SETTINGS).unwrap();
+        assert!(unattended.iter().all(|(k, v)| restricted[k] == *v), "a restricted start is unattended too");
         for event in ["PostToolUse", "UserPromptSubmit", "SessionStart"] {
             assert!(restricted["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap().contains("hook report"), "{event}");
         }

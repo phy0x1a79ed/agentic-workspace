@@ -738,6 +738,10 @@ fn remote_control(value: Option<&Value>, name: &str) -> Result<Option<String>, R
     }
 }
 
+/// Settings for a session nobody watches. A safeguards flag otherwise parks the session on a
+/// dialog that asks whether to switch models, and a seat's start times out behind it.
+pub const UNATTENDED_SETTINGS: &str = r#"{"switchModelsOnFlag":true}"#;
+
 /// The claude flags for a start, every valued flag in its `=` form.
 ///
 /// The `=` form keeps a value that starts with `-` from being read as a flag, and it is what
@@ -754,9 +758,12 @@ pub fn build_flags(paths: &Paths, spec: &Spec) -> Vec<String> {
     };
     if spec.restricted {
         flags.push("--restricted".into());
-        if paths.restricted_settings.exists() {
-            flags.push(format!("--settings={}", paths.restricted_settings.display()));
-        }
+    }
+    // The restricted settings file carries the unattended settings too: the CLI takes one `--settings`.
+    if spec.restricted && paths.restricted_settings.exists() {
+        flags.push(format!("--settings={}", paths.restricted_settings.display()));
+    } else {
+        flags.push(format!("--settings={UNATTENDED_SETTINGS}"));
     }
     if !spec.tools.is_empty() {
         flags.push(format!("--tools={}", spec.tools.join(",")));
@@ -2843,6 +2850,14 @@ mod tests {
         let flags = w.flags(0);
         assert!(flags.contains(&format!("--settings={}", w.paths.restricted_settings.display())));
         assert!(!flags.contains(&"--allow-dangerously-skip-permissions".into()), "the CLI refuses bypass under --restricted");
+    }
+
+    #[tokio::test]
+    async fn test_a_start_switches_models_on_a_safeguards_flag_instead_of_asking() {
+        let w = Fx::new();
+        start_fit(&w, on(json!({}))).await;
+        let settings: Vec<_> = w.flags(0).into_iter().filter(|f| f.starts_with("--settings=")).collect();
+        assert_eq!(settings, [format!("--settings={UNATTENDED_SETTINGS}")]);
     }
 
     #[tokio::test]
