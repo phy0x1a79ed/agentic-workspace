@@ -725,7 +725,11 @@ impl Social {
         match s(&call.args, "action").as_str() {
             "react" => self.react_to(&account, &channel, &message, &call.args).await,
             "download" => self.inline_files(&account, &channel, &message, idx(&call.args)).await,
-            other => Err(VerbError::value(format!("seat_act: action is react or download, not {other:?}"))),
+            "delete" => {
+                self.conn(&account)?.edit(&channel, &message, &format!("deleted: {}", s(&call.args, "reason"))).await?;
+                Ok(json!({"ok": true, "message_id": message}))
+            }
+            other => Err(VerbError::value(format!("seat_act: action is react, download or delete, not {other:?}"))),
         }
     }
 
@@ -786,7 +790,9 @@ impl Social {
                 ok
             }
             "tag" => {
-                let _ = self.hub.call("journal", "tag_add", json!({"name": s(b, "name"), "description": s(b, "description")}), None).await;
+                if let Err(e) = self.hub.call("journal", "tag_add", json!({"name": s(b, "name"), "description": s(b, "description")}), None).await {
+                    tracing::warn!("seat tag {} failed: {e}", s(b, "name"));
+                }
                 ok
             }
             "mount" => {

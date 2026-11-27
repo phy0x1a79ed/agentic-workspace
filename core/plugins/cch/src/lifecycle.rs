@@ -1225,11 +1225,15 @@ async fn is_dir(path: &Path) -> bool {
     tokio::fs::metadata(path).await.is_ok_and(|m| m.is_dir())
 }
 
-/// Whether a live job, a start in flight or an interactive session already holds `name`.
+/// Whether a live job or an interactive session already holds `name`. Called under the start
+/// lock, so a pending record of `name` is left by a start that already failed: it is dropped,
+/// so the retry is not refused, and a job that appears late becomes an orphan.
 pub fn name_taken<E: Effects>(fx: &E, name: &str) -> bool {
+    for (token, _) in lineage::pending_records(fx.paths()).iter().filter(|(_, p)| p.name.as_deref() == Some(name)) {
+        drop_pending(fx.paths(), token);
+    }
     let sessions = Sessions::new(fx.paths(), fx.procs());
     sessions.load().iter().any(|s| s.has_record && s.name == name && sessions.is_alive(s))
-        || lineage::pending_records(fx.paths()).iter().any(|(_, p)| p.name.as_deref() == Some(name))
         || interactive_records(fx).iter().any(|rec| text(rec.get("name")) == Some(name))
 }
 
@@ -2801,6 +2805,18 @@ mod tests {
         assert!(w.pendings().is_empty());
         assert_eq!(read_lineage(&w.paths, &chosen_id(&w)).unwrap()["mode"], json!("representative"));
         assert_eq!(w.mode_of(CHILD_PID.into()).as_deref(), Some("representative"));
+    }
+
+    #[tokio::test]
+    async fn test_a_retry_after_a_failed_launch_is_not_refused_by_its_pending_record() {
+        let w = Fx::new();
+        w.fail_launch(true);
+        start_fit(&w, on(json!({}))).await;
+        assert_eq!(w.pendings().len(), 1);
+        *w.launcher.lock().unwrap() = None;
+        let out = start_fit(&w, on(json!({}))).await;
+        assert!(out["session_id"].is_string(), "{out}");
+        assert!(w.pendings().is_empty());
     }
 
     // --- stop --------------------------------------------------------------------

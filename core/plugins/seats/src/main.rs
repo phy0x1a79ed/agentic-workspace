@@ -98,7 +98,11 @@ impl App {
         if seat.decl.platform == "discord" && len > DISCORD_MAX {
             return Err(VerbError::value(format!("seats send: Discord takes at most {DISCORD_MAX} characters per message and this text has {len}. Send it as several messages, or attach it as a file.")));
         }
-        let thread = Some(s(&call.args, "thread")).filter(|t| !t.is_empty()).or_else(|| latest.filter(|l| l.account == seat.account() && l.channel == seat.channel()).map(|l| l.thread).filter(|t| !t.is_empty()));
+        let thread = match (s(&call.args, "thread"), s(&call.args, "channel").is_empty()) {
+            (t, _) if !t.is_empty() => Some(t),
+            (_, true) => latest.filter(|l| l.account == seat.account() && l.channel == seat.channel()).map(|l| l.thread).filter(|t| !t.is_empty()),
+            _ => None,
+        };
         Ok(self.link.send(&json!({"account": seat.account(), "channel": seat.channel(), "thread": thread, "text": text, "files": files})).await)
     }
 
@@ -127,6 +131,14 @@ impl App {
             return Err(VerbError::value("seats react needs an emoji"));
         }
         self.act(&call, "react", json!({"emoji": emoji, "remove": call.args.get("remove")})).await
+    }
+
+    async fn delete(&self, call: Call) -> Result<Value, VerbError> {
+        let reason = s(&call.args, "reason");
+        if s(&call.args, "message_id").is_empty() || reason.is_empty() {
+            return Err(VerbError::value("seats delete needs the message_id of your own message and a reason"));
+        }
+        self.act(&call, "delete", json!({"reason": reason})).await
     }
 
     async fn download(&self, call: Call) -> Result<Value, VerbError> {
@@ -237,7 +249,7 @@ fn service(svc: Service, app: Arc<App>) -> Service {
     let svc = verb!(
         svc,
         "send",
-        "Reply in your seat's chat, in your latest line's thread unless `channel` says otherwise. `files`: absolute paths on this node, 24 MiB in all. A reply queues here and goes out once if the chat is unreachable. Other chats: `social send`.",
+        "Reply in your seat's chat, in your latest line's thread. With `channel` and no `thread` it posts top-level. `files`: absolute paths on this node, 24 MiB in all. A reply queues here and goes out once if the chat is unreachable. Other chats: `social send`.",
         json!([param("text", "string", false), param("channel", "string", false), param("thread", "string", false), param("file", "string", false), param("files", "array", false)]),
         send
     );
@@ -247,6 +259,13 @@ fn service(svc: Service, app: Arc<App>) -> Service {
         "React to a message in your seat's chat with an emoji (a unicode emoji, or a custom one as `<:name:id>` on Discord, `name` on Slack). With no `message_id` it reacts to your latest line's message. `remove` takes the reaction off. Fails on a platform without reactions.",
         json!([param("emoji", "string", true), param("remove", "boolean", false), param("message_id", "string", false), param("channel", "string", false)]),
         react
+    );
+    let svc = verb!(
+        svc,
+        "delete",
+        "Take back a message you sent in your seat's chat: its text becomes `deleted: <reason>`, as a journal edit keeps its trace. Needs the `message_id` that `seats send` returned, and a `reason`.",
+        json!([param("message_id", "string", true), param("reason", "string", true), param("channel", "string", false)]),
+        delete
     );
     let svc = verb!(
         svc,

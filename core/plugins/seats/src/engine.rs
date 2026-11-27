@@ -375,9 +375,11 @@ impl Seats {
             self.ask("blocked", &format!("A sender outside the lab wrote in the seat {}. Its messages wait until `seats admit account={} channel={}` on {}.", label(&seat), seat.account(), seat.channel(), seat.decl.node)).await;
             return;
         }
-        if m.new && seat.decl.kind == "dm" {
+        if m.new {
             self.world.up("tag", json!({"name": format!("user:{}", seat.decl.slug), "description": format!("journals of the seat agent for {}", seat.decl.slug)})).await;
-            self.ask("review", &format!("A new DM seat opened: {} on {}. Its agent starts now.", label(&seat), seat.decl.node)).await;
+            if seat.decl.kind == "dm" {
+                self.ask("review", &format!("A new DM seat opened: {} on {}. Its agent starts now.", label(&seat), seat.decl.node)).await;
+            }
         }
         self.spawn_drive(seat.key());
     }
@@ -650,6 +652,7 @@ impl Seats {
             project: &project,
             previous: previous.as_ref().map(|p| (p.session_id.as_str(), p.node.as_str())),
             missed: seat.missed,
+            has_brief: std::path::Path::new(&settings.docs).join(&seat.decl.brief).is_file(),
         };
         let (model, effort) = self.pair(&seat);
         let mut spec = json!({

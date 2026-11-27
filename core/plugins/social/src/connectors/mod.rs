@@ -157,6 +157,11 @@ pub trait Connector: Send + Sync {
         Err(unsupported(format!("{} connector does not support reactions", self.platform())))
     }
 
+    /// Replace the text of a message this account sent.
+    async fn edit(&self, _channel: &str, _message_id: &str, _text: &str) -> Result<()> {
+        Err(unsupported(format!("{} connector does not support edits", self.platform())))
+    }
+
     async fn list_channels(&self, include_dms: bool) -> Result<Vec<Channel>>;
 
     /// The chats a session may mount. Defaults to every channel and DM.

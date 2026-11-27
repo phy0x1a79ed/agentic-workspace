@@ -10,19 +10,21 @@ pub struct Facts<'a> {
     /// `(session id, node)` of the agent before, for a start that does not resume it.
     pub previous: Option<(&'a str, &'a str)>,
     pub missed: i64,
+    /// Whether the seat's own brief exists in the docs on this node.
+    pub has_brief: bool,
 }
 
 pub fn brief(f: &Facts, lines: &[String]) -> String {
     let d = f.decl;
     let mut out = if d.account == crate::store::ROOM { room(f) } else { format!(
         "You are the agent of one chat seat: {}/{} on {}, at level {}. Your scope is {}/{}.\n\
-         Read {}/seat-sop.md, then {}/{}.\n\
+         Read {}/seat-sop.md{}.\n\
          Each new message in the chat is typed into your prompt as one line, \"[<server>/<chat>/<sender>, <level>] \u{21b3}<thread> <text>\". \
          Answer each one with `seats send text=<text>`: with no channel it answers the latest line, in its thread, and a reply waits here if the link to the chat is down. \
          After each result or decision you send, post a journal in your scope tagged `journal`, `seat` and `user:{}`. \
          You are a persistent session: keep your session name, and never end the session. \
          Between messages, wait. The seat stops you after 4 idle hours and resumes this conversation on the next message.\n",
-        d.server_label, d.chat_label, d.platform, d.level, f.project, d.scope, f.docs, f.docs, d.brief, d.slug,
+        d.server_label, d.chat_label, d.platform, d.level, f.project, d.scope, f.docs, if f.has_brief { format!(", then {}/{}", f.docs, d.brief) } else { String::new() }, d.slug,
     ) };
     if let Some((session, node)) = f.previous {
         out.push_str(&format!("The agent before you was session {session} on {node}. Read the journals of your scope.\n"));

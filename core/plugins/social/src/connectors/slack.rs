@@ -617,6 +617,11 @@ impl Connector for SlackConnector {
         slack_reaction(&self.cfg.name, channel, message_id, &name, remove, &error)
     }
 
+    async fn edit(&self, channel: &str, message_id: &str, text: &str) -> Result<()> {
+        self.api.call("chat.update", &[("channel", channel.into()), ("ts", message_id.into()), ("text", text.into())]).await.map_err(api_err)?;
+        Ok(())
+    }
+
     async fn list_channels(&self, include_dms: bool) -> Result<Vec<Channel>> {
         let types = if include_dms { "public_channel,private_channel,im,mpim" } else { "public_channel,private_channel" };
         self.channels("conversations.list", types).await
