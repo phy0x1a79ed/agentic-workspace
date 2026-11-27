@@ -1,5 +1,5 @@
 # The kb core plugin binary (static musl) that a deploy places at <AWM_DIR>/bin/kb.
 # Written by the deploy on mizar (scripts/refresh-pins.sh). Do not edit.
-version=kb-aff7f8624548
-file=awm-plugin-kb-aff7f8624548-linux-x86_64-musl
-sha256=a51ffbb2c54686e9d6f7ec250a571761d388fad0f30cfacb9198be3286cb0243
+version=kb-f76049996d17
+file=awm-plugin-kb-f76049996d17-linux-x86_64-musl
+sha256=d46b1209e06c1de0fd36ccc311391600f88ed5284a21efa4d7e48ba0e3199554
