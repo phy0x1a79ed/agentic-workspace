@@ -18,6 +18,10 @@ pub struct Fake {
     pub sent: Mutex<Vec<(String, Vec<Value>)>>,
     pub started: Mutex<Vec<Value>>,
     pub lists: Mutex<std::collections::HashMap<String, Value>>,
+    /// The live sessions a wake finds in any scope.
+    pub live: Mutex<Vec<String>>,
+    /// Each wake as `(project/scope, skipped session, text)`.
+    pub woken: Mutex<Vec<(String, String, String)>>,
 }
 
 impl Outside for Fake {
@@ -37,6 +41,12 @@ impl Outside for Fake {
         Box::pin(async move {
             self.started.lock().unwrap().push(args);
             Ok(json!({"session_id": "job-1"}))
+        })
+    }
+    fn wake<'a>(&'a self, project: &'a str, scope: &'a str, skip: &'a str, text: String) -> BoxFuture<'a, Result<Vec<String>, String>> {
+        Box::pin(async move {
+            self.woken.lock().unwrap().push((format!("{project}/{scope}"), skip.into(), text));
+            Ok(self.live.lock().unwrap().iter().filter(|s| *s != skip).cloned().collect())
         })
     }
 }

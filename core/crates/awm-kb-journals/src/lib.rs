@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use awm_embed::Embedder;
 use awm_index::{Index, Store as Lance};
-use awm_plugin_sdk::{CallOpts, Context};
+use awm_plugin_sdk::{holders::row_live, sessions::tell, CallOpts, Context};
 use awm_store::Store;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -130,6 +130,8 @@ pub trait Outside: Send + Sync {
     fn tag_receive(&self, peer: &str, tags: Vec<Value>);
     /// Start the agent that renames the newer tag of a clash; returns its handle.
     fn start_agent<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, String>>;
+    /// Type `text` into each live session of `project/scope` on this node but `skip`; returns the ids reached.
+    fn wake<'a>(&'a self, project: &'a str, scope: &'a str, skip: &'a str, text: String) -> BoxFuture<'a, Result<Vec<String>, String>>;
 }
 
 fn edge_peers(awm_dir: &Path, here: &str) -> Vec<String> {
@@ -160,6 +162,9 @@ impl Outside for Detached {
     }
     fn tag_receive(&self, _: &str, _: Vec<Value>) {}
     fn start_agent<'a>(&'a self, _: Value) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async { Err("no gateway connection".to_string()) })
+    }
+    fn wake<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: String) -> BoxFuture<'a, Result<Vec<String>, String>> {
         Box::pin(async { Err("no gateway connection".to_string()) })
     }
 }
@@ -199,6 +204,23 @@ impl Outside for HubOutside {
     }
     fn start_agent<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(self.call("reflection", "start_other", args, None, 60))
+    }
+    fn wake<'a>(&'a self, project: &'a str, scope: &'a str, skip: &'a str, text: String) -> BoxFuture<'a, Result<Vec<String>, String>> {
+        Box::pin(async move {
+            let listed = self.call("reflection", "list_other", json!({"project": project, "scope": scope}), None, 10).await?;
+            let mut woke = Vec::new();
+            for s in listed["sessions"].as_array().into_iter().flatten() {
+                let Some(id) = s["session_id"].as_str().filter(|id| !id.is_empty() && *id != skip) else { continue };
+                if !row_live(s) || s["project"] != json!(project) || s["scope"] != json!(scope) {
+                    continue;
+                }
+                match tell(self.ctx.hub(), id, &text).await {
+                    Ok(_) => woke.push(id.to_string()),
+                    Err(e) => tracing::info!("wake of {id} failed: {e}"),
+                }
+            }
+            Ok(woke)
+        })
     }
 }
 

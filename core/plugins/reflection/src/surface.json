@@ -86,7 +86,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -105,7 +105,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -124,7 +124,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -143,7 +143,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -162,7 +162,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -187,7 +187,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -200,7 +200,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -213,7 +213,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     },
     {
      "name": "confirm",
@@ -231,7 +231,7 @@
     {
      "name": "to",
      "type": "object",
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node. Omit to act on your own session."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to. Omit to act on your own session."
     }
    ]
   },
@@ -245,7 +245,7 @@
      "name": "to",
      "type": "object",
      "required": true,
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to."
     },
     {
      "name": "text",
@@ -465,7 +465,7 @@
      "name": "to",
      "type": "object",
      "required": true,
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to."
     }
    ],
    "timeout": 30
@@ -479,7 +479,7 @@
      "name": "to",
      "type": "object",
      "required": true,
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to."
     },
     {
      "name": "prompt",
@@ -512,7 +512,7 @@
      "name": "to",
      "type": "object",
      "required": true,
-     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. Add peer for a session on another node."
+     "description": "The session: {id: <canonical session id>} or {name: <whole session name, any case>}. A name two sessions answer to is refused with their ids. For a session on another node, pass peer beside verb, not inside to."
     }
    ],
    "timeout": 30

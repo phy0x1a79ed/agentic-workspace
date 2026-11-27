@@ -60,7 +60,7 @@ fn describe_lists_every_verb_with_its_required_params() {
 async fn post_answers_with_the_post_and_a_reply_joins_its_threads_channel() {
     let r = rig().await;
     let first = r.call("post", json!({"project": "awm", "scope": "dev", "author": "tony", "body": "first"})).await.unwrap();
-    assert_eq!(keys(&first), ["post"]);
+    assert_eq!(keys(&first), ["post", "wake"]);
     let post = &first["post"];
     assert_eq!(keys(post), ["author", "body", "id", "meta", "project", "scope", "tags", "ts"]);
     assert_eq!((post["author"].as_str(), post["tags"].clone()), (Some("user:tony"), json!(["message"])));
@@ -69,6 +69,33 @@ async fn post_answers_with_the_post_and_a_reply_joins_its_threads_channel() {
     let c = &reply["post"];
     assert_eq!((c["project"].as_str(), c["scope"].as_str()), (Some("awm"), Some("dev")));
     assert_eq!((c["reply_to"].clone(), c["thread"].clone()), (json!([post["id"]]), post["id"].clone()));
+}
+
+#[tokio::test]
+async fn a_message_wakes_the_scopes_live_sessions_and_a_journal_does_not() {
+    let r = rig().await;
+    *r.out.live.lock().unwrap() = vec!["cc-seat".into(), "cc-me".into()];
+    let mut me = Who::trusted();
+    me.session = Some("cc-me".into());
+    let post = |tags: Value, wake: Value| json!({"project": "awm", "scope": "dev", "author": "tony", "tags": tags, "wake": wake, "body": "x"});
+    for (tags, wake, want) in [
+        (json!([]), Value::Null, Some(json!({"woke": ["cc-seat"]}))),
+        (json!(["journal"]), Value::Null, None),
+        (json!([]), json!(false), None),
+        (json!(["journal"]), json!(true), Some(json!({"woke": ["cc-seat"]}))),
+    ] {
+        let out = r.call_as("post", post(tags.clone(), wake.clone()), &me).await.unwrap();
+        assert_eq!(out.get("wake").cloned(), want, "tags {tags} wake {wake}");
+    }
+    let woken = r.out.woken.lock().unwrap().clone();
+    assert_eq!(woken.len(), 2);
+    let (scope, skip, text) = &woken[0];
+    assert_eq!((scope.as_str(), skip.as_str()), ("awm/dev", "cc-me"));
+    assert!(text.contains("journal(verb=\"fetch\"") && !text.contains(" x"), "{text}");
+
+    r.out.live.lock().unwrap().clear();
+    let out = r.call("post", post(json!([]), Value::Null)).await.unwrap();
+    assert_eq!(out["wake"], json!({"woke": [], "skipped": "no live session in awm/dev on home"}));
 }
 
 #[tokio::test]

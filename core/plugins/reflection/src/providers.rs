@@ -37,7 +37,7 @@ pub enum Ref {
 impl Ref {
     /// The `to` in `args`, None when it is absent.
     pub fn from_args(args: &Value) -> Result<Option<Self>, String> {
-        const FORM: &str = "to is {id: <canonical session id>} or {name: <session name>}";
+        const FORM: &str = "to is {id: <canonical session id>} or {name: <session name>}. A peer goes beside verb, not inside to";
         let to = match args.get("to") {
             None | Some(Value::Null) => return Ok(None),
             Some(Value::Object(to)) if to.len() == 1 => to,
