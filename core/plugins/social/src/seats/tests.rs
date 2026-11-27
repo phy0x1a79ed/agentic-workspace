@@ -117,6 +117,7 @@ async fn sync_drops_a_seat_the_config_no_longer_declares_and_redeclares_the_rest
     t.seats.declared("opal", "C0TEST", &Place { platform: "slack".into(), server: "Hallam Hive".into(), kind: ChatKind::Channel, chat_name: "general".into(), ..Default::default() }).await;
     let mut cfg = t.seats.cfg.clone();
     cfg.rules[0].except = vec!["D0TEST".into()];
+    cfg.chats[0].level = Level::Trusted;
     let seats = Seats::new(t.seats.store.0.clone(), cfg, vec![AccountConfig { name: "opal".into(), platform: "slack".into(), ..Default::default() }]);
     seats.sync().await;
     assert!(seats.store.get("opal", "D0TEST").await.is_none());
@@ -125,6 +126,7 @@ async fn sync_drops_a_seat_the_config_no_longer_declares_and_redeclares_the_rest
     assert_eq!((roster["kind"].as_str(), roster["seats"].clone()), (Some("roster"), json!([])), "altair hosts no seat now");
     let mizar = seats.pull("mizar", 0, 0.0).await;
     assert_eq!((mizar["rows"][0]["kind"].as_str(), mizar["rows"][0]["seat"]["name"].as_str()), (Some("decl"), Some("seat:slack/hallam-hive/general")));
+    assert_eq!(mizar["rows"][0]["seat"]["level"], "trusted", "a level changed in the config reaches the stored seat");
 }
 
 #[tokio::test]

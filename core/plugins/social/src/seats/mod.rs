@@ -106,14 +106,15 @@ impl Seats {
     /// The seat this message's chat is: its row, or a new one when the config declares it.
     async fn declare(&self, m: &Inbound) -> Option<(Seat, bool)> {
         if let Some(mut s) = self.store.get(&m.account, &m.channel_id).await {
-            if !self.declares(&s, &m.sender_id) {
+            let Some(level) = self.declared_level(&s, &m.sender_id) else {
                 self.forget(&s).await;
                 self.roster(&s.node, &self.store.all().await).await;
                 return None;
-            }
-            if (!m.channel_name.is_empty() && m.channel_name != s.channel_name) || (!m.server.is_empty() && m.server != s.server) {
+            };
+            if (!m.channel_name.is_empty() && m.channel_name != s.channel_name) || (!m.server.is_empty() && m.server != s.server) || level != s.level {
                 s.channel_name = if m.channel_name.is_empty() { s.channel_name } else { m.channel_name.clone() };
                 s.server = if m.server.is_empty() { s.server } else { m.server.clone() };
+                s.level = level;
                 self.store.save(&s).await;
             }
             return Some((s, false));
@@ -138,8 +139,9 @@ impl Seats {
         Some((seat, true))
     }
 
-    fn declares(&self, s: &Seat, sender: &str) -> bool {
-        self.cfg.seat_for(&s.account, &s.channel_id, &s.kind, sender).is_some()
+    /// The level the config gives the seat today, or None when it no longer declares it.
+    fn declared_level(&self, s: &Seat, sender: &str) -> Option<String> {
+        self.cfg.seat_for(&s.account, &s.channel_id, &s.kind, sender).map(|(_, level, _)| level.as_str().to_string())
     }
 
     async fn forget(&self, s: &Seat) {
@@ -159,12 +161,17 @@ impl Seats {
     /// then each host's roster, which also clears a seat whose drop a host missed.
     pub async fn sync(&self) {
         let mut kept = vec![];
-        for s in self.store.all().await.into_iter().filter(|s| s.account != ROOM) {
-            if self.declares(&s, "") {
-                self.queue(Self::row(&s, "decl", json!({}))).await;
-                kept.push(s);
-            } else {
-                self.forget(&s).await;
+        for mut s in self.store.all().await.into_iter().filter(|s| s.account != ROOM) {
+            match self.declared_level(&s, "") {
+                Some(level) => {
+                    if level != s.level {
+                        s.level = level;
+                        self.store.save(&s).await;
+                    }
+                    self.queue(Self::row(&s, "decl", json!({}))).await;
+                    kept.push(s);
+                }
+                None => self.forget(&s).await,
             }
         }
         for node in &self.hosts {

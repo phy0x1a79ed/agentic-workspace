@@ -6,7 +6,9 @@
 //! The record (`status`/`statusUpdatedAt`) and the transcript say the same thing on every lane.
 //! This establishes that the session consumed the keystrokes, never that the command ran.
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -18,6 +20,13 @@ use crate::promises::{render_followup, Change, Pending, Promises};
 use crate::target::{Resolve, ResolveError, Target};
 use crate::transcript::Tail;
 use crate::watcher::{self, Probe, TranscriptView};
+
+/// One typist per session in this process. Two texts typed into one prompt at once merge into
+/// one line, and a `/compact` merged with a seat's line is no longer a command.
+fn typing_lock(repl_pid: u32) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: LazyLock<std::sync::Mutex<HashMap<u32, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Default::default);
+    LOCKS.lock().unwrap().entry(repl_pid).or_default().clone()
+}
 
 /// Three tries: enough to cross one re-host plus one unlucky beat, few enough that an unreachable
 /// session is not ground against while the caller blocks on the verb.
@@ -329,6 +338,7 @@ impl<D: Resolve, O: Opener, P: Probe> Sender<D, O, P> {
 
     // One detect → guard → write → commit → confirm transaction. Nothing rendered is consulted:
     // before the write the record is asked one question, whether a modal holds the keyboard.
+    /// One attempt holds the session's typing lock from the first keystroke to the confirmed submit.
     async fn attempt<T: SendTail>(
         &mut self,
         repl_pid: u32,
@@ -348,6 +358,7 @@ impl<D: Resolve, O: Opener, P: Probe> Sender<D, O, P> {
             ))
             .into());
         }
+        let _typing = typing_lock(repl_pid).lock_owned().await;
         let mut writer = self.opener.open_writer(&lane).await?;
         let typed = async {
             if clear_first {
@@ -748,7 +759,10 @@ mod tests {
             "the fake lane".into()
         }
         async fn write(&mut self, text: &str) -> Result<(), LaneError> {
-            self.note(format!("write:{text}"), "write")
+            self.note(format!("write:{text}"), "write")?;
+            // A real write gives way to the executor, so a second typist could come in here.
+            tokio::task::yield_now().await;
+            Ok(())
         }
         async fn clear(&mut self) -> Result<(), LaneError> {
             self.note("clear".into(), "clear")
@@ -965,6 +979,19 @@ mod tests {
         assert_eq!(result.lane, lane());
         assert_eq!(result.confirmed, Confirmed::Record);
         assert_eq!(seen(&events), ["write:/compact", "check", "commit"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_two_typists_into_one_session_never_interleave() {
+        let events = log();
+        let (a, b) = (FakeRecord::new("idle"), FakeRecord::new("idle"));
+        let (mut sa, mut sb) = (sender(vec![FakeWriter::new(&events, Some(&a))], &a), sender(vec![FakeWriter::new(&events, Some(&b))], &b));
+        let (ra, rb) = tokio::join!(
+            sa.deliver(4242, "/compact", DeliverOpts::default(), NO_TAIL),
+            sb.deliver(4242, "a seat line", DeliverOpts::default(), NO_TAIL)
+        );
+        assert!(ra.is_ok() && rb.is_ok());
+        assert_eq!(seen(&events)[1..3], ["check", "commit"], "the first text is submitted before the second is typed: {:?}", seen(&events));
     }
 
     #[tokio::test(start_paused = true)]

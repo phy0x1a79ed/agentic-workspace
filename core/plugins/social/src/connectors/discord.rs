@@ -425,8 +425,20 @@ impl Connector for DiscordConnector {
 
     async fn send(&self, channel: &str, text: &str, thread: Option<&str>, files: &[OutFile]) -> Result<Sent> {
         self.ensure().await?;
-        let target = thread.filter(|t| !t.is_empty()).unwrap_or(channel);
-        let (id, kind) = self.resolve(target).await?;
+        // A thread on Discord is a channel. A message id given as the thread is answered as a reply.
+        let (id, kind, reply) = match thread.filter(|t| !t.is_empty() && *t != channel) {
+            Some(t) => match self.resolve(t).await {
+                Ok((id, kind)) => (id, kind, None),
+                Err(_) => {
+                    let (id, kind) = self.resolve(channel).await?;
+                    (id, kind, Some(snowflake(t)?))
+                }
+            },
+            None => {
+                let (id, kind) = self.resolve(channel).await?;
+                (id, kind, None)
+            }
+        };
         if matches!(kind, ChannelType::Private | ChannelType::Group) && !self.spoken_in(id).await? {
             return Err(self.first_contact(id));
         }
@@ -442,6 +454,9 @@ impl Connector for DiscordConnector {
         }
         if dm {
             req = req.flags(MessageFlags::SUPPRESS_EMBEDS);
+        }
+        if let Some(message) = reply {
+            req = req.reply(Id::new(message));
         }
         let sent = req.await.map_err(http_err)?.model().await.map_err(|e| runtime(e.to_string()))?;
         let mut out = Sent::new();
@@ -498,6 +513,13 @@ impl Connector for DiscordConnector {
             out.push(Downloaded { filename, mime: a.content_type.clone().unwrap_or_default(), data });
         }
         Ok(out)
+    }
+
+    async fn edit(&self, channel: &str, message_id: &str, text: &str) -> Result<()> {
+        self.ensure().await?;
+        let (id, _) = self.resolve(channel).await?;
+        self.http.update_message(Id::new(id), Id::new(snowflake(message_id)?)).content(Some(text)).await.map_err(http_err)?;
+        Ok(())
     }
 
     async fn react(&self, channel: &str, message_id: &str, emoji: &str, remove: bool) -> Result<Value> {

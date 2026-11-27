@@ -299,7 +299,8 @@ async fn a_message_to_an_empty_seat_reacts_queues_and_starts_one_agent() {
     let spec = t.world.w().specs[0].clone();
     assert_eq!((spec["project"].as_str(), spec["trust"].as_str(), spec["name"].as_str()), (Some("agentic-commons"), Some("cooperative"), Some("seat:slack/dm/tester")));
     let prompt = spec["prompt"].as_str().unwrap();
-    assert!(prompt.contains("[slack/DM/tester, cooperative] first") && prompt.contains("/docs/briefs/slack-slack.md") && prompt.contains("`seats send text=<text>`"));
+    assert!(prompt.contains("[slack/DM/tester, cooperative] first") && prompt.contains("`seats send text=<text>`"));
+    assert!(prompt.contains("Read /docs/seat-sop.md.") && !prompt.contains("briefs/"), "a brief missing on this node is not named");
     assert!(prompt.contains("agentic-commons/seats/tester") && prompt.contains("`journal`, `seat` and `user:tester`") && !prompt.contains("paused"), "{prompt}");
     assert_eq!(t.queued().await, 1, "briefed is not delivered");
     t.send("second").await;
