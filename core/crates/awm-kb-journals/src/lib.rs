@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use awm_embed::Embedder;
 use awm_index::{Index, Store as Lance};
-use awm_plugin_sdk::{CallOpts, Context};
+use awm_plugin_sdk::{holders::row_live, sessions::tell, CallOpts, Context};
 use awm_store::Store;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -210,13 +210,12 @@ impl Outside for HubOutside {
             let listed = self.call("reflection", "list_other", json!({"project": project, "scope": scope}), None, 10).await?;
             let mut woke = Vec::new();
             for s in listed["sessions"].as_array().into_iter().flatten() {
-                let id = s["session_id"].as_str().unwrap_or_default();
-                if id.is_empty() || id == skip || s["alive"] != json!(true) || s["project"] != json!(project) || s["scope"] != json!(scope) {
+                let Some(id) = s["session_id"].as_str().filter(|id| !id.is_empty() && *id != skip) else { continue };
+                if !row_live(s) || s["project"] != json!(project) || s["scope"] != json!(scope) {
                     continue;
                 }
-                match self.call("reflection", "message", json!({"to": {"id": id}, "text": text}), None, 15).await {
-                    Ok(r) if r["ok"] == json!(true) => woke.push(id.to_string()),
-                    Ok(r) => tracing::info!("wake of {id} refused: {r}"),
+                match tell(self.ctx.hub(), id, &text).await {
+                    Ok(_) => woke.push(id.to_string()),
                     Err(e) => tracing::info!("wake of {id} failed: {e}"),
                 }
             }
