@@ -90,6 +90,13 @@ async fn test_a_call_from_a_peer_does_not_fan_out_again() {
     assert!(fx.gw().peer_calls().is_empty(), "fanned out");
 }
 
+#[tokio::test]
+async fn test_a_peer_inside_to_says_where_it_goes() {
+    let fx = Fx::new();
+    let out = fx.run("message", json!({"to": {"id": other(), "peer": "altair"}, "text": "hi"})).await;
+    assert!(reason(&out).contains("peer goes beside verb"), "{out}");
+}
+
 /// Only a session a harness recorded, by hand with no level, reads trusted (R103 item 2).
 #[tokio::test]
 async fn test_a_session_no_harness_knows_reads_untrusted() {

@@ -40,6 +40,9 @@ impl Ref {
         const FORM: &str = "to is {id: <canonical session id>} or {name: <session name>}";
         let to = match args.get("to") {
             None | Some(Value::Null) => return Ok(None),
+            Some(Value::Object(to)) if to.contains_key("peer") => {
+                return Err("peer goes beside verb, not inside to: {verb, peer: <node>, args: {to: {id}}}".into())
+            }
             Some(Value::Object(to)) if to.len() == 1 => to,
             Some(_) => return Err(FORM.into()),
         };

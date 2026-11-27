@@ -118,7 +118,29 @@ impl Journals {
                 ..NewPost::default()
             })
             .await?;
-        Ok(json!({"post": post.to_dict(&self.tag_names()?)}))
+        let mut out = json!({"post": post.to_dict(&self.tag_names()?)});
+        let wake = match a.get("wake") {
+            Some(v) if !v.is_null() => truthy(v),
+            _ => !tag_ids.iter().any(|t| t == JOURNAL),
+        };
+        if wake {
+            out["wake"] = self.wake_scope(&post, who).await;
+        }
+        Ok(out)
+    }
+
+    /// Point the scope's live sessions on this node at a new post, never at the poster's own.
+    async fn wake_scope(&self, post: &Post, who: &Who) -> Value {
+        let (id, project, scope) = (&post.id, &post.project, &post.scope);
+        let text = format!(
+            "New post {id} in your scope {project}/{scope} from {}. Read it with journal(verb=\"fetch\", args={{post_id:\"{id}\"}}).",
+            post.author
+        );
+        match self.outside().wake(project, scope, who.session.as_deref().unwrap_or_default(), text).await {
+            Ok(woke) if woke.is_empty() => json!({"woke": [], "skipped": format!("no live session in {project}/{scope} on {}", self.node)}),
+            Ok(woke) => json!({"woke": woke}),
+            Err(e) => json!({"woke": [], "skipped": e}),
+        }
     }
 
     pub async fn h_fetch(&self, a: &Value, who: &Who) -> Result<Value> {
@@ -468,11 +490,12 @@ pub fn specs() -> Vec<(&'static str, String, Value)> {
         ("history", "Every version of a post, oldest first, each with its diff from the one before.".into(), json!([p("post_id", "string", true, "")])),
         ("addenda", "List the posts that open as an addendum or correction to an earlier post of the same scope, with the post each corrects. With apply, fold each into its target as a new version and retire the addendum from reads.".into(),
          json!([p("project", "string", false, ""), p("scope", "string", false, ""), p("apply", "boolean", false, "")])),
-        ("post", "Post to a scope's channel. tags come from the vocabulary (tag_list); a post with none is a message. tags=[journal] is the scope's own debrief; structured fields go in meta. reply_to=[<post id>] makes the post a comment: it lands in the channel of its thread's first post, and that post's author gets it in its inbox. On a journal, reply_to lists the journals it built on. Tag a post precedent when it records a decision Tony made or overrode that holds beyond the session: post it at project='' scope='workspace', with a body that holds the context, the question and the decision. Search precedents before you ask Tony a preference question. Pass all structured params (tags, meta, reply_to) BEFORE the free-text body, which must be the LAST argument \u{2014} see the body param note.".into(),
+        ("post", "Post to a scope's channel. tags come from the vocabulary (tag_list); a post with none is a message. A post not tagged journal also wakes each live session of the scope on this node, but the poster's own, with a one-line pointer to it; the reply's wake says whom it reached. tags=[journal] is the scope's own debrief; structured fields go in meta. reply_to=[<post id>] makes the post a comment: it lands in the channel of its thread's first post, and that post's author gets it in its inbox. On a journal, reply_to lists the journals it built on. Tag a post precedent when it records a decision Tony made or overrode that holds beyond the session: post it at project='' scope='workspace', with a body that holds the context, the question and the decision. Search precedents before you ask Tony a preference question. Pass all structured params (tags, meta, reply_to) BEFORE the free-text body, which must be the LAST argument \u{2014} see the body param note.".into(),
          json!([p("project", "string", false, "Required unless reply_to is given."), p("scope", "string", false, "Required unless reply_to is given."),
                 p("author", "string", true, ""), p("tags", "array", false, "Tag names from the vocabulary. An unknown tag is refused."),
                 p("reply_to", "array", false, "Post ids. A comment names the one post it answers. A debrief journal names every earlier journal it built on: its citations, picked from journal reads. A journal stays in its own scope."),
                 p("meta", "object", false, "Structured fields. meta.session names the session a journal covers; omit it for your own session."),
+                p("wake", "boolean", false, "Point the scope's live sessions on this node at the post. Defaults to true for a post not tagged journal."),
                 p("body", "string", true, "Free-text post content. Pass this argument LAST \u{2014} emit every other parameter before it.")])),
         ("fetch", "Fetch or search a scope's posts \u{2014} messages and journal entries. Pass project and scope for one channel (a literal scope needs its project: scope names repeat across projects); add query to rank posts by relevance (the search service's meaning and keyword match over each post's full text, best first, each hit with match.snippet \u{2014} a limit of ~10 is plenty; the reply's `semantic` says what ranked them: search, or none for a substring match); omit scope to search across scopes; a query returns each thread's first post with its comment count. tags filters with 'and' and '!' (e.g. tags='journal' for session logs, '!closed and complaint' for open complaints); post_id fetches one with its thread of comments. Without a query, tags='journal' reads newest-first (e.g. last 5 awm session logs: project='awm', tags='journal', limit=5).".into(),
          json!([p("project", "string", false, ""), p("scope", "string", false, ""), p("tags", "string", false, "A tag filter: names joined by 'and', '!' negates one."),
